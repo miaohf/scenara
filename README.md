@@ -1,10 +1,10 @@
-# AI Director（AI 漫剧工场）
+# Scenara
 
 > **AI 一站式短剧/漫剧生成平台**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-**AI Director** 是一个面向创作者的 AI 漫剧/短剧生产平台，采用 **Script → Asset → Keyframe → Video** 工业化工作流，从剧本到成片全程可控。
+**Scenara** 是一个面向创作者的 AI 漫剧/短剧生产平台，采用 **Script → Asset → Keyframe → Video** 工业化工作流，从剧本到成片全程可控。
 
 ## 界面展示
 
@@ -50,15 +50,14 @@
 
 ```bash
 git clone <your-repo-url>
-cd ai-director
+cd scenara
 
 # 前端（Node.js）
 cd front-end && npm install && cp -n .env.example .env.local && cd ..
 
-# 后端（Python）
+# 后端（Python，[uv](https://docs.astral.sh/uv/)）
 cd back-end
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+uv sync
 cp -n .env.example .env
 ```
 
@@ -67,15 +66,15 @@ cp -n .env.example .env
 **终端 1 — 后端 API**
 
 ```bash
-cd back-end && source .venv/bin/activate
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+cd back-end
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 **终端 2 — Celery Worker（可选，需 Redis，视频异步任务）**
 
 ```bash
-cd back-end && source .venv/bin/activate
-celery -A app.workers.celery_app.celery_app worker --loglevel=info
+cd back-end
+uv run celery -A app.workers.celery_app.celery_app worker --loglevel=info
 ```
 
 **终端 3 — 前端**

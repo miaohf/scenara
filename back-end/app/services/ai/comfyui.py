@@ -21,6 +21,7 @@ from app.services.ai.chat import AiConfigError, _pick_model, _provider_for_model
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW_DIRS = [
     BACKEND_ROOT / "workflows",
+    BACKEND_ROOT.parent / "front-end" / "public" / "workflows",
 ]
 
 COMFYUI_POLL_INTERVAL_SEC = 1.0
@@ -136,6 +137,7 @@ def patch_image_workflow(
     workflow: dict[str, Any],
     *,
     prompt: str,
+    negative_prompt: str | None = None,
     width: int,
     height: int,
     seed: int,
@@ -154,16 +156,32 @@ def patch_image_workflow(
         inputs = node.get("inputs") or {}
         class_type = str(node.get("class_type", "")).lower()
         title = str((node.get("_meta") or {}).get("title", "")).lower()
+        is_negative = "clip" in class_type and "negative" in title
 
-        if "text" in inputs and isinstance(inputs["text"], str) and "clip" in class_type:
+        if (
+            title == "prompt"
+            and class_type == "primitivestringmultiline"
+            and isinstance(inputs.get("value"), str)
+        ):
+            inputs["value"] = prompt
+            prompt_patched = True
+
+        if not is_negative and "text" in inputs and isinstance(inputs["text"], str) and "clip" in class_type:
             inputs["text"] = prompt
             prompt_patched = True
-        if "prompt" in inputs and isinstance(inputs["prompt"], str):
+        if not is_negative and "prompt" in inputs and isinstance(inputs["prompt"], str):
             inputs["prompt"] = prompt
             prompt_patched = True
-        if "positive" in inputs and isinstance(inputs["positive"], str):
+        if not is_negative and "positive" in inputs and isinstance(inputs["positive"], str):
             inputs["positive"] = prompt
             prompt_patched = True
+
+        if negative_prompt:
+            if is_negative and "text" in inputs and isinstance(inputs["text"], str):
+                inputs["text"] = negative_prompt
+            elif "negative" in title and "text" in inputs and isinstance(inputs["text"], str):
+                inputs["text"] = negative_prompt
+
         if "width" in inputs and isinstance(inputs["width"], int | float):
             inputs["width"] = width
         if "height" in inputs and isinstance(inputs["height"], int | float):
@@ -410,6 +428,7 @@ async def run_comfy_image(
         prompt_nodes = patch_image_workflow(
             workflow,
             prompt=payload.get("prompt", ""),
+            negative_prompt=payload.get("negativePrompt") or payload.get("negative_prompt"),
             width=width,
             height=height,
             seed=seed,

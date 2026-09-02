@@ -66,7 +66,9 @@ let runtimeApiKey: string = process.env.API_KEY || '';
 /** Set global API key for runtime + model registry */
 export const setGlobalApiKey = (key: string) => {
   runtimeApiKey = key;
-  setRegistryApiKey(key);
+  void setRegistryApiKey(key).catch((error) => {
+    console.error('同步 API Key 到服务端失败:', error);
+  });
 };
 
 /** Default API base URL fallback */

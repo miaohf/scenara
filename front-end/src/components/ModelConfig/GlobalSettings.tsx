@@ -115,7 +115,7 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({ onRefresh }) => {
     setVerifyMessage('');
 
     try {
-      const savedBaseUrl = setDefaultProviderBaseUrl(normalizedBaseUrl);
+      const savedBaseUrl = await setDefaultProviderBaseUrl(normalizedBaseUrl);
       if (!savedBaseUrl) {
         setVerifyStatus('error');
         setVerifyMessage(validateRemoteApiBaseUrl(normalizedBaseUrl) || 'API Base URL 无法保存');
@@ -124,39 +124,44 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({ onRefresh }) => {
 
       const result = await verifyApiKey(
         apiKey.trim(),
-        savedBaseUrl,
-        normalizedVerifyModelName
+        normalizedBaseUrl,
+        normalizedVerifyModelName,
       );
 
       if (result.success) {
         setVerifyStatus('success');
-        setVerifyMessage('验证成功！配置已保存');
+        setVerifyMessage('验证成功！配置已保存并同步到服务端');
         setVerifyModelName(normalizedVerifyModelName);
         setBaseUrl(normalizedBaseUrl);
-        setGlobalVerifyChatModelName(normalizedVerifyModelName);
-        setGlobalApiKey(apiKey.trim());
+        await setGlobalVerifyChatModelName(normalizedVerifyModelName);
+        await setGlobalApiKey(apiKey.trim());
         onRefresh();
       } else {
         setVerifyStatus('error');
         setVerifyMessage(result.message);
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       setVerifyStatus('error');
-      setVerifyMessage(error.message || '验证过程出错');
+      setVerifyMessage(error instanceof Error ? error.message : '验证过程出错');
     } finally {
       setIsVerifying(false);
     }
   };
 
-  const handleClearKey = () => {
+  const handleClearKey = async () => {
     setApiKey(DEFAULT_GLOBAL_API_KEY);
     setBaseUrl(DEFAULT_GLOBAL_BASE_URL);
     setVerifyModelName(DEFAULT_GLOBAL_MODEL_NAME);
     setVerifyStatus('idle');
     setVerifyMessage('');
-    setGlobalApiKey('');
-    setGlobalVerifyChatModelName('');
-    onRefresh();
+    try {
+      await setGlobalApiKey('');
+      await setGlobalVerifyChatModelName('');
+      onRefresh();
+    } catch (error) {
+      setVerifyStatus('error');
+      setVerifyMessage(error instanceof Error ? error.message : '清除配置失败');
+    }
   };
 
   return (

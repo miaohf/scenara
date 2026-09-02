@@ -52,18 +52,38 @@ const getDefaultState = (): ModelRegistryState => ({
   globalApiKey: localStorage.getItem(API_KEY_STORAGE_KEY) || undefined,
 });
 
+const isUsableRegistryState = (state: Partial<ModelRegistryState> | null | undefined): state is ModelRegistryState =>
+  Boolean(
+    state &&
+      Array.isArray(state.models) &&
+      Array.isArray(state.providers) &&
+      state.activeModels &&
+      typeof state.activeModels === 'object',
+  );
+
 /**
  * 从 localStorage 加载状态
  */
 export const loadRegistry = (): ModelRegistryState => {
-  if (registryState) {
+  if (isUsableRegistryState(registryState)) {
     return registryState;
   }
+  registryState = null;
 
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
-      const parsed = JSON.parse(stored) as ModelRegistryState;
+      const parsed = JSON.parse(stored) as Partial<ModelRegistryState>;
+      if (!Array.isArray(parsed.models)) {
+        parsed.models = [];
+      }
+      if (!Array.isArray(parsed.providers)) {
+        parsed.providers = [];
+      }
+      parsed.activeModels = {
+        ...DEFAULT_ACTIVE_MODELS,
+        ...(parsed.activeModels || {}),
+      };
       const deprecatedVideoModelIds = [
         'veo',
         'veo-3.1',
@@ -75,12 +95,6 @@ export const loadRegistry = (): ModelRegistryState => {
         'veo_3_1_i2v_s_fast_fl_landscape',
         'veo_3_1_i2v_s_fast_fl_portrait',
       ];
-
-      // 兼容旧版本：activeModels 可能缺少 audio 字段
-      parsed.activeModels = {
-        ...DEFAULT_ACTIVE_MODELS,
-        ...(parsed.activeModels || {}),
-      };
 
       let chatModelAliasMigrated = false;
       const hasBuiltinGpt54 = parsed.models.some(m => m.type === 'chat' && m.id === 'gpt-5.4');
@@ -348,29 +362,53 @@ export const loadRegistry = (): ModelRegistryState => {
 };
 
 /**
- * 保存状态到 localStorage
+ * 保存状态到 localStorage，并在 API 模式下立即同步到服务端
  */
-export const saveRegistry = (state: ModelRegistryState): void => {
+export const saveRegistry = async (state: ModelRegistryState): Promise<void> => {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     registryState = state;
-    if (isApiAiMode()) {
-      void syncModelRegistryToServer(state).catch((error) => {
-        console.error('同步模型配置到服务端失败:', error);
-      });
-    }
   } catch (e) {
     console.error('保存模型注册中心失败:', e);
+    throw e;
+  }
+
+  if (!isApiAiMode()) return;
+
+  try {
+    await syncModelRegistryToServer(state);
+  } catch (error) {
+    console.error('同步模型配置到服务端失败:', error);
+    throw error instanceof Error ? error : new Error('同步模型配置到服务端失败');
   }
 };
 
 export const hydrateRegistryFromServer = async (): Promise<void> => {
   if (!isApiAiMode()) return;
+
+  const local = loadRegistry();
   const remote = await loadModelRegistryFromServer();
-  if (!remote || typeof remote !== 'object') return;
-  const state = remote as ModelRegistryState;
-  registryState = state;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+
+  const hasUsableRemote =
+    remote &&
+    typeof remote === 'object' &&
+    (Boolean((remote as Partial<ModelRegistryState>).models?.length) ||
+      Boolean((remote as Partial<ModelRegistryState>).providers?.length) ||
+      Boolean(
+        (remote as Partial<ModelRegistryState>).activeModels &&
+          Object.keys((remote as Partial<ModelRegistryState>).activeModels!).length > 0,
+      ));
+
+  if (!hasUsableRemote) {
+    if (isUsableRegistryState(local)) {
+      await syncModelRegistryToServer(local);
+    }
+    return;
+  }
+
+  registryState = null;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(remote));
+  loadRegistry();
 };
 
 /**
@@ -418,7 +456,7 @@ export const getDefaultProvider = (): ModelProvider => {
  * 更新默认提供商的 API 基础 URL。
  * 内置模型都绑定到默认提供商时，这相当于全局 API Base URL。
  */
-export const setDefaultProviderBaseUrl = (baseUrl: string): boolean => {
+export const setDefaultProviderBaseUrl = async (baseUrl: string): Promise<boolean> => {
   const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
   if (validateRemoteApiBaseUrl(normalizedBaseUrl)) {
     console.warn('[ModelRegistry] Refused to set invalid API base URL:', normalizedBaseUrl);
@@ -441,14 +479,16 @@ export const setDefaultProviderBaseUrl = (baseUrl: string): boolean => {
     };
   }
 
-  saveRegistry(state);
+  await saveRegistry(state);
   return true;
 };
 
 /**
  * 添加提供商
  */
-export const addProvider = (provider: Omit<ModelProvider, 'id' | 'isBuiltIn'>): ModelProvider => {
+export const addProvider = async (
+  provider: Omit<ModelProvider, 'id' | 'isBuiltIn'>,
+): Promise<ModelProvider> => {
   const state = loadRegistry();
   const normalized = normalizeBaseUrl(provider.baseUrl);
   const existing = state.providers.find(p => normalizeBaseUrl(p.baseUrl) === normalized);
@@ -459,14 +499,14 @@ export const addProvider = (provider: Omit<ModelProvider, 'id' | 'isBuiltIn'>): 
     isBuiltIn: false,
   };
   state.providers.push(newProvider);
-  saveRegistry(state);
+  await saveRegistry(state);
   return newProvider;
 };
 
 /**
  * 更新提供商
  */
-export const updateProvider = (id: string, updates: Partial<ModelProvider>): boolean => {
+export const updateProvider = async (id: string, updates: Partial<ModelProvider>): Promise<boolean> => {
   const state = loadRegistry();
   const index = state.providers.findIndex(p => p.id === id);
   if (index === -1) return false;
@@ -479,14 +519,14 @@ export const updateProvider = (id: string, updates: Partial<ModelProvider>): boo
   }
 
   state.providers[index] = { ...state.providers[index], ...updates };
-  saveRegistry(state);
+  await saveRegistry(state);
   return true;
 };
 
 /**
  * 删除提供商
  */
-export const removeProvider = (id: string): boolean => {
+export const removeProvider = async (id: string): Promise<boolean> => {
   const state = loadRegistry();
   const provider = state.providers.find(p => p.id === id);
   
@@ -497,7 +537,7 @@ export const removeProvider = (id: string): boolean => {
   state.models = state.models.filter(m => m.providerId !== id);
   state.providers = state.providers.filter(p => p.id !== id);
   
-  saveRegistry(state);
+  await saveRegistry(state);
   return true;
 };
 
@@ -598,7 +638,7 @@ export const getModelById = (id: string): ModelDefinition | undefined => {
  */
 export const getActiveModel = (type: ModelType): ModelDefinition | undefined => {
   const state = loadRegistry();
-  const activeId = state.activeModels[type];
+  const activeId = state.activeModels?.[type] ?? DEFAULT_ACTIVE_MODELS[type];
   return getModelById(activeId);
 };
 
@@ -633,13 +673,13 @@ export const getActiveAudioModel = (): AudioModelDefinition | undefined => {
 /**
  * 设置激活的模型
  */
-export const setActiveModel = (type: ModelType, modelId: string): boolean => {
+export const setActiveModel = async (type: ModelType, modelId: string): Promise<boolean> => {
   const model = getModelById(modelId);
   if (!model || model.type !== type || !model.isEnabled) return false;
 
   const state = loadRegistry();
   state.activeModels[type] = modelId;
-  saveRegistry(state);
+  await saveRegistry(state);
   return true;
 };
 
@@ -647,7 +687,7 @@ export const setActiveModel = (type: ModelType, modelId: string): boolean => {
  * 按 API 模型名设置当前对话模型。
  * 如果不存在对应模型，则在默认提供商下创建一个自定义对话模型。
  */
-export const setActiveChatModelByName = (modelName: string): ModelDefinition | null => {
+export const setActiveChatModelByName = async (modelName: string): Promise<ModelDefinition | null> => {
   const normalizedModelName = normalizeChatModelId(modelName)?.trim();
   if (!normalizedModelName) return null;
 
@@ -657,12 +697,12 @@ export const setActiveChatModelByName = (modelName: string): ModelDefinition | n
   });
 
   if (existingModel) {
-    setActiveModel('chat', existingModel.id);
+    await setActiveModel('chat', existingModel.id);
     return existingModel;
   }
 
   const provider = getDefaultProvider();
-  const customModel = registerModel({
+  const customModel = await registerModel({
     name: normalizedModelName,
     apiModel: normalizedModelName,
     type: 'chat',
@@ -673,7 +713,7 @@ export const setActiveChatModelByName = (modelName: string): ModelDefinition | n
     params: { ...DEFAULT_CHAT_PARAMS },
   } as Omit<ModelDefinition, 'id' | 'isBuiltIn'>);
 
-  setActiveModel('chat', customModel.id);
+  await setActiveModel('chat', customModel.id);
   return customModel;
 };
 
@@ -681,7 +721,9 @@ export const setActiveChatModelByName = (modelName: string): ModelDefinition | n
  * 注册新模型
  * @param model - 模型定义（可包含自定义 id，不包含 isBuiltIn）
  */
-export const registerModel = (model: Omit<ModelDefinition, 'id' | 'isBuiltIn'> & { id?: string }): ModelDefinition => {
+export const registerModel = async (
+  model: Omit<ModelDefinition, 'id' | 'isBuiltIn'> & { id?: string },
+): Promise<ModelDefinition> => {
   const state = loadRegistry();
   
   const providedId = (model as any).id?.trim();
@@ -709,14 +751,14 @@ export const registerModel = (model: Omit<ModelDefinition, 'id' | 'isBuiltIn'> &
   } as ModelDefinition;
   
   state.models.push(newModel);
-  saveRegistry(state);
+  await saveRegistry(state);
   return newModel;
 };
 
 /**
  * 更新模型
  */
-export const updateModel = (id: string, updates: Partial<ModelDefinition>): boolean => {
+export const updateModel = async (id: string, updates: Partial<ModelDefinition>): Promise<boolean> => {
   const state = loadRegistry();
   const index = state.models.findIndex(m => m.id === id);
   if (index === -1) return false;
@@ -740,14 +782,14 @@ export const updateModel = (id: string, updates: Partial<ModelDefinition>): bool
     state.models[index] = { ...state.models[index], ...updates } as ModelDefinition;
   }
 
-  saveRegistry(state);
+  await saveRegistry(state);
   return true;
 };
 
 /**
  * 删除模型
  */
-export const removeModel = (id: string): boolean => {
+export const removeModel = async (id: string): Promise<boolean> => {
   const state = loadRegistry();
   const model = state.models.find(m => m.id === id);
   
@@ -763,14 +805,14 @@ export const removeModel = (id: string): boolean => {
   }
   
   state.models = state.models.filter(m => m.id !== id);
-  saveRegistry(state);
+  await saveRegistry(state);
   return true;
 };
 
 /**
  * 启用/禁用模型
  */
-export const toggleModelEnabled = (id: string, enabled: boolean): boolean => {
+export const toggleModelEnabled = async (id: string, enabled: boolean): Promise<boolean> => {
   return updateModel(id, { isEnabled: enabled });
 };
 
@@ -788,11 +830,11 @@ export const getGlobalApiKey = (): string | undefined => {
 /**
  * 设置全局 API Key
  */
-export const setGlobalApiKey = (apiKey: string): void => {
+export const setGlobalApiKey = async (apiKey: string): Promise<void> => {
   const state = loadRegistry();
   state.globalApiKey = apiKey;
   localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
-  saveRegistry(state);
+  await saveRegistry(state);
 };
 
 /**
@@ -806,11 +848,11 @@ export const getGlobalVerifyChatModelName = (): string => {
 /**
  * 设置全局配置中用于 API 验证的对话模型名
  */
-export const setGlobalVerifyChatModelName = (modelName: string): void => {
+export const setGlobalVerifyChatModelName = async (modelName: string): Promise<void> => {
   const normalized = normalizeChatModelId(modelName)?.trim() || '';
   const state = loadRegistry();
   state.globalVerifyChatModelName = normalized || undefined;
-  saveRegistry(state);
+  await saveRegistry(state);
 };
 
 /**
@@ -1056,9 +1098,11 @@ export const getUserAspectRatio = (): AspectRatio => {
 export const setUserAspectRatio = (ratio: AspectRatio): void => {
   const activeModel = getActiveImageModel();
   if (activeModel) {
-    updateModel(activeModel.id, {
-      params: { ...activeModel.params, defaultAspectRatio: ratio }
-    } as any);
+    void updateModel(activeModel.id, {
+      params: { ...activeModel.params, defaultAspectRatio: ratio },
+    } as Partial<ModelDefinition>).catch((error) => {
+      console.error('同步图片比例配置失败:', error);
+    });
   }
 };
 

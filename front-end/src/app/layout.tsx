@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Director",
+  title: "Scenara",
   description: "AI 漫剧生成平台",
 };
 

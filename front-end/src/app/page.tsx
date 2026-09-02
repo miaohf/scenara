@@ -58,7 +58,7 @@ function DashboardContent() {
     <div className="mx-auto max-w-4xl space-y-6 p-6">
       <header className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">AI Director</h1>
+          <h1 className="text-2xl font-semibold">Scenara</h1>
           <p className="text-sm text-muted-foreground">欢迎，{user?.username}</p>
         </div>
         <div className="flex gap-2">

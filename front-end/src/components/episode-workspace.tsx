@@ -97,16 +97,22 @@ export default function EpisodeWorkspace() {
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
   const [showSaveStatus, setShowSaveStatus] = useState(false);
   const [showModelConfig, setShowModelConfig] = useState(false);
+  const [episodeLoadError, setEpisodeLoadError] = useState<string | null>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hideStatusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!episodeId) return;
+    setEpisodeLoadError(null);
     loadEpisode(episodeId)
       .then((ep) => setCurrentEpisode(ep))
-      .catch(() => router.push("/"));
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "加载剧集失败";
+        console.error("Failed to load episode:", error);
+        setEpisodeLoadError(message);
+      });
     return () => setCurrentEpisode(null);
-  }, [episodeId, router, setCurrentEpisode]);
+  }, [episodeId, setCurrentEpisode]);
 
   useEffect(() => {
     if (currentEpisode) {
@@ -134,6 +140,7 @@ export default function EpisodeWorkspace() {
         setSaveStatus("saved");
       } catch (e) {
         console.error("Auto-save failed", e);
+        setSaveStatus("unsaved");
       }
     }, 1000);
     return () => {
@@ -224,6 +231,36 @@ export default function EpisodeWorkspace() {
     if (currentEpisode) await saveEpisode(currentEpisode);
     router.push(`/project/${currentEpisode?.projectId || ""}`);
   };
+
+  if (episodeLoadError) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-4 p-6 text-center">
+        <p className="text-lg text-[var(--text-primary)]">无法打开该剧集</p>
+        <p className="max-w-md text-sm text-[var(--text-muted)]">{episodeLoadError}</p>
+        <p className="max-w-md text-xs text-[var(--text-muted)]">
+          请确认：1) 后端已启动（127.0.0.1:8000）；2) 已登录创建该项目的账号；3) 不要混用 demo 账号与正式账号。
+        </p>
+        <div className="flex gap-3">
+          <button
+            type="button"
+            className="rounded-md border border-[var(--border-primary)] px-4 py-2 text-sm"
+            onClick={() => router.push("/")}
+          >
+            返回项目列表
+          </button>
+          {currentEpisode?.projectId && (
+            <button
+              type="button"
+              className="rounded-md bg-[var(--accent-primary)] px-4 py-2 text-sm text-white"
+              onClick={() => router.push(`/project/${currentEpisode.projectId}`)}
+            >
+              返回项目页
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (!currentEpisode) {
     return (

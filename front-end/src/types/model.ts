@@ -219,6 +219,8 @@ export interface ChatOptions {
  */
 export interface ImageGenerateOptions {
   prompt: string;
+  /** ComfyUI 负面提示词，写入工作流 negative 节点而非拼进 positive */
+  negativePrompt?: string;
   referenceImages?: string[];
   aspectRatio?: AspectRatio;
   /** 连贯性参考图（如首帧），ComfyUI img2img 时优先作为底图 */

@@ -37,8 +37,16 @@ const typeDescriptions: Record<ModelType, string> = {
 };
 
 const getModelDisplayUrl = (model: ModelDefinition, providerBaseUrl: string): string => {
-  const apiBase = resolveModelApiBaseUrl(model) || providerBaseUrl;
-  return resolveEndpointUrl(apiBase, model.endpoint || '');
+  const apiBase = (resolveModelApiBaseUrl(model) || providerBaseUrl || '').trim();
+  const endpoint = String(model.endpoint || '').trim();
+  if (!apiBase) {
+    return endpoint || '未配置 API Base URL';
+  }
+  try {
+    return resolveEndpointUrl(apiBase, endpoint);
+  } catch {
+    return '未配置 API Base URL';
+  }
 };
 
 const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
@@ -60,24 +68,32 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
     setActiveModelId(activeConfig[type]);
   };
 
-  const handleSetActiveModel = (modelId: string) => {
-    if (setActiveModel(type, modelId)) {
-      setActiveModelId(modelId);
-      const model = models.find(m => m.id === modelId);
-      const provider = model ? getProviderById(model.providerId) : null;
-      showAlert(
-        `已切换到 ${model?.name}${provider ? ` (${provider.name})` : ''}`, 
-        { type: 'success' }
-      );
-      onRefresh();
-    } else {
-      showAlert('设置激活模型失败，请确保模型已启用', { type: 'error' });
+  const handleSetActiveModel = async (modelId: string) => {
+    try {
+      if (await setActiveModel(type, modelId)) {
+        setActiveModelId(modelId);
+        const model = models.find(m => m.id === modelId);
+        const provider = model ? getProviderById(model.providerId) : null;
+        showAlert(
+          `已切换到 ${model?.name}${provider ? ` (${provider.name})` : ''}`,
+          { type: 'success' },
+        );
+        onRefresh();
+      } else {
+        showAlert('设置激活模型失败，请确保模型已启用', { type: 'error' });
+      }
+    } catch (error) {
+      showAlert(error instanceof Error ? error.message : '同步模型配置失败', { type: 'error' });
     }
   };
 
-  const handleUpdateModel = (modelId: string, updates: Partial<ModelDefinition>) => {
-    if (updateModel(modelId, updates)) {
-      loadModels();
+  const handleUpdateModel = async (modelId: string, updates: Partial<ModelDefinition>) => {
+    try {
+      if (await updateModel(modelId, updates)) {
+        loadModels();
+      }
+    } catch (error) {
+      showAlert(error instanceof Error ? error.message : '同步模型配置失败', { type: 'error' });
     }
   };
 
@@ -85,19 +101,23 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
     showAlert('确定要删除这个模型吗？', {
       type: 'warning',
       showCancel: true,
-      onConfirm: () => {
-        if (removeModel(modelId)) {
-          loadModels();
-          onRefresh();
-          showAlert('模型已删除', { type: 'success' });
+      onConfirm: async () => {
+        try {
+          if (await removeModel(modelId)) {
+            loadModels();
+            onRefresh();
+            showAlert('模型已删除', { type: 'success' });
+          }
+        } catch (error) {
+          showAlert(error instanceof Error ? error.message : '同步模型配置失败', { type: 'error' });
         }
-      }
+      },
     });
   };
 
-  const handleAddModel = (model: Omit<ModelDefinition, 'id' | 'isBuiltIn'>) => {
+  const handleAddModel = async (model: Omit<ModelDefinition, 'id' | 'isBuiltIn'>) => {
     try {
-      registerModel(model);
+      await registerModel(model);
       setIsAddingModel(false);
       loadModels();
       onRefresh();

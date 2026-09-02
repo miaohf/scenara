@@ -1,6 +1,5 @@
 import type { Episode, Series, SeriesProject } from "../types";
-
-const API_BASE = "/api";
+import { apiFetch } from "@/lib/api-client";
 
 const EPISODE_TOP_LEVEL_KEYS = new Set([
   "id",
@@ -12,28 +11,6 @@ const EPISODE_TOP_LEVEL_KEYS = new Set([
   "createdAt",
   "lastModified",
 ]);
-
-function getAccessToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("bb_access_token");
-}
-
-async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers);
-  if (!headers.has("Content-Type") && init.body) {
-    headers.set("Content-Type", "application/json");
-  }
-  const token = getAccessToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-
-  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || res.statusText);
-  }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
-}
 
 interface ApiProject {
   id: string;

@@ -152,7 +152,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     const status = error?.status;
     const rawMessage = typeof error?.message === 'string' ? error.message : '';
     const moderationMessage = toFriendlyModerationMessage(rawMessage, {
-      includeUnknownReasonCode: import.meta.env.DEV,
+      includeUnknownReasonCode: process.env.NODE_ENV === 'development',
     });
 
     let normalizedMessage = moderationMessage || rawMessage;
@@ -166,7 +166,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       }
     }
 
-    if (!import.meta.env.DEV) {
+    if (process.env.NODE_ENV !== 'development') {
       normalizedMessage = normalizedMessage.replace(/（接口信息：.*?）/g, '');
     }
 

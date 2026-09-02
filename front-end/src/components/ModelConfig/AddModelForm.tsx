@@ -30,7 +30,7 @@ import { useAlert } from '../GlobalAlert';
 
 interface AddModelFormProps {
   type: ModelType;
-  onSave: (model: Omit<ModelDefinition, 'id' | 'isBuiltIn'>) => void;
+  onSave: (model: Omit<ModelDefinition, 'id' | 'isBuiltIn'>) => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -83,7 +83,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
     }
   }, [type, imageApiFormat]);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const resolvedApiModel = (type === 'image' && imageApiFormat === 'comfyui') || (type === 'video' && videoMode === 'comfyui')
       ? (apiModel.trim() || workflowName.trim())
       : apiModel.trim();
@@ -103,7 +103,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
       }
       const sanitizedBaseUrl = customProviderBaseUrl.trim().replace(/\/+$/, '');
       // 创建新提供商（包含 API Key）
-      const newProvider = addProvider({
+      const newProvider = await addProvider({
         name: customProviderName.trim(),
         baseUrl: sanitizedBaseUrl,
         apiKey: customProviderApiKey.trim() || undefined,
@@ -197,9 +197,13 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
       apiKey: providerMode === 'existing' ? (apiKey.trim() || undefined) : undefined,
       isEnabled: true,
       params,
-    } as any;
+    } as Omit<ModelDefinition, 'id' | 'isBuiltIn'>;
 
-    onSave(model);
+    try {
+      await onSave(model);
+    } catch (error) {
+      showAlert(error instanceof Error ? error.message : '添加模型失败', { type: 'error' });
+    }
   };
 
   return (

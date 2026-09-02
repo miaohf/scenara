@@ -348,12 +348,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           shapeReferenceImage = char.shapeReferenceImage;
           if (shapeReferenceImage) {
             characterReferenceImages.push(shapeReferenceImage);
-          } else if (char.turnaround?.status === 'completed' && char.turnaround.imageUrl && !characterReferenceImages.includes(char.turnaround.imageUrl)) {
-            // Do not implicitly reuse previously generated character image.
-            // Regeneration should follow the current prompt unless user explicitly sets a shape reference.
-            characterReferenceImages.push(char.turnaround.imageUrl);
-            characterHasTurnaroundReference = true;
           }
+          // 定妆生图默认纯文生图，遵循 visualPrompt；仅 shapeReferenceImage 显式上传时走 img2img
 
           if (char.visualPrompt) {
             prompt = char.visualPrompt;

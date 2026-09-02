@@ -1,31 +1,6 @@
 import type { ChatOptions, ImageGenerateOptions, VideoGenerateOptions } from "../types/model";
 import type { ChatModelDefinition } from "../types/model";
-
-const API_BASE = "/api";
-
-function getAccessToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("bb_access_token");
-}
-
-async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers);
-  headers.set("Content-Type", "application/json");
-  const token = getAccessToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const err = await res.json();
-      detail = err.detail || detail;
-    } catch {
-      // ignore
-    }
-    throw new Error(typeof detail === "string" ? detail : "AI 请求失败");
-  }
-  return (await res.json()) as T;
-}
+import { apiFetch } from "@/lib/api-client";
 
 export const isApiAiMode = (): boolean => {
   if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_USE_API_AI === "true") {
@@ -88,6 +63,7 @@ export async function apiCallComfyImage(
       method: "POST",
       body: JSON.stringify({
         prompt: options.prompt,
+        negative_prompt: options.negativePrompt,
         model_id: options.modelId,
         aspect_ratio: options.aspectRatio || "16:9",
         continuity_reference_image: options.continuityReferenceImage,

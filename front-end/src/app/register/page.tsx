@@ -41,7 +41,7 @@ export default function RegisterPage() {
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>注册</CardTitle>
-          <CardDescription>创建 AI Director 账号</CardDescription>
+          <CardDescription>创建 Scenara 账号</CardDescription>
         </CardHeader>
         <form onSubmit={handleSubmit}>
           <CardContent className="space-y-4">

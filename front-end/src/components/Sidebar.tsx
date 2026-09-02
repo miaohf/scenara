@@ -29,7 +29,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentStage, setStage, onExit, proje
         <div className="flex items-center gap-3 mb-6">
           <img src="/logo.png" alt="Logo" className="w-8 h-8 flex-shrink-0" />
           <div className="overflow-hidden">
-            <h1 className="text-sm font-bold text-[var(--text-primary)] tracking-wider">AI Director</h1>
+            <h1 className="text-sm font-bold text-[var(--text-primary)] tracking-wider">Scenara</h1>
           </div>
         </div>
         <button

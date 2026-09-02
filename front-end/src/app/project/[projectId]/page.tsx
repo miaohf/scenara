@@ -13,18 +13,46 @@ export default function ProjectOverviewPage() {
   const projectId = params.projectId;
   const [project, setProject] = useState<Project | null>(null);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
     if (!projectId) return;
+    setLoading(true);
+    setLoadError("");
     void (async () => {
-      const list = await projectApi.list();
-      setProject(list.find((p) => p.id === projectId) || null);
-      setEpisodes(await projectApi.listEpisodes(projectId));
+      try {
+        const list = await projectApi.list();
+        setProject(list.find((p) => p.id === projectId) || null);
+        setEpisodes(await projectApi.listEpisodes(projectId));
+      } catch (err) {
+        setLoadError(err instanceof Error ? err.message : "加载失败");
+        setProject(null);
+      } finally {
+        setLoading(false);
+      }
     })();
   }, [projectId]);
 
-  if (!project) {
+  if (loading) {
     return <div className="p-6 text-muted-foreground">加载中...</div>;
+  }
+
+  if (loadError || !project) {
+    return (
+      <div className="mx-auto max-w-lg space-y-4 p-6">
+        <Link href="/" className="text-sm text-muted-foreground hover:underline">
+          ← 返回列表
+        </Link>
+        <h1 className="text-xl font-semibold">项目无法访问</h1>
+        <p className="text-sm text-muted-foreground">
+          {loadError || "项目不存在，或当前登录账号无权访问。"}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          该项目 ID：<span className="font-mono">{projectId}</span>
+        </p>
+      </div>
+    );
   }
 
   return (

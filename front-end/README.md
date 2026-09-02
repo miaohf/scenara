@@ -1,4 +1,4 @@
-# AI Director — Front-end (Next.js + shadcn)
+# Scenara — Front-end (Next.js + shadcn)
 
 ## 启动
 
@@ -28,7 +28,12 @@ npm run dev
 API_URL=http://127.0.0.1:8000
 NEXT_PUBLIC_USE_API_STORAGE=true
 NEXT_PUBLIC_USE_API_AI=true
+
+# 通过局域网 IP（如 http://192.168.x.x:3000）访问时必填
+ALLOWED_DEV_ORIGINS=192.168.1.178
 ```
+
+`/api/*` 由 Next.js 代理到 FastAPI，浏览器侧始终请求同源 `/api`，无需把后端地址改成局域网 IP。
 
 ## 页面
 

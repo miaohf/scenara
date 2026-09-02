@@ -89,6 +89,7 @@ async def ai_comfyui_image(
             registry,
             {
                 "prompt": body.prompt,
+                "negativePrompt": body.negative_prompt,
                 "modelId": body.model_id,
                 "aspectRatio": body.aspect_ratio,
                 "continuityReferenceImage": body.continuity_reference_image,

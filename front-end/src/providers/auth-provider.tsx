@@ -38,8 +38,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const me = await authApi.me();
       setUser(me);
-      const { hydrateRegistryFromServer } = await import("@/services/modelRegistry");
-      await hydrateRegistryFromServer();
+      void import("@/services/modelRegistry").then(({ hydrateRegistryFromServer }) =>
+        hydrateRegistryFromServer(),
+      );
     } catch {
       clearTokens();
       setUser(null);
@@ -47,7 +48,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    refreshUser().finally(() => setLoading(false));
+    let cancelled = false;
+
+    const finish = () => {
+      if (!cancelled) setLoading(false);
+    };
+
+    if (!isAuthenticated()) {
+      setUser(null);
+      finish();
+      return;
+    }
+
+    void refreshUser().finally(finish);
+
+    const timer = window.setTimeout(finish, 8000);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [refreshUser]);
 
   const login = useCallback(
@@ -91,12 +111,36 @@ export function useAuth() {
 export function RequireAuth({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
   const router = useRouter();
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+
+    if (!isAuthenticated()) {
+      router.replace("/login");
+      return;
+    }
+
     if (!loading && !user) {
       router.replace("/login");
     }
-  }, [loading, user, router]);
+  }, [mounted, loading, user, router]);
+
+  if (!mounted) {
+    return (
+      <div className="flex min-h-screen items-center justify-center text-muted-foreground">
+        加载中...
+      </div>
+    );
+  }
+
+  if (!isAuthenticated()) {
+    return null;
+  }
 
   if (loading) {
     return (

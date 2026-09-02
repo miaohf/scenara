@@ -288,6 +288,7 @@ const patchComfyWorkflow = (
   workflow: any,
   options: {
     prompt: string;
+    negativePrompt?: string;
     width: number;
     height: number;
     seed: number;
@@ -309,19 +310,38 @@ const patchComfyWorkflow = (
     if (!inputs || typeof inputs !== 'object') return;
     const classType = String(node.class_type || '').toLowerCase();
     const title = String(node._meta?.title || '').toLowerCase();
+    const isNegative = classType.includes('clip') && title.includes('negative');
 
-    if ('text' in inputs && typeof inputs.text === 'string' && classType.includes('clip')) {
+    if (
+      title === 'prompt' &&
+      classType === 'primitivestringmultiline' &&
+      typeof inputs.value === 'string'
+    ) {
+      inputs.value = options.prompt;
+      promptPatched = true;
+    }
+
+    if (!isNegative && 'text' in inputs && typeof inputs.text === 'string' && classType.includes('clip')) {
       inputs.text = options.prompt;
       promptPatched = true;
     }
-    if ('prompt' in inputs && typeof inputs.prompt === 'string') {
+    if (!isNegative && 'prompt' in inputs && typeof inputs.prompt === 'string') {
       inputs.prompt = options.prompt;
       promptPatched = true;
     }
-    if ('positive' in inputs && typeof inputs.positive === 'string') {
+    if (!isNegative && 'positive' in inputs && typeof inputs.positive === 'string') {
       inputs.positive = options.prompt;
       promptPatched = true;
     }
+
+    if (options.negativePrompt) {
+      if (isNegative && 'text' in inputs && typeof inputs.text === 'string') {
+        inputs.text = options.negativePrompt;
+      } else if (title.includes('negative') && 'text' in inputs && typeof inputs.text === 'string') {
+        inputs.text = options.negativePrompt;
+      }
+    }
+
     if ('width' in inputs && typeof inputs.width === 'number') inputs.width = options.width;
     if ('height' in inputs && typeof inputs.height === 'number') inputs.height = options.height;
     if ('seed' in inputs && typeof inputs.seed === 'number') inputs.seed = options.seed;
@@ -365,6 +385,7 @@ const callComfyImageApi = async (
   workflowName: string,
   options: {
     prompt: string;
+    negativePrompt?: string;
     aspectRatio: AspectRatio;
     steps: number;
     referenceImages?: string[];
@@ -426,6 +447,7 @@ const callComfyImageApi = async (
 
     const prompt = patchComfyWorkflow(workflow, {
       prompt: options.prompt,
+      negativePrompt: options.negativePrompt,
       width,
       height,
       seed,
@@ -515,6 +537,7 @@ export const callImageApi = async (
     return apiCallComfyImage({
       ...options,
       prompt: promptLimitResult.text,
+      negativePrompt: options.negativePrompt,
       modelId: activeModel.id,
       aspectRatio,
       steps: activeModel.params.steps || 20,
@@ -544,6 +567,7 @@ export const callImageApi = async (
     const workflowName = activeModel.params.workflowName || apiModel;
     return callComfyImageApi(apiBase, workflowName, {
       prompt: promptLimitResult.text,
+      negativePrompt: options.negativePrompt,
       aspectRatio,
       steps: activeModel.params.steps || 20,
       referenceImages: options.referenceImages,

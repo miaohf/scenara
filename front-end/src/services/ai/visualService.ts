@@ -536,6 +536,50 @@ const OPENAI_IMAGE_QUALITY = 'medium';
 const OPENAI_IMAGE_OUTPUT_FORMAT = 'png';
 const OPENAI_IMAGE_OUTPUT_COMPRESSION = 100;
 
+const CJK_CHAR_RE = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g;
+
+const countCjkChars = (text: string): number => (text.match(CJK_CHAR_RE) || []).length;
+
+/** Flux/T5 对中文提示词遵循极差，需转英文后再送 ComfyUI */
+const needsComfyEnglishPrompt = (text: string): boolean => {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  const cjk = countCjkChars(trimmed);
+  const total = trimmed.replace(/\s/g, '').length;
+  return cjk > 0 && (total === 0 || cjk / total > 0.12);
+};
+
+const translatePromptForComfyUi = async (prompt: string): Promise<string> => {
+  if (!needsComfyEnglishPrompt(prompt)) return prompt;
+
+  const instruction = `Translate the following text-to-image prompt into English for Flux diffusion models.
+Preserve ALL visual details: age, gender, ethnicity, body type, face, hair, clothing, pose, expression, lighting, camera, and art-style keywords.
+Output ONLY one English paragraph using comma-separated phrases. No markdown, no explanation.
+
+Prompt:
+${prompt}`;
+
+  try {
+    const translated = (await chatCompletion(
+      instruction,
+      getActiveChatModelName(),
+      0.2,
+      1024,
+      undefined,
+      90000
+    )).trim();
+    if (!translated || countCjkChars(translated) >= countCjkChars(prompt)) {
+      console.warn('[ComfyUI] Prompt translation did not produce usable English, keeping original');
+      return prompt;
+    }
+    console.info('[ComfyUI] Translated prompt to English for Flux encoder');
+    return translated;
+  } catch (error) {
+    console.warn('[ComfyUI] Prompt translation failed, keeping original:', error);
+    return prompt;
+  }
+};
+
 const normalizeReferenceImageValue = (input?: string): string => String(input || '').trim();
 
 const buildBoundedReferenceImages = (
@@ -825,6 +869,8 @@ export const generateImage = async (
     continuityReferenceImage?: string;
     characterReferenceImage?: string;
     referencePackType?: ReferencePackType;
+    /** ComfyUI 九宫格等场景需纯文生图，禁止 img2img 锁定单张定妆图 */
+    skipComfyImg2Img?: boolean;
   }
 ): Promise<string> => {
   const startTime = Date.now();
@@ -852,6 +898,60 @@ export const generateImage = async (
 
   try {
     const normalizedUserPrompt = normalizePromptWhitespace(prompt);
+
+    // ComfyUI：直接使用角色/场景提示词，不走 Gemini 多模态参考图文案与 LLM 压缩
+    if (imageApiFormat === 'comfyui') {
+      const compactNegativePrompt = compactNegativePromptTerms(negativePrompt.trim());
+      const skipImg2Img = options?.skipComfyImg2Img === true;
+      const characterRef = skipImg2Img
+        ? undefined
+        : options?.characterReferenceImage ??
+          (referencePackType === 'character' || referencePackType === 'shape'
+            ? effectiveReferenceImages[0]
+            : undefined);
+
+      let comfyPrompt = normalizedUserPrompt;
+      if (continuityReferenceImage) {
+        comfyPrompt += '\n\n[ComfyUI end frame] Keep the same character identity, outfit, and scene from the reference image, but show a clearly different pose, camera angle, and action moment for the END frame.';
+      } else if (characterRef) {
+        comfyPrompt += '\n\n[ComfyUI character anchor] Match the reference image character face, hairstyle, age, body proportions and outfit. Apply the shot description for pose, camera and environment.';
+      }
+
+      comfyPrompt = await translatePromptForComfyUi(comfyPrompt);
+
+      const promptLimitResult = compactPromptToMaxChars(comfyPrompt, MAX_IMAGE_PROMPT_CHARS);
+      if (promptLimitResult.wasTruncated) {
+        console.warn(
+          `[ImagePrompt] ComfyUI prompt exceeded ${MAX_IMAGE_PROMPT_CHARS} chars ` +
+          `(${promptLimitResult.originalLength}). Truncated.`
+        );
+      }
+
+      const imageUrl = await callImageApi({
+        prompt: promptLimitResult.text,
+        negativePrompt: compactNegativePrompt || undefined,
+        aspectRatio,
+        referenceImages: effectiveReferenceImages,
+        continuityReferenceImage,
+        characterReferenceImage: characterRef,
+        img2imgDenoise: continuityReferenceImage
+          ? 0.65
+          : characterRef
+            ? 0.78
+            : undefined,
+      }, activeImageModel as any);
+      addRenderLogWithTokens({
+        type: 'keyframe',
+        resourceId: 'image-' + Date.now(),
+        resourceName: prompt.substring(0, 50) + '...',
+        status: 'success',
+        model: imageModelId,
+        prompt,
+        duration: Date.now() - startTime
+      });
+      return imageUrl;
+    }
+
     let finalPrompt = normalizedUserPrompt;
     if (hasAnyReference) {
       if (isVariation) {
@@ -1019,38 +1119,6 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
       );
     }
     finalPrompt = promptLimitResult.text;
-
-    if (imageApiFormat === 'comfyui') {
-      const characterRef = options?.characterReferenceImage;
-      let comfyPrompt = finalPrompt;
-      if (continuityReferenceImage) {
-        comfyPrompt += '\n\n[ComfyUI end frame] Keep the same character identity, outfit, and scene from the reference image, but show a clearly different pose, camera angle, and action moment for the END frame.';
-      } else if (characterRef) {
-        comfyPrompt += '\n\n[ComfyUI character anchor] Match the reference image character face, hairstyle, age, body proportions and outfit. Apply the shot description for pose, camera and environment.';
-      }
-      const imageUrl = await callImageApi({
-        prompt: comfyPrompt,
-        aspectRatio,
-        referenceImages: effectiveReferenceImages,
-        continuityReferenceImage,
-        characterReferenceImage: characterRef,
-        img2imgDenoise: continuityReferenceImage
-          ? 0.65
-          : characterRef
-            ? 0.78
-            : undefined,
-      }, activeImageModel as any);
-      addRenderLogWithTokens({
-        type: 'keyframe',
-        resourceId: 'image-' + Date.now(),
-        resourceName: prompt.substring(0, 50) + '...',
-        status: 'success',
-        model: imageModelId,
-        prompt,
-        duration: Date.now() - startTime
-      });
-      return imageUrl;
-    }
 
     const openAiReferenceSources = [...effectiveReferenceImages];
 
@@ -1439,10 +1507,17 @@ export const generateCharacterTurnaroundImage = async (
   console.log(`🖼️ generateCharacterTurnaroundImage - 为角色 ${character.name} 生成九宫格造型图片`);
   logScriptProgress(`正在为角色「${character.name}」生成九宫格造型图片...`);
 
+  const activeImageModel = getActiveModel('image');
+  const imageApiFormat = getImageApiFormat(activeImageModel as any);
+  const isComfyUi = imageApiFormat === 'comfyui';
   const stylePrompt = getStylePrompt(visualStyle);
-  const characterSummary = character.visualPrompt || `${character.gender}, ${character.age}, ${character.personality}`;
 
-  // 构建九宫格图片生成提示词
+  let characterSummary =
+    character.visualPrompt || `${character.gender}, ${character.age}, ${character.personality}`;
+  if (isComfyUi) {
+    characterSummary = await translatePromptForComfyUi(characterSummary);
+  }
+
   const panelDescriptions = panels.map((p, idx) => {
     const position = CHARACTER_TURNAROUND_LAYOUT.positionLabels[idx];
     return `Panel ${idx + 1} (${position}): [${p.viewAngle} / ${p.shotSize}] - ${p.description}`;
@@ -1469,16 +1544,17 @@ Constraints:
 
 Top priority: the character must look like the same person in all 9 panels.`;
 
-  // 收集参考图片
+  // ComfyUI/Flux 不支持 img2img 生成九宫格；Gemini 等多模态模型可用定妆图增强一致性
   const referenceImages: string[] = [];
-  if (referenceImage) {
-    referenceImages.push(referenceImage);
-  } else if (character.referenceImage) {
-    referenceImages.push(character.referenceImage);
+  if (!isComfyUi) {
+    if (referenceImage) {
+      referenceImages.push(referenceImage);
+    } else if (character.referenceImage) {
+      referenceImages.push(character.referenceImage);
+    }
   }
 
   try {
-    // 优先使用 1:1 生成九宫格；若当前模型不支持则自动回退到支持的比例。
     const turnaroundAspectRatio = resolveTurnaroundAspectRatio();
     const imageUrl = await generateImage(
       prompt,
@@ -1486,8 +1562,11 @@ Top priority: the character must look like the same person in all 9 panels.`;
       turnaroundAspectRatio,
       false,
       false,
-      '',
-      { referencePackType: 'character' }
+      getNegativePrompt(visualStyle),
+      {
+        referencePackType: 'character',
+        skipComfyImg2Img: isComfyUi,
+      }
     );
     console.log(`✅ 角色 ${character.name} 九宫格造型图片生成完成`);
     logScriptProgress(`角色「${character.name}」九宫格造型图片生成完成`);

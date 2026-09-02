@@ -38,6 +38,7 @@ class ImageResponse(BaseModel):
 
 class ComfyImageRequest(BaseModel):
     prompt: str
+    negative_prompt: str | None = None
     model_id: str | None = None
     aspect_ratio: str = "16:9"
     continuity_reference_image: str | None = None

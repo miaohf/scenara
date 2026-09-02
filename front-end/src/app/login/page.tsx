@@ -40,7 +40,7 @@ export default function LoginPage() {
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>登录</CardTitle>
-          <CardDescription>AI Director</CardDescription>
+          <CardDescription>Scenara</CardDescription>
         </CardHeader>
         <form onSubmit={handleSubmit}>
           <CardContent className="space-y-4">

@@ -1,31 +1,32 @@
-# AI Director — Backend (FastAPI)
+# Scenara — Backend (FastAPI)
 
 ## 技术栈
 
-- **FastAPI** + **SQLite**（本地文件 `data/bigbanana.db`）
+- **FastAPI** + **SQLite**（本地文件 `data/app.db`）
 - **MinIO** / **Redis**：连接已有实例，通过 `.env` 配置
 
 ## 安装
 
+需安装 [uv](https://docs.astral.sh/uv/)（Python 3.14+，见 `.python-version`）。
+
 ```bash
 cd back-end
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+uv sync
 cp -n .env.example .env   # 配置 MinIO / Redis / DEFAULT_API_KEY
 ```
 
 ## 启动
 
 ```bash
-cd back-end && source .venv/bin/activate
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+cd back-end
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 **Celery Worker（视频等长任务，需 Redis）：**
 
 ```bash
-cd back-end && source .venv/bin/activate
-celery -A app.workers.celery_app.celery_app worker --loglevel=info
+cd back-end
+uv run celery -A app.workers.celery_app.celery_app worker --loglevel=info
 ```
 
 API 文档：http://localhost:8000/docs
@@ -36,7 +37,7 @@ API 文档：http://localhost:8000/docs
 
 | 变量 | 说明 |
 |------|------|
-| `DATABASE_URL` | 默认 `sqlite+aiosqlite:///./data/bigbanana.db` |
+| `DATABASE_URL` | 默认 `sqlite+aiosqlite:///./data/app.db` |
 | `S3_ENDPOINT` | 已有 MinIO 地址，如 `http://127.0.0.1:9000` |
 | `REDIS_URL` | 已有 Redis 地址，如 `redis://127.0.0.1:6379/0` |
 
