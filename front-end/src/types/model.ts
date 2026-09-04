@@ -38,7 +38,7 @@ export type VideoMode = 'sync' | 'async' | 'comfyui';
 /**
  * 音频输出格式
  */
-export type AudioOutputFormat = 'wav' | 'mp3';
+export type AudioOutputFormat = 'wav' | 'mp3' | 'opus';
 
 // ============================================
 // 模型参数配置
@@ -64,6 +64,10 @@ export interface ImageModelParams {
   apiFormat?: ImageApiFormat;
   workflowName?: string;
   steps?: number;
+  /** 造型九宫格专用 ComfyUI 工作流（基于定妆参考图）；未填则回退 workflowName */
+  turnaroundWorkflowName?: string;
+  /** 造型九宫格 steps；未填则回退 steps */
+  turnaroundSteps?: number;
 }
 
 /**
@@ -87,6 +91,9 @@ export interface VideoModelParams {
 export interface AudioModelParams {
   defaultVoice: string;                   // 默认音色
   outputFormat: AudioOutputFormat;        // 输出音频格式
+  /** speech 接口是否直接使用原文（IndexTTS 等），否则包裹旁白/对白提示词 */
+  speechInputMode?: 'plain' | 'prompt';
+  timeoutMs?: number;
 }
 
 /**
@@ -231,6 +238,10 @@ export interface ImageGenerateOptions {
   img2imgDenoise?: number;
   /** 可选固定 seed，便于同一镜头多次生成保持风格接近 */
   seed?: number;
+  /** 覆盖模型默认 workflowName（如造型九宫格专用工作流） */
+  workflowName?: string;
+  /** 覆盖模型默认 steps */
+  steps?: number;
 }
 
 /**
@@ -283,8 +294,10 @@ export const DEFAULT_IMAGE_PARAMS_COMFYUI: ImageModelParams = {
   defaultAspectRatio: '16:9',
   supportedAspectRatios: ['16:9', '9:16', '1:1'],
   apiFormat: 'comfyui',
-  workflowName: 'flux-dev-fp8',
-  steps: 20,
+  workflowName: 'image_qwen_Image_2512',
+  steps: 50,
+  turnaroundWorkflowName: 'qwen_image_edit_2511_fp8_character_turnaround',
+  turnaroundSteps: 4,
 };
 
 /**
@@ -374,10 +387,31 @@ export const DEFAULT_AUDIO_PARAMS: AudioModelParams = {
 // ============================================
 
 /**
+ * 本地推理提供商（无需 API Key）
+ */
+export const LOCAL_PROVIDER_IDS = ['comfyui-local', 'indextts-local'] as const;
+
+export type LocalProviderId = (typeof LOCAL_PROVIDER_IDS)[number];
+
+export const isLocalProviderId = (providerId?: string | null): boolean =>
+  !!providerId && (LOCAL_PROVIDER_IDS as readonly string[]).includes(providerId);
+
+/**
  * 内置对话模型列表
  */
 export const BUILTIN_CHAT_MODELS: ChatModelDefinition[] = [
-   {
+  {
+    id: 'qwen3-8-27b-fp8-vllm',
+    apiModel: 'Qwen/Qwen3.8-27B-FP8',
+    name: 'Qwen3.8-27B-FP8 (vLLM 本地)',
+    type: 'chat',
+    providerId: 'vllm-local',
+    description: 'vLLM OpenAI 兼容接口，支持长上下文与推理；参考 OpenClaw vllm 配置',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: { ...DEFAULT_CHAT_PARAMS, temperature: 0.7, maxTokens: 32768 },
+  },
+  {
     id: 'gpt-5.2',
     name: 'GPT-5.2',
     type: 'chat',
@@ -512,14 +546,38 @@ export const BUILTIN_IMAGE_MODELS: ImageModelDefinition[] = [
   },
   {
     id: 'comfyui-flux-dev-fp8',
-    apiModel: 'flux-dev-fp8',
-    name: 'ComfyUI Flux Dev (本地)',
+    apiModel: 'qwen-image-2512',
+    name: 'ComfyUI Qwen Image 2512 (本地)',
     type: 'image',
     providerId: 'comfyui-local',
-    description: '本地 ComfyUI：首帧/尾帧通过 flux-dev-fp8-img2img 使用角色参考图与首尾连贯；纯文生图无法保证跨镜头角色一致。进阶可换 IP-Adapter Flux 工作流。',
+    description:
+      '默认定妆：Qwen-Image-2512 全量步数（默认关 Lightning）；造型九宫格走 Qwen Edit turnaround。工作流读取 back-end/workflows/<名称>.json。',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      ...DEFAULT_IMAGE_PARAMS_COMFYUI,
+      workflowName: 'image_qwen_Image_2512',
+      steps: 50,
+      turnaroundWorkflowName: 'qwen_image_edit_2511_fp8_character_turnaround',
+      turnaroundSteps: 4,
+    },
+  },
+  {
+    id: 'comfyui-flux-dev-fp8-legacy',
+    apiModel: 'flux1-dev-fp8',
+    name: 'ComfyUI Flux Dev1 FP8 (本地·备用)',
+    type: 'image',
+    providerId: 'comfyui-local',
+    description: 'Flux1-Dev FP8 文生图；英文短提示更稳，与 Qwen 中文长描述定妆风格差异较大。',
     isBuiltIn: true,
     isEnabled: false,
-    params: { ...DEFAULT_IMAGE_PARAMS_COMFYUI, workflowName: 'flux-dev-fp8' },
+    params: {
+      ...DEFAULT_IMAGE_PARAMS_COMFYUI,
+      workflowName: 'flux_dev1_fp8_text_to_image',
+      steps: 20,
+      turnaroundWorkflowName: 'qwen_image_edit_2511_fp8_character_turnaround',
+      turnaroundSteps: 4,
+    },
   },
 ];
 
@@ -586,6 +644,47 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
     params: { ...DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE_2_0 },
   },
   {
+    id: 'comfyui-minimax-h3-flft2v',
+    apiModel: 'video_minimax_h3_flft2v',
+    name: 'ComfyUI MiniMax H3 FLF2V (本地)',
+    type: 'video',
+    providerId: 'comfyui-local',
+    description: '本地 MiniMax H3 首尾帧图生视频，原生立体声音频；768p 基线，24fps，prompt 内描述对话/音效',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      ...DEFAULT_VIDEO_PARAMS_COMFYUI,
+      workflowName: 'video_minimax_h3_flft2v',
+      defaultDuration: 5,
+      supportedDurations: [5, 10, 15],
+      supportedAspectRatios: ['16:9', '9:16'],
+      defaultAspectRatio: '16:9',
+      supportsEndFrame: true,
+      supportsAudio: false,
+      steps: 20,
+    },
+  },
+  {
+    id: 'comfyui-ltx2-5-flf2v',
+    apiModel: 'video_ltx2_5_flf2v',
+    name: 'ComfyUI LTX 2.5 FLF2V (本地)',
+    type: 'video',
+    providerId: 'comfyui-local',
+    description: '本地 ComfyUI LTX 2.5 首尾帧图生视频，内置音视频同步；24fps，支持首帧/尾帧',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      ...DEFAULT_VIDEO_PARAMS_COMFYUI,
+      workflowName: 'video_ltx2_5_flf2v',
+      defaultDuration: 5,
+      supportedDurations: [5, 10, 15],
+      supportedAspectRatios: ['16:9', '9:16'],
+      defaultAspectRatio: '16:9',
+      supportsEndFrame: true,
+      supportsAudio: false,
+    },
+  },
+  {
     id: 'comfyui-ltx2-3-i2v',
     apiModel: 'video_ltx2_3_i2v',
     name: 'ComfyUI LTX 2.3 I2V (本地)',
@@ -593,7 +692,7 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
     providerId: 'comfyui-local',
     description: '本地 ComfyUI LTX 2.3 单图生视频（仅首帧，无音频）；工作流默认 25fps',
     isBuiltIn: true,
-    isEnabled: false,
+    isEnabled: true,
     params: {
       ...DEFAULT_VIDEO_PARAMS_COMFYUI,
       workflowName: 'video_ltx2_3_i2v',
@@ -631,6 +730,23 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
  * 内置配音模型列表
  */
 export const BUILTIN_AUDIO_MODELS: AudioModelDefinition[] = [
+  {
+    id: 'indextts-local',
+    apiModel: 'indextts',
+    name: 'IndexTTS (本地 OpenAI Speech)',
+    type: 'audio',
+    providerId: 'indextts-local',
+    endpoint: '/v1/audio/speech',
+    description: 'OpenAI 兼容 /v1/audio/speech，参考 OpenClaw IndexTTS 配置（opus + speakerVoice）',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      defaultVoice: 'EL_Danielle_Gentle_Engaging',
+      outputFormat: 'opus',
+      speechInputMode: 'plain',
+      timeoutMs: 120000,
+    },
+  },
   {
     id: 'gpt-audio-1.5',
     apiModel: 'gpt-audio-1.5',
@@ -676,9 +792,23 @@ export const BUILTIN_PROVIDERS: ModelProvider[] = [
     isDefault: false,
   },
   {
+    id: 'vllm-local',
+    name: 'vLLM (本地 OpenAI API)',
+    baseUrl: '',
+    isBuiltIn: true,
+    isDefault: false,
+  },
+  {
+    id: 'indextts-local',
+    name: 'IndexTTS (本地 Speech API)',
+    baseUrl: '',
+    isBuiltIn: true,
+    isDefault: false,
+  },
+  {
     id: 'comfyui-local',
     name: 'ComfyUI (本地)',
-    baseUrl: 'http://127.0.0.1:8188',
+    baseUrl: '',
     isBuiltIn: true,
     isDefault: false,
   },
@@ -698,8 +828,8 @@ export const ALL_BUILTIN_MODELS: ModelDefinition[] = [
  * 默认激活模型
  */
 export const DEFAULT_ACTIVE_MODELS: ActiveModels = {
-  chat: 'gpt-5.4',
-  image: 'gemini-3-pro-image-preview',
-  video: 'sora-2',
-  audio: 'gpt-audio-1.5',
+  chat: 'qwen3-8-27b-fp8-vllm',
+  image: 'comfyui-flux-dev-fp8',
+  video: 'comfyui-minimax-h3-flft2v',
+  audio: 'indextts-local',
 };

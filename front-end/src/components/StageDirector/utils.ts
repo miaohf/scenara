@@ -51,7 +51,14 @@ const dedupeImageRefs = (images: string[]): string[] => {
   return output;
 };
 
-export type VideoModelFamily = 'sora' | 'doubao-task' | 'veo-fast' | 'comfyui-ltx' | 'unknown';
+export const isMiniMaxH3VideoModel = (modelId: string): boolean =>
+  resolveVideoModelRouting(modelId).normalizedModelId.includes('minimax-h3');
+
+const buildMiniMaxTimelineDurations = (videoDuration?: number) => {
+  const totalDuration = Math.max(5, videoDuration || 5);
+  const midDuration = (totalDuration / 2).toFixed(1);
+  return { totalDuration, midDuration };
+};
 
 export interface VideoModelRouting {
   family: VideoModelFamily;
@@ -64,7 +71,35 @@ export interface VideoModelRouting {
 export interface VideoPromptContext {
   hasStartFrame?: boolean;
   hasEndFrame?: boolean;
+  dialogue?: string;
 }
+
+const WORKFLOW_AUDIO_BLOCK_PATTERN =
+  /\n\nAudio(?:（角色对话[^）]*）|\s*\(character dialogue)[\s\S]*$/iu;
+
+/** ComfyUI 原生音视频工作流：注入角色对话块，禁止旁白 */
+export const finalizeComfyUiVideoWorkflowPrompt = (
+  prompt: string,
+  dialogue: string | undefined,
+  language: string
+): string => {
+  const trimmedDialogue = (dialogue || '').trim();
+  const isChinese = isChineseLanguage(language);
+  const langLabel = isChinese ? '中文' : language;
+  const basePrompt = prompt.replace(WORKFLOW_AUDIO_BLOCK_PATTERN, '').trimEnd();
+
+  if (!trimmedDialogue) {
+    const noSpeechNote = isChinese
+      ? '\n\nAudio：本镜头无对白，仅保留环境音效，禁止旁白配音，禁止字幕与画面文字。'
+      : '\n\nAudio: No character dialogue in this shot; ambient sound only. No narrator voiceover, no subtitles or on-screen text.';
+    return fitVideoPromptLength(`${basePrompt}${noSpeechNote}`);
+  }
+
+  const block = isChinese
+    ? `\n\nAudio（角色对话，需口型同步）：\n「${trimmedDialogue}」\n画面中角色用${langLabel}清晰说出以上台词。禁止旁白配音，禁止字幕与画面文字。`
+    : `\n\nAudio (character dialogue, lip-sync required):\n"${trimmedDialogue}"\nThe on-screen character speaks this line clearly in ${langLabel}. No narrator voiceover, no subtitles or on-screen text.`;
+  return fitVideoPromptLength(`${basePrompt}${block}`);
+};
 
 const normalizeVideoModelIdForRouting = (videoModel: string): string => {
   const raw = (videoModel || '').trim();
@@ -747,18 +782,39 @@ ${renderPromptTemplate(ignoredEndFrameTemplate, {})}`
       .replace('{language}', language);
     return appendCapabilityNotes(routedPrompt);
   }
+
+  if (isMiniMaxH3VideoModel(videoModel)) {
+    const { totalDuration, midDuration } = buildMiniMaxTimelineDurations(videoDuration);
+    const template = hasUsableEndFrame
+      ? withTemplateFallback(
+          templates.video.minimaxH3StartEnd,
+          DEFAULT_PROMPT_TEMPLATE_CONFIG.video.minimaxH3StartEnd
+        )
+      : withTemplateFallback(
+          templates.video.minimaxH3StartOnly,
+          DEFAULT_PROMPT_TEMPLATE_CONFIG.video.minimaxH3StartOnly
+        );
+    const routedPrompt = template
+      .replace('{actionSummary}', compactActionSummary)
+      .replace('{cameraMovement}', compactCameraMovement)
+      .replace('{visualStyle}', visualStyleAnchor)
+      .replace('{duration}', String(totalDuration))
+      .replace('{midDuration}', midDuration);
+    return appendCapabilityNotes(routedPrompt);
+  }
+
   const fallbackStartOnly = `Use the provided start frame as the exact opening composition.
 Action: {actionSummary}
 Camera Movement: {cameraMovement}
 Visual Style Anchor: {visualStyle}
-Language: {language}
-Keep identity, scene lighting, and prop details consistent throughout the shot.`;
+Keep identity, scene lighting, and prop details consistent throughout the shot.
+Any spoken audio must be in-scene character dialogue only; no narrator voiceover.`;
   const fallbackStartEnd = `Use the provided START and END frames as hard constraints.
 Action: {actionSummary}
 Camera Movement: {cameraMovement}
 Visual Style Anchor: {visualStyle}
-Language: {language}
-The video must start from the start frame composition and progress naturally to a final state that matches the end frame.`;
+The video must start from the start frame composition and progress naturally to a final state that matches the end frame.
+Any spoken audio must be in-scene character dialogue only; no narrator voiceover.`;
   const template = hasUsableEndFrame
     ? withTemplateFallback(
         templates.video.veoStartEnd,

@@ -593,7 +593,7 @@ export const generateVideo = async (
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 1200000);
+  const timeoutId = setTimeout(() => controller.abort(), 7_200_000);
 
   try {
     const response = await retryOperation(async () => {

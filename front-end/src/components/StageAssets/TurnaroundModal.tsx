@@ -179,12 +179,16 @@ const TurnaroundModal: React.FC<TurnaroundModalProps> = ({
               <h4 className="text-lg font-bold text-[var(--text-primary)] mb-2">
                 正在生成九宫格造型图片...
               </h4>
-              <p className="text-sm text-[var(--text-tertiary)]">
-                根据视角描述为角色「{character.name}」生成多视角参考图，请耐心等待
+              <p className="text-sm text-[var(--text-tertiary)] text-center px-6">
+                将一次性调用造型九宫格工作流，生成<strong className="text-[var(--text-secondary)]">一张 3×3 拼图</strong>
+                （不是 9 次出图）。角色「{character.name}」的 9 个视角描述会合并进同一次请求。
               </p>
-              {/* 显示已确认的视角列表 */}
+              {/* 显示已确认的视角列表（仅预览，非分次任务） */}
               {turnaround?.panels && turnaround.panels.length > 0 && (
                 <div className="mt-6 w-full max-w-lg space-y-1.5 px-6">
+                  <p className="text-[10px] text-[var(--text-muted)] mb-2">
+                    本次合并进提示词的视角（共 {turnaround.panels.length} 格）：
+                  </p>
                   {turnaround.panels.map((panel, idx) => (
                     <div key={idx} className="flex items-center gap-2 p-2 bg-[var(--bg-surface)] rounded-lg border border-[var(--border-primary)]">
                       <span className="w-5 h-5 rounded-full bg-[var(--accent)] text-white flex items-center justify-center text-[9px] font-bold shrink-0">

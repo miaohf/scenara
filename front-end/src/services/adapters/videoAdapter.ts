@@ -12,7 +12,7 @@ import {
 } from '../modelRegistry';
 import { ApiKeyError } from './chatAdapter';
 import { resolveComfyApiBaseUrl, buildComfyApiUrl } from '../urlUtils';
-import { isApiAiMode, apiCallVideo, apiCallComfyVideo } from '../aiApiAdapter';
+import { isApiAiMode, apiCallVideo, apiCallComfyVideo, fetchComfyWorkflowTemplate } from '../aiApiAdapter';
 
 /**
  * 重试操作
@@ -105,6 +105,12 @@ const getSizeFromAspectRatio = (aspectRatio: AspectRatio): { width: number; heig
   return sizeMap[aspectRatio];
 };
 
+const getMiniMaxH3Size = (aspectRatio: AspectRatio): { width: number; height: number } => {
+  if (aspectRatio === '9:16') return { width: 768, height: 1344 };
+  if (aspectRatio === '1:1') return { width: 768, height: 768 };
+  return { width: 1344, height: 768 };
+};
+
 const SORA_COMPATIBLE_VIDEO_MODELS = new Set([
   'sora-2',
   'doubao-seedance-1-5-pro',
@@ -114,7 +120,7 @@ const isSoraCompatibleVideoModel = (modelName: string): boolean =>
   SORA_COMPATIBLE_VIDEO_MODELS.has((modelName || '').trim().toLowerCase());
 
 const COMFYUI_POLL_INTERVAL_MS = 2000;
-const COMFYUI_MAX_POLLS = 600;
+const COMFYUI_MAX_POLLS = 3600;
 
 const parseHttpErrorBody = async (res: Response): Promise<string> => {
   let errorMessage = `HTTP 错误: ${res.status}`;
@@ -195,35 +201,15 @@ const uploadComfyImage = async (apiBase: string, imageDataUrl: string, filename:
 const uploadComfyAudio = async (apiBase: string, audioDataUrl: string, filename: string): Promise<string> =>
   uploadComfyInputFile(apiBase, audioDataUrl, filename);
 
-const resolveWorkflowTemplateUrls = (workflowName: string): string[] => {
-  const trimmed = workflowName.trim();
-  if (!trimmed) {
-    throw new Error('ComfyUI 视频工作流名称为空，请在视频模型中配置 workflowName。');
-  }
-  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('/')) {
-    return [trimmed];
-  }
-  const baseName = trimmed.endsWith('.json') ? trimmed.slice(0, -5) : trimmed;
-  const candidates = [
-    baseName,
-    baseName.replace(/-/g, '_'),
-    baseName.replace(/_/g, '-'),
-  ];
-  return Array.from(new Set(candidates)).map(name => `/workflows/${encodeURIComponent(`${name}.json`)}`);
+const loadComfyWorkflowTemplate = async (workflowName: string): Promise<any> => {
+  console.info('[ComfyUI Video] Loading workflow template from backend:', workflowName);
+  return fetchComfyWorkflowTemplate(workflowName);
 };
 
-const loadComfyWorkflowTemplate = async (workflowName: string): Promise<any> => {
-  const urls = resolveWorkflowTemplateUrls(workflowName);
-  for (const url of urls) {
-    console.info('[ComfyUI Video] Loading workflow template:', url);
-    const response = await fetch(url, { cache: 'no-store' });
-    if (response.ok) {
-      console.info('[ComfyUI Video] Workflow template loaded:', url);
-      return response.json();
-    }
-    console.warn('[ComfyUI Video] Workflow template not found:', url, response.status);
-  }
-  throw new Error(`ComfyUI 视频工作流模板加载失败：已尝试 ${urls.join('、')}`);
+const resolutionSelectorAspect = (aspectRatio: AspectRatio): string => {
+  if (aspectRatio === '9:16') return '9:16 (Mobile/Portrait)';
+  if (aspectRatio === '1:1') return '1:1 (Square)';
+  return '16:9 (Widescreen)';
 };
 
 const patchComfyVideoWorkflow = (
@@ -235,6 +221,7 @@ const patchComfyVideoWorkflow = (
     seed: number;
     steps: number;
     duration: number;
+    aspectRatio?: AspectRatio;
     startImageName?: string;
     endImageName?: string;
     audioName?: string;
@@ -254,7 +241,7 @@ const patchComfyVideoWorkflow = (
   let frameRate = 25;
   Object.values(nodes).forEach((node: any) => {
     const title = String(node?._meta?.title || '').toLowerCase();
-    if (title === 'frame rate' && typeof node?.inputs?.value === 'number') {
+    if (title.includes('frame rate') && typeof node?.inputs?.value === 'number') {
       frameRate = node.inputs.value;
     }
   });
@@ -320,12 +307,22 @@ const patchComfyVideoWorkflow = (
     }
 
     if (
-      title === 'duration' &&
-      classType === 'primitivefloat' &&
+      title.includes('duration') &&
+      (classType === 'primitivefloat' || classType === 'primitiveint') &&
       'value' in inputs &&
       typeof inputs.value === 'number'
     ) {
-      inputs.value = options.duration;
+      inputs.value = classType === 'primitiveint'
+        ? Math.round(options.duration)
+        : options.duration;
+    }
+
+    if (
+      classType === 'resolutionselector' &&
+      'aspect_ratio' in inputs &&
+      typeof inputs.aspect_ratio === 'string'
+    ) {
+      inputs.aspect_ratio = resolutionSelectorAspect(options.aspectRatio || '16:9');
     }
 
     if ('seed' in inputs && typeof inputs.seed === 'number') inputs.seed = options.seed;
@@ -340,8 +337,9 @@ const patchComfyVideoWorkflow = (
       'image' in inputs &&
       typeof inputs.image === 'string'
     ) {
-      if (title.includes('first') || title === 'load image') {
+      if (title.includes('first')) {
         inputs.image = options.startImageName;
+        firstImagePatched = true;
       } else if (title.includes('last')) {
         inputs.image = options.endImageName || options.startImageName;
       } else if (!firstImagePatched) {
@@ -362,6 +360,22 @@ const patchComfyVideoWorkflow = (
       delete inputs.audioUI;
     }
   });
+
+  const minimaxNode = Object.entries(nodes).find(([, node]: [string, any]) =>
+    String(node?.class_type || '').toLowerCase() === 'minimaxh3imagetovideo'
+  );
+  const lastLoader = Object.entries(nodes).find(([, node]: [string, any]) =>
+    String(node?.class_type || '').toLowerCase() === 'loadimage' &&
+    String(node?._meta?.title || '').toLowerCase().includes('last')
+  );
+  if (minimaxNode) {
+    const minimaxInputs = (minimaxNode[1] as any).inputs || ((minimaxNode[1] as any).inputs = {});
+    if (options.endImageName && lastLoader) {
+      minimaxInputs.last_frame = [lastLoader[0], 0];
+    } else {
+      delete minimaxInputs.last_frame;
+    }
+  }
 
   if (!promptPatched) {
     throw new Error('ComfyUI 视频工作流模板中没有找到可替换的 prompt 文本节点。');
@@ -388,8 +402,11 @@ const callComfyVideoApi = async (
   try {
     const aspectRatio = options.aspectRatio || model.params.defaultAspectRatio;
     const duration = Number(options.duration || model.params.defaultDuration || 5);
-    const { width, height } = getSizeFromAspectRatio(aspectRatio);
     const workflowName = model.params.workflowName || model.apiModel || model.id;
+    const isMiniMax = String(workflowName).toLowerCase().includes('minimax');
+    const { width, height } = isMiniMax
+      ? getMiniMaxH3Size(aspectRatio)
+      : getSizeFromAspectRatio(aspectRatio);
     console.info('[ComfyUI Video] Start generation:', { apiBase, workflowName });
     if (!options.startImage) {
       throw new Error('ComfyUI 图生视频工作流需要参考图（首帧），请先生成或选择关键帧图片。');
@@ -421,6 +438,7 @@ const callComfyVideoApi = async (
       seed,
       steps: model.params.steps || 20,
       duration,
+      aspectRatio,
       startImageName,
       endImageName,
       audioName,
@@ -531,7 +549,7 @@ const callSyncChatVideoApi = async (
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 1200000); // 20 分钟
+  const timeoutId = setTimeout(() => controller.abort(), 7_200_000); // 2 小时
 
   try {
     const response = await retryOperation(async () => {

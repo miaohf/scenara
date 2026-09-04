@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from app.core.config import get_settings
+from app.core.config import LOCAL_PROVIDER_IDS, get_settings
 
 
 class AiConfigError(Exception):
@@ -58,17 +58,53 @@ def _provider_for_model(registry: dict[str, Any], model: dict[str, Any]) -> dict
     return provider
 
 
+def _resolve_api_base_url(model: dict[str, Any], provider: dict[str, Any]) -> str:
+    """模型级 baseUrl 优先于提供商（与前端 modelRegistry 一致）。"""
+    provider_id = provider.get("id") or ""
+    if provider_id == "comfyui-local":
+        raise AiConfigError(
+            "ComfyUI 提供商仅用于图片/视频工作流，不能作为 LLM 对话端点。"
+            "请在分镜脚本处选择 vLLM 对话模型，或在模型配置中切换激活的对话模型。"
+        )
+    model_base = (model.get("baseUrl") or "").strip().rstrip("/")
+    if model_base:
+        return model_base
+    provider_base = (provider.get("baseUrl") or "").strip().rstrip("/")
+    if provider_base:
+        return provider_base
+    raise AiConfigError("API Base URL 未配置，请在模型设置中填写")
+
+
 def _api_key_for_model(registry: dict[str, Any], model: dict[str, Any], provider: dict[str, Any]) -> str:
+    """解析 API Key：模型级 > 提供商级 > 全局 Key > .env；忽略占位符 VLLM_API_KEY。"""
     settings = get_settings()
-    per_model = (model.get("apiKey") or "").strip()
+    placeholder = "VLLM_API_KEY"
+
+    def _usable(key: str) -> str:
+        value = (key or "").strip()
+        return "" if value == placeholder else value
+
+    per_model = _usable(model.get("apiKey") or "")
     if per_model:
         return per_model
-    per_provider = (provider.get("apiKey") or "").strip()
+
+    per_provider = _usable(provider.get("apiKey") or "")
     if per_provider:
         return per_provider
-    global_key = (registry.get("globalApiKey") or settings.default_api_key or "").strip()
+
+    global_key = _usable(registry.get("globalApiKey") or "") or _usable(settings.default_api_key or "")
     if global_key:
         return global_key
+
+    # 部署层兜底：仅当 .env 显式配置了非占位符密钥时使用
+    provider_id = provider.get("id") or ""
+    if provider_id == "vllm-local":
+        env_key = _usable(settings.vllm_api_key or "")
+        if env_key:
+            return env_key
+
+    if provider_id in LOCAL_PROVIDER_IDS:
+        return "local"
     raise AiConfigError("API Key 缺失，请在设置中配置或在服务端设置 DEFAULT_API_KEY")
 
 
@@ -85,7 +121,8 @@ async def chat_completion(
     provider = _provider_for_model(registry, model)
     api_key = _api_key_for_model(registry, model, provider)
 
-    base_url, endpoint = _resolve_chat_endpoint(provider.get("baseUrl", ""), model.get("endpoint"))
+    base_url = _resolve_api_base_url(model, provider)
+    _, endpoint = _resolve_chat_endpoint(base_url, model.get("endpoint"))
     api_model = model.get("apiModel") or model.get("id")
     params = model.get("params") or {}
 
@@ -105,25 +142,30 @@ async def chat_completion(
         body["response_format"] = {"type": "json_object"}
 
     url = f"{base_url}{endpoint}"
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        res = await client.post(
-            url,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=body,
-        )
-        if not res.is_success:
-            detail = res.text
-            try:
-                detail = res.json().get("error", {}).get("message", detail)
-            except Exception:
-                pass
-            raise AiConfigError(f"Chat API 错误: {detail}")
+    try:
+        # trust_env=False：避免本机 HTTP(S)_PROXY 劫持内网 vLLM 请求
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+            res = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=body,
+            )
+    except httpx.HTTPError as exc:
+        raise AiConfigError(f"无法连接 LLM 服务 ({base_url}): {exc}") from exc
 
-        data = res.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        if response_format == "json":
-            return _clean_json_response(content)
-        return content
+    if not res.is_success:
+        detail = res.text
+        try:
+            detail = res.json().get("error", {}).get("message", detail)
+        except Exception:
+            pass
+        raise AiConfigError(f"Chat API 错误: {detail}")
+
+    data = res.json()
+    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    if response_format == "json":
+        return _clean_json_response(content)
+    return content
 
 
 async def generate_image_openai_compatible(
@@ -156,7 +198,7 @@ async def generate_image_openai_compatible(
     }
 
     url = f"{base_url}{endpoint}"
-    async with httpx.AsyncClient(timeout=300) as client:
+    async with httpx.AsyncClient(timeout=300, trust_env=False) as client:
         res = await client.post(
             url,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},

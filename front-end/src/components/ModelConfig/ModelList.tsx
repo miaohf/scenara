@@ -7,7 +7,8 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Info, CheckCircle } from 'lucide-react';
 import { 
   ModelType, 
-  ModelDefinition, 
+  ModelDefinition,
+  ImageModelDefinition,
 } from '../../types/model';
 import {
   getModels,
@@ -31,7 +32,7 @@ interface ModelListProps {
 
 const typeDescriptions: Record<ModelType, string> = {
   chat: '用于剧本解析、分镜生成、提示词优化等文本生成任务',
-  image: '用于角色定妆、场景生成、关键帧生成等图片生成任务',
+  image: '用于角色定妆、场景生成、关键帧生成；造型九宫格在同一模型卡片内单独配置工作流',
   video: '用于视频片段生成任务',
   audio: '用于镜头旁白/对话配音，输出可直接预览的音频片段',
 };
@@ -148,15 +149,28 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
           const activeModel = models.find(m => m.id === activeModelId);
           const provider = activeModel ? getProviderById(activeModel.providerId) : null;
           const displayUrl = activeModel && provider ? getModelDisplayUrl(activeModel, provider.baseUrl) : '';
+          const imageParams =
+            activeModel?.type === 'image'
+              ? (activeModel as ImageModelDefinition).params
+              : undefined;
           return (
-            <p className="text-[11px] text-[var(--text-secondary)]">
-              <span className="font-medium">{activeModel?.name || '未选择'}</span>
-              {provider && (
-                <span className="text-[var(--text-tertiary)] ml-2">
-                  → {provider.name} ({displayUrl || provider.baseUrl})
-                </span>
+            <div className="space-y-1">
+              <p className="text-[11px] text-[var(--text-secondary)]">
+                <span className="font-medium">{activeModel?.name || '未选择'}</span>
+                {provider && (
+                  <span className="text-[var(--text-tertiary)] ml-2">
+                    → {provider.name} ({displayUrl || provider.baseUrl})
+                  </span>
+                )}
+              </p>
+              {type === 'image' && imageParams?.apiFormat === 'comfyui' && (
+                <p className="text-[10px] text-[var(--text-tertiary)] font-mono leading-relaxed">
+                  定妆/通用：{imageParams.workflowName || '（未填）'}
+                  <br />
+                  造型九宫格：{imageParams.turnaroundWorkflowName || '（回退到定妆工作流）'}
+                </p>
               )}
-            </p>
+            </div>
           );
         })()}
       </div>
@@ -171,8 +185,8 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
           点击展开按钮可调整模型参数。
           {type === 'image' && (
             <>
-              {' '}本地 ComfyUI：选择「ComfyUI Workflow（本地）」协议，提供商填 <code className="font-mono">http://127.0.0.1:8188</code>，
-              工作流 JSON 放入 <code className="font-mono">public/workflows/</code>。
+              {' '}本地 ComfyUI：展开模型卡片后有两套工作流——定妆/通用文生图、造型九宫格（Edit）。
+              JSON 放在 <code className="font-mono">back-end/workflows/</code>，不含 .json 后缀。
             </>
           )}
         </p>

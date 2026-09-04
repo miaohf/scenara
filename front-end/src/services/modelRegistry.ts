@@ -19,6 +19,8 @@ import {
   DEFAULT_CHAT_PARAMS,
   AspectRatio,
   VideoDuration,
+  LOCAL_PROVIDER_IDS,
+  isLocalProviderId,
 } from '../types/model';
 import { normalizeChatModelId } from './modelIdUtils';
 import {
@@ -127,6 +129,68 @@ export const loadRegistry = (): ModelRegistryState => {
         chatModelAliasMigrated = true;
       }
 
+      // 定妆默认：Flux / 2steps Turbo → image_qwen_Image_2512（全量步数）；九宫格仍用 Qwen Edit
+      parsed.models = parsed.models.map((model) => {
+        if (model.id !== 'comfyui-flux-dev-fp8' || model.type !== 'image') return model;
+        const params = (model as ImageModelDefinition).params;
+        let next = model as ImageModelDefinition;
+        const castingWorkflow = params?.workflowName;
+        const shouldMigrateCasting =
+          !castingWorkflow ||
+          castingWorkflow === 'flux-dev-fp8' ||
+          castingWorkflow === 'flux_dev1_fp8_text_to_image' ||
+          castingWorkflow === 'image_qwen_image_2512_with_2steps_lora';
+        if (shouldMigrateCasting) {
+          chatModelAliasMigrated = true;
+          next = {
+            ...next,
+            apiModel: 'qwen-image-2512',
+            name: 'ComfyUI Qwen Image 2512 (本地)',
+            params: {
+              ...params,
+              apiFormat: 'comfyui',
+              workflowName: 'image_qwen_Image_2512',
+              steps: 50,
+              turnaroundWorkflowName:
+                params?.turnaroundWorkflowName || 'qwen_image_edit_2511_fp8_character_turnaround',
+              turnaroundSteps: params?.turnaroundSteps || 4,
+            },
+          };
+        } else if (!params?.turnaroundWorkflowName) {
+          chatModelAliasMigrated = true;
+          next = {
+            ...next,
+            params: {
+              ...params,
+              turnaroundWorkflowName: 'qwen_image_edit_2511_fp8_character_turnaround',
+              turnaroundSteps: params?.turnaroundSteps || 4,
+            },
+          };
+        }
+        return next;
+      });
+
+      // 移除误配为 ComfyUI 提供商的对话模型（ComfyUI 仅用于 image/video）
+      const invalidChatProviderIds = new Set(['comfyui-local']);
+      const removedInvalidChatModelIds = new Set<string>();
+      parsed.models = parsed.models.filter((model) => {
+        if (model.type !== 'chat' || !invalidChatProviderIds.has(model.providerId)) {
+          return true;
+        }
+        removedInvalidChatModelIds.add(model.id);
+        chatModelAliasMigrated = true;
+        return false;
+      });
+      parsed.providers = parsed.providers.filter((provider) => provider.id !== 'ollama-local');
+      parsed.models = parsed.models.filter((model) => model.providerId !== 'ollama-local');
+      if (
+        removedInvalidChatModelIds.has(parsed.activeModels.chat)
+        || parsed.activeModels.chat === 'qwen3-local'
+      ) {
+        parsed.activeModels.chat = DEFAULT_ACTIVE_MODELS.chat;
+        chatModelAliasMigrated = true;
+      }
+
       // 迁移旧版 antsk 提供商
       parsed.providers = parsed.providers.map((p) => {
         if (p.id !== 'antsk') return p;
@@ -145,7 +209,7 @@ export const loadRegistry = (): ModelRegistryState => {
       const builtInProviderIds = BUILTIN_PROVIDERS.map(p => p.id);
       const builtInModelIds = ALL_BUILTIN_MODELS.map(m => m.id);
       
-      // 合并内置提供商
+      // 合并内置提供商（仅补齐缺失项；已存在条目保留服务端/localStorage 中的 URL/Key）
       const existingProviderIds = parsed.providers.map(p => p.id);
       BUILTIN_PROVIDERS.forEach(bp => {
         if (!existingProviderIds.includes(bp.id)) {
@@ -184,7 +248,16 @@ export const loadRegistry = (): ModelRegistryState => {
           const existing = parsed.models[existingIndex];
           // 用户可调整的偏好参数（defaultAspectRatio, temperature, maxTokens, defaultDuration 等）
           // 结构性参数（supportedAspectRatios, supportedDurations, mode 等）始终从代码同步
-          const USER_PREF_KEYS = ['defaultAspectRatio', 'temperature', 'maxTokens', 'defaultDuration'];
+          const USER_PREF_KEYS = [
+            'defaultAspectRatio',
+            'temperature',
+            'maxTokens',
+            'defaultDuration',
+            'workflowName',
+            'steps',
+            'turnaroundWorkflowName',
+            'turnaroundSteps',
+          ];
           const mergedParams = { ...(bm as any).params };
           const existingParams = (existing as any).params;
           if (existingParams) {
@@ -386,24 +459,9 @@ export const saveRegistry = async (state: ModelRegistryState): Promise<void> => 
 export const hydrateRegistryFromServer = async (): Promise<void> => {
   if (!isApiAiMode()) return;
 
-  const local = loadRegistry();
   const remote = await loadModelRegistryFromServer();
-
-  const hasUsableRemote =
-    remote &&
-    typeof remote === 'object' &&
-    (Boolean((remote as Partial<ModelRegistryState>).models?.length) ||
-      Boolean((remote as Partial<ModelRegistryState>).providers?.length) ||
-      Boolean(
-        (remote as Partial<ModelRegistryState>).activeModels &&
-          Object.keys((remote as Partial<ModelRegistryState>).activeModels!).length > 0,
-      ));
-
-  if (!hasUsableRemote) {
-    if (isUsableRegistryState(local)) {
-      await syncModelRegistryToServer(local);
-    }
-    return;
+  if (!remote || typeof remote !== 'object') {
+    throw new Error('无法从服务端加载模型配置，请确认后端已启动且已登录');
   }
 
   registryState = null;
@@ -1023,11 +1081,16 @@ export const getConfiguredChatModelApiName = (): string => {
 
 /**
  * 解析项目/流程使用的对话模型 ID。
- * 优先使用项目保存的 shotGenerationModel；无效时回退到模型配置页的激活项。
+ * 优先使用项目保存的 shotGenerationModel；无效或误配 ComfyUI 提供商时回退到模型配置页的激活项。
  */
 export const resolveShotGenerationModel = (stored?: string | null): string => {
   const resolved = resolveChatModelId(stored);
-  if (resolved) return resolved;
+  if (resolved) {
+    const model = getModelById(resolved);
+    if (model?.type === 'chat' && model.providerId !== 'comfyui-local') {
+      return resolved;
+    }
+  }
   return getConfiguredChatModelId();
 };
 
@@ -1057,6 +1120,10 @@ export const isModelAvailable = (modelId: string): boolean => {
   const model = getModelById(modelId);
   if (!model || !model.isEnabled) return false;
 
+  if (isLocalProviderId(model.providerId)) {
+    return true;
+  }
+
   if (model.type === 'image' && (model.params as any)?.apiFormat === 'comfyui') {
     return true;
   }
@@ -1068,9 +1135,7 @@ export const isModelAvailable = (modelId: string): boolean => {
   return !!apiKey;
 };
 
-// ============================================
-// 默认值辅助函数（向后兼容）
-// ============================================
+export { isLocalProviderId, LOCAL_PROVIDER_IDS };
 
 /**
  * 获取默认横竖屏比例（模型默认值）

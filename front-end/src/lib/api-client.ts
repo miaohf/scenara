@@ -25,13 +25,19 @@ async function tryRefreshToken(): Promise<boolean> {
   return true;
 }
 
+export type ApiFetchOptions = RequestInit & {
+  /** Client-side abort timeout in ms. Prevents infinite spinners when upstream hangs. */
+  timeoutMs?: number;
+};
+
 export async function apiFetch<T>(
   path: string,
-  init: RequestInit = {},
+  init: ApiFetchOptions = {},
   retry = true,
 ): Promise<T> {
-  const headers = new Headers(init.headers);
-  if (!headers.has("Content-Type") && init.body) {
+  const { timeoutMs, ...requestInit } = init;
+  const headers = new Headers(requestInit.headers);
+  if (!headers.has("Content-Type") && requestInit.body) {
     headers.set("Content-Type", "application/json");
   }
 
@@ -40,7 +46,41 @@ export async function apiFetch<T>(
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  const controller = new AbortController();
+  const externalSignal = requestInit.signal;
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+    }
+  }
+  const timeoutId =
+    typeof timeoutMs === "number" && timeoutMs > 0
+      ? setTimeout(() => controller.abort(), timeoutMs)
+      : null;
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      ...requestInit,
+      headers,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(
+        typeof timeoutMs === "number" && timeoutMs > 0
+          ? `Request timed out (${Math.floor(timeoutMs / 1000)}s)`
+          : "Request cancelled",
+      );
+    }
+    throw error;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    externalSignal?.removeEventListener("abort", onExternalAbort);
+  }
 
   if (res.status === 401 && retry) {
     if (!refreshPromise) {

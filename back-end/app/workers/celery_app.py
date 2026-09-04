@@ -13,4 +13,7 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+    # 单 GPU 本地 ComfyUI：串行执行任务，避免多 worker 抢占同一张卡
+    worker_concurrency=1,
+    worker_prefetch_multiplier=1,
 )

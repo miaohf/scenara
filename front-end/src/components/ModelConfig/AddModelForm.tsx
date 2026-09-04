@@ -332,6 +332,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
             >
               <option value="wav">wav</option>
               <option value="mp3">mp3</option>
+              <option value="opus">opus</option>
             </select>
           </div>
         </div>

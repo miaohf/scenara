@@ -284,7 +284,7 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({ onRefresh }) => {
           <li>ComfyUI 模型请在「图片/视频模型」卡片中配置 :8188 地址</li>
           <li>验证用模型名称仅用于全局 API Key 连通性测试，不影响「对话模型」页中的激活模型</li>
           <li>全局 API Key 作为默认密钥；也可在单个模型卡片中覆盖</li>
-          <li>所有配置仅保存在本地浏览器，不会上传到服务器</li>
+          <li>配置会同步到服务端账号（API 模式下由后端代发 LLM/TTS 请求）</li>
         </ul>
       </div>
     </div>

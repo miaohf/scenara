@@ -33,7 +33,8 @@ import {
   cropPanelFromNineGrid,
   ensureNineGridVideoPromptGuardrails,
   resolveVideoModelRouting,
-  routeVideoFrameInputs
+  routeVideoFrameInputs,
+  finalizeComfyUiVideoWorkflowPrompt,
 } from './utils';
 import { DEFAULTS, resolveStoryboardGridLayout } from './constants';
 import EditModal from './EditModal';
@@ -661,6 +662,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         {
           hasStartFrame: !!routedFrames.startImage,
           hasEndFrame: !!routedFrames.endImage,
+          dialogue: shot.dialogue,
         },
         promptTemplates
       );
@@ -685,6 +687,10 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           `${compressionResult.originalLength} -> ${compressionResult.finalLength} chars`
         );
       }
+    }
+
+    if (selectedModelRouting.family === 'comfyui-ltx') {
+      videoPrompt = finalizeComfyUiVideoWorkflowPrompt(videoPrompt, shot.dialogue, projectLanguage);
     }
 
     const selectedModelConfig = (getModelById(selectedModelInput) || getModelById(selectedModel)) as any;
@@ -1949,6 +1955,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
                   {
                     hasStartFrame: !!routedFrames.startImage,
                     hasEndFrame: !!routedFrames.endImage,
+                    dialogue: activeShot.dialogue,
                   },
                   promptTemplates
                 );
@@ -1966,7 +1973,11 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
                 const panelCountForGuard = activeShot.nineGrid?.layout?.panelCount || activeShot.nineGrid?.panels?.length || 9;
                 promptValue = ensureNineGridVideoPromptGuardrails(promptValue, panelCountForGuard, editProjectLanguage, promptTemplates);
               }
-              setEditModal({ 
+              const editModelRouting = resolveVideoModelRouting(activeShot.videoModel || DEFAULTS.videoModel);
+              if (editModelRouting.family === 'comfyui-ltx' && promptValue) {
+                promptValue = finalizeComfyUiVideoWorkflowPrompt(promptValue, activeShot.dialogue, editProjectLanguage);
+              }
+              setEditModal({
                 type: 'video', 
                 value: promptValue
               });

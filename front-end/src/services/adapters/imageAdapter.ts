@@ -13,7 +13,7 @@ import {
 } from '../imageModelUtils';
 import { ApiKeyError } from './chatAdapter';
 import { resolveComfyApiBaseUrl, buildComfyApiUrl } from '../urlUtils';
-import { isApiAiMode, apiCallImage, apiCallComfyImage } from '../aiApiAdapter';
+import { isApiAiMode, apiCallImage, apiCallComfyImage, fetchComfyWorkflowTemplate } from '../aiApiAdapter';
 
 /**
  * 重试操作
@@ -253,35 +253,9 @@ const mapAspectRatioToComfySize = (aspectRatio: AspectRatio): { width: number; h
   }
 };
 
-const resolveWorkflowTemplateUrls = (workflowName: string): string[] => {
-  const trimmed = workflowName.trim();
-  if (!trimmed) {
-    throw new Error('ComfyUI 工作流名称为空，请在图片模型中配置 workflowName。');
-  }
-  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('/')) {
-    return [trimmed];
-  }
-  const baseName = trimmed.endsWith('.json') ? trimmed.slice(0, -5) : trimmed;
-  const candidates = [
-    baseName,
-    baseName.replace(/-/g, '_'),
-    baseName.replace(/_/g, '-'),
-  ];
-  return Array.from(new Set(candidates)).map(name => `/workflows/${encodeURIComponent(`${name}.json`)}`);
-};
-
 const loadComfyWorkflowTemplate = async (workflowName: string): Promise<any> => {
-  const urls = resolveWorkflowTemplateUrls(workflowName);
-  for (const url of urls) {
-    console.info('[ComfyUI Image] Loading workflow template:', url);
-    const response = await fetch(url, { cache: 'no-store' });
-    if (response.ok) {
-      console.info('[ComfyUI Image] Workflow template loaded:', url);
-      return response.json();
-    }
-    console.warn('[ComfyUI Image] Workflow template not found:', url, response.status);
-  }
-  throw new Error(`ComfyUI 工作流模板加载失败：已尝试 ${urls.join('、')}`);
+  console.info('[ComfyUI Image] Loading workflow template from backend:', workflowName);
+  return fetchComfyWorkflowTemplate(workflowName);
 };
 
 const patchComfyWorkflow = (
@@ -332,6 +306,16 @@ const patchComfyWorkflow = (
     if (!isNegative && 'positive' in inputs && typeof inputs.positive === 'string') {
       inputs.positive = options.prompt;
       promptPatched = true;
+    }
+    if (classType === 'cliptextencodeflux') {
+      if (typeof inputs.clip_l === 'string') {
+        inputs.clip_l = options.prompt;
+        promptPatched = true;
+      }
+      if (typeof inputs.t5xxl === 'string') {
+        inputs.t5xxl = options.prompt;
+        promptPatched = true;
+      }
     }
 
     if (options.negativePrompt) {
@@ -540,7 +524,8 @@ export const callImageApi = async (
       negativePrompt: options.negativePrompt,
       modelId: activeModel.id,
       aspectRatio,
-      steps: activeModel.params.steps || 20,
+      steps: options.steps ?? activeModel.params.steps ?? 20,
+      workflowName: options.workflowName || activeModel.params.workflowName,
     });
   }
   if (isApiAiMode() && apiFormat !== 'comfyui') {
@@ -564,12 +549,12 @@ export const callImageApi = async (
         `(${promptLimitResult.originalLength}). Truncated before ComfyUI request.`
       );
     }
-    const workflowName = activeModel.params.workflowName || apiModel;
+    const workflowName = options.workflowName || activeModel.params.workflowName || apiModel;
     return callComfyImageApi(apiBase, workflowName, {
       prompt: promptLimitResult.text,
       negativePrompt: options.negativePrompt,
       aspectRatio,
-      steps: activeModel.params.steps || 20,
+      steps: options.steps ?? activeModel.params.steps ?? 20,
       referenceImages: options.referenceImages,
       continuityReferenceImage: options.continuityReferenceImage,
       characterReferenceImage: options.characterReferenceImage,

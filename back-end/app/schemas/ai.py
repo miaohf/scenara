@@ -46,9 +46,10 @@ class ComfyImageRequest(BaseModel):
     img2img_denoise: float | None = None
     seed: int | None = None
     steps: int | None = None
+    workflow_name: str | None = None
 
 
-class ComfyVideoJobPayload(BaseModel):
+class ComfyVideoRequest(BaseModel):
     prompt: str
     model_id: str | None = None
     aspect_ratio: str = "16:9"
@@ -56,6 +57,29 @@ class ComfyVideoJobPayload(BaseModel):
     start_image: str
     end_image: str | None = None
     audio_url: str | None = None
+
+
+class VideoResponse(BaseModel):
+    video_base64: str
+    video_data_url: str | None = None
+
+
+# Backward-compatible alias for job payloads
+ComfyVideoJobPayload = ComfyVideoRequest
+
+
+class TtsRequest(BaseModel):
+    text: str
+    model_id: str | None = None
+    voice: str | None = None
+    response_format: str | None = None
+    timeout: int = 120
+
+
+class TtsResponse(BaseModel):
+    audio_base64: str
+    audio_data_url: str
+    mime_type: str | None = None
 
 
 class JobCreateRequest(BaseModel):

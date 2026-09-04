@@ -14,6 +14,7 @@ import {
   parseHttpError,
   ApiKeyError,
 } from './apiCore';
+import { isApiAiMode, apiCallTts } from '../aiApiAdapter';
 import { isAbsoluteHttpUrl, resolveEndpointUrl } from '../urlUtils';
 
 export type DubbingMode = 'narration' | 'dialogue';
@@ -42,6 +43,7 @@ const DEFAULT_TIMEOUT_MS = 180000;
 
 const getMimeType = (format: AudioOutputFormat): string => {
   if (format === 'mp3') return 'audio/mpeg';
+  if (format === 'opus') return 'audio/opus';
   return 'audio/wav';
 };
 
@@ -159,11 +161,14 @@ export const generateDubbingAudio = async (
   const params = (resolvedAudioModel?.params || {}) as any;
   const usedVoice = (options.voice || params.defaultVoice || 'alloy').trim() || 'alloy';
   const usedFormat = (options.format || params.outputFormat || 'wav') as AudioOutputFormat;
-  const timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs || params.timeoutMs || DEFAULT_TIMEOUT_MS;
   const mode = options.mode || 'narration';
   const language = options.language || '中文';
   const temperature = Number.isFinite(options.temperature) ? Number(options.temperature) : 0.6;
   const endpoint = resolvedAudioModel?.endpoint || '/v1/chat/completions';
+  const speechInputMode = params.speechInputMode || (endpoint.includes('/audio/speech') ? 'plain' : 'prompt');
+  const inputText =
+    speechInputMode === 'plain' ? rawText : buildPromptText(rawText, mode, language);
 
   let apiKey = '';
   try {
@@ -174,7 +179,23 @@ export const generateDubbingAudio = async (
     }
   }
   const apiBase = getApiBase('audio', requestedModel);
-  const promptText = buildPromptText(rawText, mode, language);
+
+  if (isApiAiMode() && endpoint.includes('/audio/speech')) {
+    const audioDataUrl = await apiCallTts({
+      text: inputText,
+      modelId: requestedModel,
+      voice: usedVoice,
+      responseFormat: usedFormat,
+      timeout: Math.min(Math.floor(timeoutMs / 1000), 600),
+    });
+    return {
+      audioDataUrl,
+      transcript: rawText,
+      usedModel,
+      usedVoice,
+      usedFormat,
+    };
+  }
 
   if (endpoint.includes('/audio/speech')) {
     const audioDataUrl = await callSpeechEndpoint(
@@ -182,7 +203,7 @@ export const generateDubbingAudio = async (
       endpoint,
       apiKey,
       usedModel,
-      promptText,
+      inputText,
       usedVoice,
       usedFormat,
       timeoutMs
@@ -223,7 +244,7 @@ export const generateDubbingAudio = async (
           messages: [
             {
               role: 'user',
-              content: promptText,
+              content: inputText,
             },
           ],
           temperature,

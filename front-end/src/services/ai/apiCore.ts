@@ -21,10 +21,13 @@ import {
   getActiveImageModel,
   getActiveAudioModel,
   getConfiguredChatModelApiName,
+  isLocalProviderId,
 } from '../modelRegistry';
 import { fetchMediaWithCorsFallback } from '../mediaFetchService';
 import { DEFAULT_CHAT_VERIFY_MODEL, normalizeChatModelId } from '../modelIdUtils';
 import { resolveEndpointUrl } from '../urlUtils';
+import { isApiAiMode, apiCallChat } from '../aiApiAdapter';
+import type { ChatModelDefinition } from '../../types/model';
 
 // ============================================
 // Script progress callback
@@ -131,6 +134,10 @@ export const checkApiKey = (type: 'chat' | 'image' | 'video' | 'audio' = 'chat',
     const isVolcengineProvider =
       resolvedModel.providerId === 'volcengine' ||
       !!provider?.baseUrl?.toLowerCase().includes('volces.com');
+
+    if (isLocalProviderId(resolvedModel.providerId)) {
+      return getApiKeyForModel(resolvedModel.id) || 'local';
+    }
 
     if (isVolcengineProvider) {
       const dedicatedKey = resolvedModel.apiKey || provider?.apiKey;
@@ -483,13 +490,31 @@ export const chatCompletion = async (
   timeout: number = 600000,
   abortSignal?: AbortSignal
 ): Promise<string> => {
-  const apiKey = checkApiKey('chat', model);
+  if (abortSignal?.aborted) {
+    throw new Error('Request cancelled');
+  }
+
+  const resolvedModel = resolveModel('chat', model);
   const requestModel = resolveRequestModel('chat', model);
   const wantsJson = responseFormat === 'json_object';
   const canUseNativeJsonObject = wantsJson && supportsNativeJsonObjectResponseFormat(requestModel);
   const effectivePrompt = wantsJson && !canUseNativeJsonObject
     ? withJsonOutputGuardrails(prompt)
     : prompt;
+
+  if (isApiAiMode()) {
+    const content = await apiCallChat(
+      {
+        prompt: effectivePrompt,
+        responseFormat: wantsJson ? 'json' : undefined,
+        timeout,
+      },
+      resolvedModel as ChatModelDefinition | undefined,
+    );
+    return wantsJson ? cleanJsonString(content) : content;
+  }
+
+  const apiKey = checkApiKey('chat', model);
 
   const requestBody: any = {
     model: requestModel,
@@ -586,13 +611,35 @@ export const chatCompletionStream = async (
   onDelta?: (delta: string) => void,
   abortSignal?: AbortSignal
 ): Promise<string> => {
-  const apiKey = checkApiKey('chat', model);
+  if (abortSignal?.aborted) {
+    throw new Error('Request cancelled');
+  }
+
+  const resolvedModel = resolveModel('chat', model);
   const requestModel = resolveRequestModel('chat', model);
   const wantsJson = responseFormat === 'json_object';
   const canUseNativeJsonObject = wantsJson && supportsNativeJsonObjectResponseFormat(requestModel);
   const effectivePrompt = wantsJson && !canUseNativeJsonObject
     ? withJsonOutputGuardrails(prompt)
     : prompt;
+
+  if (isApiAiMode()) {
+    const content = await apiCallChat(
+      {
+        prompt: effectivePrompt,
+        responseFormat: wantsJson ? 'json' : undefined,
+        timeout,
+      },
+      resolvedModel as ChatModelDefinition | undefined,
+    );
+    const normalized = wantsJson ? cleanJsonString(content) : content;
+    if (onDelta && normalized) {
+      onDelta(normalized);
+    }
+    return normalized;
+  }
+
+  const apiKey = checkApiKey('chat', model);
 
   const requestBody: any = {
     model: requestModel,

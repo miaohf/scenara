@@ -1,30 +1,37 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user
 from app.db.session import get_db
-from app.models.settings import UserSettings
 from app.models.user import User
+from app.routers.settings import _resolve_registry_for_user
 from app.schemas.ai import (
     ChatRequest,
     ChatResponse,
     ComfyImageRequest,
+    ComfyVideoRequest,
     ImageRequest,
     ImageResponse,
+    TtsRequest,
+    TtsResponse,
+    VideoResponse,
 )
 from app.services.ai.chat import AiConfigError, chat_completion, generate_image_openai_compatible
-from app.services.ai.comfyui import run_comfy_image
+from app.services.ai.comfyui import (
+    list_workflow_templates,
+    load_workflow_template,
+    run_comfy_image,
+    run_comfy_video,
+)
+from app.services.ai.tts import generate_speech
 
 router = APIRouter(prefix="/v1/ai", tags=["ai"])
 
 
 async def _get_registry(user: User, db: AsyncSession) -> dict:
-    result = await db.execute(select(UserSettings).where(UserSettings.user_id == user.id))
-    row = result.scalar_one_or_none()
-    return (row.model_registry if row else None) or {}
+    return await _resolve_registry_for_user(user.id, db, persist=False)
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -97,6 +104,7 @@ async def ai_comfyui_image(
                 "img2imgDenoise": body.img2img_denoise,
                 "seed": body.seed,
                 "steps": body.steps,
+                "workflowName": body.workflow_name,
             },
         )
     except AiConfigError as exc:
@@ -105,3 +113,76 @@ async def ai_comfyui_image(
         image_base64=result["image_base64"],
         image_data_url=result.get("image_data_url"),
     )
+
+
+@router.post("/comfyui/video", response_model=VideoResponse)
+async def ai_comfyui_video(
+    body: ComfyVideoRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> VideoResponse:
+    registry = await _get_registry(current_user, db)
+    try:
+        result = await run_comfy_video(
+            registry,
+            {
+                "prompt": body.prompt,
+                "modelId": body.model_id,
+                "aspectRatio": body.aspect_ratio,
+                "duration": body.duration,
+                "startImage": body.start_image,
+                "endImage": body.end_image,
+                "audioUrl": body.audio_url,
+            },
+        )
+    except AiConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return VideoResponse(
+        video_base64=result["video_base64"],
+        video_data_url=result.get("video_data_url"),
+    )
+
+
+@router.post("/tts", response_model=TtsResponse)
+async def ai_tts(
+    body: TtsRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> TtsResponse:
+    registry = await _get_registry(current_user, db)
+    try:
+        result = await generate_speech(
+            registry,
+            text=body.text,
+            model_id=body.model_id,
+            voice=body.voice,
+            response_format=body.response_format or "opus",
+            timeout=body.timeout,
+        )
+    except AiConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return TtsResponse(
+        audio_base64=result["audio_base64"],
+        audio_data_url=result["audio_data_url"],
+        mime_type=result.get("mime_type"),
+    )
+
+
+@router.get("/workflows")
+async def ai_list_workflows(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> dict[str, list[str]]:
+    _ = current_user
+    return {"workflows": list_workflow_templates()}
+
+
+@router.get("/workflows/{workflow_name}")
+async def ai_get_workflow(
+    workflow_name: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> dict:
+    _ = current_user
+    try:
+        return load_workflow_template(workflow_name)
+    except AiConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc

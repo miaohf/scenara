@@ -32,8 +32,9 @@
 - **剧本拆解**：故事大纲 → 场次 / 分镜 / 提示词
 - **资产定妆**：角色、场景、道具一致性管理
 - **关键帧驱动**：首帧 / 尾帧控制，再生成视频
-- **ComfyUI 工作流**：本地图片 / 视频模型接入
-- **云端协作**：Next.js 前端 + FastAPI 后端 + SQLite
+- **ComfyUI 工作流**：本地图片 / 视频模型接入（Flux、LTX、WAN 等）
+- **vLLM 本地 LLM**：剧本 / 分镜 / 提示词生成（OpenAI 兼容 API）
+- **全本地部署**：Next.js 前端 + FastAPI 后端 + ComfyUI + vLLM
 
 ## 技术架构
 
@@ -41,8 +42,9 @@
 |---|---|---|
 | 前端 | `front-end/` | Next.js 16 + shadcn/ui |
 | 后端 | `back-end/` | FastAPI + SQLite |
+| 推理 | — | ComfyUI :8188、vLLM :8000 |
+| 任务队列 | — | Redis + Celery（本地视频生成**必需**） |
 | 存储 | — | MinIO（可选） |
-| 任务队列 | — | Redis + Celery（可选） |
 
 ## 项目启动
 
@@ -61,7 +63,17 @@ uv sync
 cp -n .env.example .env
 ```
 
-### 2. 启动（2～3 个终端）
+### 2. 启动本地全栈
+
+**前置：Redis、ComfyUI、vLLM**
+
+```bash
+# Redis（Celery 必需）
+docker run -d --name scenara-redis -p 6379:6379 redis:7-alpine
+
+# ComfyUI 默认 http://127.0.0.1:8188
+# vLLM 默认 http://100.64.0.32:8000/v1（见 back-end/.env）
+```
 
 **终端 1 — 后端 API**
 
@@ -70,7 +82,7 @@ cd back-end
 uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-**终端 2 — Celery Worker（可选，需 Redis，视频异步任务）**
+**终端 2 — Celery Worker（ComfyUI 视频生成必需）**
 
 ```bash
 cd back-end
@@ -85,20 +97,23 @@ cd front-end && npm run dev
 
 浏览器访问 http://localhost:3000
 
-### 3. 可选：本地代理
+### 3. 可选：ComfyUI CORS 代理
+
+若浏览器无法直连 ComfyUI（跨域），启动代理（默认端口 **8789**，与 `next.config.ts` 一致）：
 
 ```bash
 cd front-end
-npm run media-proxy      # :8787
 npm run comfyui-proxy    # :8789
+npm run media-proxy      # :8787（第三方媒体 URL）
 ```
 
 ## 快速开始
 
 1. 注册 / 登录账号
-2. 在「模型配置」中填写 **API Base URL** 与 **API Key**
-3. 创建项目 → 进入 Episode 工作台
-4. 按阶段完成：剧本 → 资产 → 导演 → 导出
+2. 确认本地服务已启动：**vLLM**、**ComfyUI**、**Redis + Celery**
+3. 在「模型配置」中默认已选中本地模型（Qwen3.8 vLLM / ComfyUI Flux / IndexTTS），密钥与地址由后端 `.env` 管理
+4. 若需云端模型，填写对应提供商的 **API Base URL** 与 **API Key**
+5. 创建项目 → 进入 Episode 工作台 → 剧本 → 资产 → 导演 → 导出
 
 ## 许可证
 

@@ -67,6 +67,8 @@ export interface VideoPromptTemplateConfig {
   sora2NineGridEnglish: string;
   veoStartOnly: string;
   veoStartEnd: string;
+  minimaxH3StartOnly: string;
+  minimaxH3StartEnd: string;
   nineGridGuardrailsChinese: string;
   nineGridGuardrailsEnglish: string;
   endFrameConstraintNote: string;

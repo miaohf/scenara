@@ -186,26 +186,60 @@ const ModelCard: React.FC<ModelCardProps> = ({
       </div>
       {params.apiFormat === 'comfyui' && (
         <div>
-          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">工作流名称</label>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">工作流名称（定妆/通用文生图）</label>
           <input
             type="text"
             value={editParams.workflowName || ''}
             onChange={(e) => handleParamChange('workflowName', e.target.value.trim() || undefined)}
             className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] font-mono"
-            placeholder="flux-dev-fp8"
+            placeholder="image_qwen_Image_2512（定妆默认）"
           />
-          <p className="text-[9px] text-[var(--text-muted)] mt-1">默认读取 public/workflows/&lt;名称&gt;.json</p>
+          <p className="text-[9px] text-[var(--text-muted)] mt-1">
+            读取服务端 back-end/workflows/&lt;名称&gt;.json（不含 .json 后缀）
+          </p>
         </div>
       )}
       {params.apiFormat === 'comfyui' && (
         <div>
-          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">Steps</label>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">Steps（定妆/通用）</label>
           <input
             type="number"
             min="1"
             max="100"
             value={editParams.steps || 20}
             onChange={(e) => handleParamChange('steps', parseInt(e.target.value) || 20)}
+            className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)]"
+          />
+        </div>
+      )}
+      {params.apiFormat === 'comfyui' && (
+        <div>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">造型九宫格工作流</label>
+          <input
+            type="text"
+            value={editParams.turnaroundWorkflowName || ''}
+            onChange={(e) => handleParamChange('turnaroundWorkflowName', e.target.value.trim() || undefined)}
+            className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] font-mono"
+            placeholder="qwen_image_edit_2511_fp8_character_turnaround"
+          />
+          <p className="text-[9px] text-[var(--text-muted)] mt-1">
+            基于定妆参考图生成 3×3 造型表；需角色先有定妆图。留空则回退到上方文生图工作流。
+          </p>
+        </div>
+      )}
+      {params.apiFormat === 'comfyui' && (
+        <div>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">Steps（造型九宫格）</label>
+          <input
+            type="number"
+            min="1"
+            max="100"
+            value={editParams.turnaroundSteps ?? ''}
+            onChange={(e) => {
+              const value = e.target.value;
+              handleParamChange('turnaroundSteps', value === '' ? undefined : parseInt(value) || 4);
+            }}
+            placeholder="默认 4"
             className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)]"
           />
         </div>
@@ -244,7 +278,9 @@ const ModelCard: React.FC<ModelCardProps> = ({
             className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] font-mono"
             placeholder="video-workflow"
           />
-          <p className="text-[9px] text-[var(--text-muted)] mt-1">默认读取 public/workflows/&lt;名称&gt;.json</p>
+          <p className="text-[9px] text-[var(--text-muted)] mt-1">
+            读取服务端 back-end/workflows/&lt;名称&gt;.json（不含 .json 后缀）
+          </p>
         </div>
       )}
       {editParams.mode === 'comfyui' && (
@@ -333,6 +369,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
         >
           <option value="wav">wav</option>
           <option value="mp3">mp3</option>
+          <option value="opus">opus</option>
         </select>
       </div>
     </div>
@@ -370,6 +407,13 @@ const ModelCard: React.FC<ModelCardProps> = ({
               {!model.baseUrl && model.endpoint && !isAbsoluteHttpUrl(model.endpoint) && ` · ${model.endpoint}`}
               {model.description && ` · ${model.description}`}
             </p>
+            {isComfyUiImage && (
+              <p className="text-[10px] text-[var(--text-muted)] mt-1 font-mono">
+                定妆：{(model.params as ImageModelParams).workflowName || '—'}
+                {' · '}
+                九宫格：{(model.params as ImageModelParams).turnaroundWorkflowName || '（同定妆）'}
+              </p>
+            )}
           </div>
         </div>
 

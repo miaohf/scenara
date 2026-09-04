@@ -3,7 +3,9 @@
 ## 技术栈
 
 - **FastAPI** + **SQLite**（本地文件 `data/app.db`）
-- **MinIO** / **Redis**：连接已有实例，通过 `.env` 配置
+- **ComfyUI** / **vLLM** / **IndexTTS**：本地推理（配置保存在服务端 `model_registry`）
+- **Redis** + **Celery**：ComfyUI 视频等长任务（本地部署**必需**）
+- **MinIO**（可选）：媒体对象存储
 
 ## 安装
 
@@ -12,22 +14,34 @@
 ```bash
 cd back-end
 uv sync
-cp -n .env.example .env   # 配置 MinIO / Redis / DEFAULT_API_KEY
+cp -n .env.example .env
 ```
 
-## 启动
+## 本地全栈启动
+
+**1. Redis**（Celery 与 ComfyUI GPU 串行锁依赖）
+
+```bash
+docker run -d --name scenara-redis -p 6379:6379 redis:7-alpine
+```
+
+**2. FastAPI**
 
 ```bash
 cd back-end
 uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-**Celery Worker（视频等长任务，需 Redis）：**
+**3. Celery Worker**（ComfyUI 视频生成必需；已配置 `worker_concurrency=1` 避免多任务抢 GPU）
 
 ```bash
 cd back-end
 uv run celery -A app.workers.celery_app.celery_app worker --loglevel=info
 ```
+
+**4. ComfyUI**（默认 `http://127.0.0.1:8188`）
+
+**5. vLLM**（默认 `http://100.64.0.32:8000/v1`，见 `.env` 中 `VLLM_*`）
 
 API 文档：http://localhost:8000/docs
 
@@ -38,8 +52,21 @@ API 文档：http://localhost:8000/docs
 | 变量 | 说明 |
 |------|------|
 | `DATABASE_URL` | 默认 `sqlite+aiosqlite:///./data/app.db` |
-| `S3_ENDPOINT` | 已有 MinIO 地址，如 `http://127.0.0.1:9000` |
-| `REDIS_URL` | 已有 Redis 地址，如 `redis://127.0.0.1:6379/0` |
+| `JWT_SECRET` | 生产环境（`DEBUG=false`）不可使用默认值 |
+| `REDIS_URL` | Celery 与 ComfyUI GPU 锁 |
+| `VLLM_*` / `INDEXTTS_*` / `COMFYUI_BASE_URL` | 本地模型配置，写入 `user_settings.model_registry` |
+| `DEFAULT_*_MODEL_ID` | 默认激活的 chat/image/video/audio 模型 |
+
+模型配置保存在 SQLite `user_settings.model_registry`。新用户注册时自动写入 `.env` 默认值；修改 `.env` 后 GET `/v1/settings/models` 会合并部署层覆盖（地址/密钥），用户在 UI 的修改通过 PUT 持久化。
+
+## ComfyUI 工作流
+
+工作流 JSON 存放在 [`workflows/`](workflows/)（单一数据源）。前端通过 API 加载：
+
+| 路径 | 说明 |
+|------|------|
+| `GET /v1/ai/workflows` | 列出可用工作流 |
+| `GET /v1/ai/workflows/{name}` | 获取工作流 JSON |
 
 ## API 概览
 
@@ -47,16 +74,11 @@ API 文档：http://localhost:8000/docs
 |------|------|
 | `POST /auth/register` | 注册 |
 | `POST /auth/login` | 登录，返回 JWT |
-| `POST /auth/refresh` | 刷新 token |
-| `GET /auth/me` | 当前用户 |
-| `GET/PUT /v1/settings/models` | 模型配置与 API Key（服务端存储） |
-| `POST /v1/ai/chat` | 同步对话 |
-| `POST /v1/ai/chat-json` | 同步 JSON 对话 |
-| `POST /v1/ai/image` | 同步图片（OpenAI 兼容） |
+| `GET/PUT /v1/settings/models` | 模型配置（服务端存储） |
+| `POST /v1/ai/chat` | 同步对话（含 vLLM 本地） |
+| `POST /v1/ai/tts` | 同步配音（IndexTTS / OpenAI Speech 兼容） |
 | `POST /v1/ai/comfyui/image` | 同步 ComfyUI 图片 |
-| `POST /v1/jobs` | 异步任务（`video` / `comfyui_video`） |
+| `POST /v1/ai/comfyui/video` | 同步 ComfyUI 视频（API 模式默认） |
+| `POST /v1/jobs` | 异步任务（可选；需 Redis + Celery Worker） |
 | `GET /v1/jobs/{id}` | 任务状态 |
 | `GET /v1/jobs/{id}/stream` | SSE 进度 |
-| `GET/POST /v1/projects` | 项目列表 / 创建 |
-| `PATCH /v1/episodes/{id}` | 剧集自动保存 |
-| `POST /v1/media/upload-url` | MinIO 预签名上传 |

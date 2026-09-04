@@ -1511,12 +1511,15 @@ export const generateCharacterTurnaroundImage = async (
   const imageApiFormat = getImageApiFormat(activeImageModel as any);
   const isComfyUi = imageApiFormat === 'comfyui';
   const stylePrompt = getStylePrompt(visualStyle);
+  const masterReference = referenceImage || character.referenceImage;
 
-  let characterSummary =
-    character.visualPrompt || `${character.gender}, ${character.age}, ${character.personality}`;
-  if (isComfyUi) {
-    characterSummary = await translatePromptForComfyUi(characterSummary);
+  if (isComfyUi && !masterReference) {
+    throw new Error('造型九宫格需要先有角色定妆参考图，请先生成或上传定妆图后再试。');
   }
+
+  const characterSummary =
+    character.visualPrompt || `${character.gender}, ${character.age}, ${character.personality}`;
+  // generateImage 内会对最终 prompt 再做一次 Comfy 英文化；此处不做重复翻译
 
   const panelDescriptions = panels.map((p, idx) => {
     const position = CHARACTER_TURNAROUND_LAYOUT.positionLabels[idx];
@@ -1527,31 +1530,35 @@ export const generateCharacterTurnaroundImage = async (
     ? `\nArt Direction: ${artDirection.consistencyAnchors}\nLighting: ${artDirection.lightingStyle}\nTexture: ${artDirection.textureStyle}`
     : '';
 
-  const prompt = `Create ONE character turnaround/reference sheet in a 3x3 grid (9 equal panels with thin white separators).
-All panels must show the SAME character; only view angle and camera distance change.
+  const prompt = `Create a professional 3x3 character turnaround sheet of exactly the same character shown in image 1.
+Preserve identity, facial features, apparent age, hairstyle, hair color, body proportions, costume design, costume colors, accessories, and distinctive details consistently across all nine panels. Do not redesign the character or change the outfit.
 
 Visual Style: ${visualStyle} (${stylePrompt})
 Character: ${character.name} - ${characterSummary}
+
+Arrange nine clearly separated panels in a clean 3x3 grid with consistent neutral studio background, consistent soft lighting, and consistent visual style.
 
 Panels (left to right, top to bottom):
 ${panelDescriptions}
 
 Constraints:
 - Output one single 3x3 grid image only
-- Keep face, hair, body, clothing, and accessories consistent across all panels
-- Keep lighting/color style consistent and use a clean neutral background
-- Each panel should be clear, reference-quality, and well composed${artDirectionSuffix}
+- Same person and same costume in every panel
+- No extra people, no duplicated limbs, no text labels, no captions, no watermark
+- Character design sheet, cinematic production reference, high detail${artDirectionSuffix}
 
-Top priority: the character must look like the same person in all 9 panels.`;
+Top priority: the character must look like the same person in the same outfit in all 9 panels.`;
 
-  // ComfyUI/Flux 不支持 img2img 生成九宫格；Gemini 等多模态模型可用定妆图增强一致性
+  const imageParams = (activeImageModel as any)?.params || {};
+  const turnaroundWorkflow =
+    imageParams.turnaroundWorkflowName ||
+    'qwen_image_edit_2511_fp8_character_turnaround';
+  const turnaroundSteps = imageParams.turnaroundSteps ?? 4;
+
+  // 云端多模态可附带定妆图；ComfyUI Edit 工作流通过 characterReferenceImage 注入 LoadImage
   const referenceImages: string[] = [];
-  if (!isComfyUi) {
-    if (referenceImage) {
-      referenceImages.push(referenceImage);
-    } else if (character.referenceImage) {
-      referenceImages.push(character.referenceImage);
-    }
+  if (!isComfyUi && masterReference) {
+    referenceImages.push(masterReference);
   }
 
   try {
@@ -1565,7 +1572,11 @@ Top priority: the character must look like the same person in all 9 panels.`;
       getNegativePrompt(visualStyle),
       {
         referencePackType: 'character',
-        skipComfyImg2Img: isComfyUi,
+        // ComfyUI：不要 skip 参考图；走专用 turnaround 工作流
+        skipComfyImg2Img: false,
+        characterReferenceImage: isComfyUi ? masterReference : undefined,
+        workflowName: isComfyUi ? turnaroundWorkflow : undefined,
+        steps: isComfyUi ? turnaroundSteps : undefined,
       }
     );
     console.log(`✅ 角色 ${character.name} 九宫格造型图片生成完成`);

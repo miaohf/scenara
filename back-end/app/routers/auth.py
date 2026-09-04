@@ -14,6 +14,7 @@ from app.core.security import (
     verify_token,
 )
 from app.db.session import get_db
+from app.models.settings import UserSettings
 from app.models.user import User
 from app.schemas.auth import (
     LoginRequest,
@@ -22,6 +23,7 @@ from app.schemas.auth import (
     TokenResponse,
     UserResponse,
 )
+from app.services.model_registry import build_default_registry
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -40,6 +42,8 @@ async def register(body: RegisterRequest, db: Annotated[AsyncSession, Depends(ge
         password_hash=hash_password(body.password),
     )
     db.add(user)
+    await db.flush()
+    db.add(UserSettings(user_id=user.id, model_registry=build_default_registry()))
     await db.commit()
     await db.refresh(user)
     return user

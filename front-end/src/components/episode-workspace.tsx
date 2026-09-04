@@ -27,13 +27,21 @@ const isNineGridGenerating = (status?: string): boolean =>
   status === "generating_image" ||
   status === "generating";
 
+const resolveStuckAssetStatus = (
+  status: "pending" | "generating" | "completed" | "failed" | undefined,
+  hasImage: boolean,
+): "pending" | "generating" | "completed" | "failed" | undefined => {
+  if (status !== "generating") return status;
+  return hasImage ? "completed" : "failed";
+};
+
 const clearInFlightGenerationStates = (episode: ProjectState): ProjectState => {
   const scriptData = episode.scriptData
     ? {
         ...episode.scriptData,
         characters: episode.scriptData.characters.map((char) => ({
           ...char,
-          status: char.status === "generating" ? "failed" : char.status,
+          status: resolveStuckAssetStatus(char.status, !!char.referenceImage),
           turnaround:
             char.turnaround &&
             (char.turnaround.status === "generating_panels" ||
@@ -42,16 +50,16 @@ const clearInFlightGenerationStates = (episode: ProjectState): ProjectState => {
               : char.turnaround,
           variations: char.variations.map((variation) => ({
             ...variation,
-            status: variation.status === "generating" ? "failed" : variation.status,
+            status: resolveStuckAssetStatus(variation.status, !!variation.referenceImage),
           })),
         })),
         scenes: episode.scriptData.scenes.map((scene) => ({
           ...scene,
-          status: scene.status === "generating" ? "failed" : scene.status,
+          status: resolveStuckAssetStatus(scene.status, !!scene.referenceImage),
         })),
         props: episode.scriptData.props.map((prop) => ({
           ...prop,
-          status: prop.status === "generating" ? "failed" : prop.status,
+          status: resolveStuckAssetStatus(prop.status, !!prop.referenceImage),
         })),
       }
     : null;
@@ -105,7 +113,7 @@ export default function EpisodeWorkspace() {
     if (!episodeId) return;
     setEpisodeLoadError(null);
     loadEpisode(episodeId)
-      .then((ep) => setCurrentEpisode(ep))
+      .then((ep) => setCurrentEpisode(clearInFlightGenerationStates(ep)))
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : "加载剧集失败";
         console.error("Failed to load episode:", error);

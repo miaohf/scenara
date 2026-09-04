@@ -191,20 +191,26 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   useEffect(() => {
     if (!project.scriptData) return;
 
+    const resolveStuckAssetStatus = (
+      status: 'pending' | 'generating' | 'completed' | 'failed' | undefined,
+      hasImage: boolean
+    ): 'pending' | 'generating' | 'completed' | 'failed' | undefined => {
+      if (status !== 'generating') return status;
+      return hasImage ? 'completed' : 'failed';
+    };
+
     const hasStuckCharacters = project.scriptData.characters.some(char => {
-      // 检查角色本身是否卡住
-      const isCharStuck = char.status === 'generating' && !char.referenceImage;
-      // 检查角色变体是否卡住
-      const hasStuckVariations = char.variations?.some(v => v.status === 'generating' && !v.referenceImage);
+      const isCharStuck = char.status === 'generating';
+      const hasStuckVariations = char.variations?.some(v => v.status === 'generating');
       return isCharStuck || hasStuckVariations;
     });
 
     const hasStuckScenes = project.scriptData.scenes.some(scene => 
-      scene.status === 'generating' && !scene.referenceImage
+      scene.status === 'generating'
     );
 
     const hasStuckProps = (project.scriptData.props || []).some(prop =>
-      prop.status === 'generating' && !prop.referenceImage
+      prop.status === 'generating'
     );
 
     if (hasStuckCharacters || hasStuckScenes || hasStuckProps) {
@@ -212,26 +218,39 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       const newData = cloneScriptData(project.scriptData);
       
       // 重置角色状态
-      newData.characters = newData.characters.map(char => ({
-        ...char,
-        status: char.status === 'generating' ? 'failed' as const : char.status,
-        variations: char.variations?.map(v => ({
-          ...v,
-          status: v.status === 'generating' ? 'failed' as const : v.status
-        }))
-      }));
+      newData.characters = newData.characters.map(char => {
+        const turnaroundStatus = char.turnaround?.status;
+        const stuckTurnaround =
+          turnaroundStatus === 'generating_panels' || turnaroundStatus === 'generating_image';
+        return {
+          ...char,
+          status: resolveStuckAssetStatus(char.status, !!char.referenceImage),
+          variations: char.variations?.map(v => ({
+            ...v,
+            status: resolveStuckAssetStatus(v.status, !!v.referenceImage),
+          })),
+          turnaround: char.turnaround && stuckTurnaround
+            ? {
+                ...char.turnaround,
+                status: (char.turnaround.status === 'generating_image' && char.turnaround.panels?.length
+                  ? 'panels_ready'
+                  : 'idle') as typeof char.turnaround.status,
+              }
+            : char.turnaround,
+        };
+      });
       
       // 重置场景状态
       newData.scenes = newData.scenes.map(scene => ({
         ...scene,
-        status: scene.status === 'generating' ? 'failed' as const : scene.status
+        status: resolveStuckAssetStatus(scene.status, !!scene.referenceImage),
       }));
 
       // 重置道具状态
       if (newData.props) {
         newData.props = newData.props.map(prop => ({
           ...prop,
-          status: prop.status === 'generating' ? 'failed' as const : prop.status
+          status: resolveStuckAssetStatus(prop.status, !!prop.referenceImage),
         }));
       }
       
@@ -520,14 +539,16 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   const executeBatchGenerate = async (targetItems: any[], type: 'character' | 'scene') => {
     setBatchProgress({ current: 0, total: targetItems.length });
 
-    for (let i = 0; i < targetItems.length; i++) {
-      if (i > 0) await delay(DEFAULTS.batchGenerateDelay);
-      
-      await handleGenerateAsset(type, targetItems[i].id);
-      setBatchProgress({ current: i + 1, total: targetItems.length });
+    try {
+      for (let i = 0; i < targetItems.length; i++) {
+        if (i > 0) await delay(DEFAULTS.batchGenerateDelay);
+        
+        await handleGenerateAsset(type, targetItems[i].id);
+        setBatchProgress({ current: i + 1, total: targetItems.length });
+      }
+    } finally {
+      setBatchProgress(null);
     }
-
-    setBatchProgress(null);
   };
 
   /**
@@ -1223,13 +1244,15 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   const executeBatchGenerateProps = async (targetItems: Prop[]) => {
     setBatchProgress({ current: 0, total: targetItems.length });
 
-    for (let i = 0; i < targetItems.length; i++) {
-      if (i > 0) await delay(DEFAULTS.batchGenerateDelay);
-      await handleGeneratePropAsset(targetItems[i].id);
-      setBatchProgress({ current: i + 1, total: targetItems.length });
+    try {
+      for (let i = 0; i < targetItems.length; i++) {
+        if (i > 0) await delay(DEFAULTS.batchGenerateDelay);
+        await handleGeneratePropAsset(targetItems[i].id);
+        setBatchProgress({ current: i + 1, total: targetItems.length });
+      }
+    } finally {
+      setBatchProgress(null);
     }
-
-    setBatchProgress(null);
   };
 
   /**

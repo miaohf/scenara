@@ -1,4 +1,4 @@
-# Scenara — Front-end (Next.js + shadcn)
+# SCENARA — Front-end (Next.js + shadcn)
 
 ## 启动
 

@@ -672,14 +672,40 @@ Voiceover in {language} is allowed, but no subtitles or any on-screen text.`,
 Action: {actionSummary}
 Camera Movement: {cameraMovement}
 Visual Style Anchor: {visualStyle}
-Language: {language}
-Keep identity, scene lighting, and prop details consistent throughout the shot.`,
+Keep identity, scene lighting, and prop details consistent throughout the shot.
+Any spoken audio must be in-scene character dialogue only; no narrator voiceover.`,
     veoStartEnd: `Use the provided START and END frames as hard constraints.
 Action: {actionSummary}
 Camera Movement: {cameraMovement}
 Visual Style Anchor: {visualStyle}
-Language: {language}
-The video must start from the start frame composition and progress naturally to a final state that matches the end frame.`,
+The video must start from the start frame composition and progress naturally to a final state that matches the end frame.
+Any spoken audio must be in-scene character dialogue only; no narrator voiceover.`,
+    minimaxH3StartOnly: `{visualStyle} cinematic look.
+
+Scene overview: {actionSummary}
+
+CRITICAL: The first frame MUST match the provided start-frame composition exactly. Animate naturally from that opening state.
+
+Timeline ({duration}s total):
+[0s-{midDuration}s] Hold the opening composition, begin smooth natural motion described in the scene overview.
+[{midDuration}s-{duration}s] Continue motion with stable identity, lighting, and environment continuity.
+
+Camera: {cameraMovement}. Clean motivated movement, no dissolves.
+
+No subtitles, logos, watermarks, or any on-screen text.`,
+    minimaxH3StartEnd: `{visualStyle} cinematic look.
+
+Scene overview: {actionSummary}
+
+CRITICAL: The video MUST start from the provided first-frame composition and end matching the provided last-frame composition. Transition naturally between them.
+
+Timeline ({duration}s total):
+[0s-{midDuration}s] Hold the first-frame composition, begin motion toward the scene goal.
+[{midDuration}s-{duration}s] Continue motion and settle into the last-frame composition.
+
+Camera: {cameraMovement}. Clean motivated movement, no dissolves.
+
+No subtitles, logos, watermarks, or any on-screen text.`,
     nineGridGuardrailsChinese: `HARD RULES（最高优先级）：
 - 视频必须始终为单画面全屏输出，任意时刻只能有一个镜头占满100%画面。
 - 严禁九宫格/六宫格/四宫格分屏、拼贴、画中画、多窗口、缩略图墙、多面板并行动画。
@@ -727,6 +753,8 @@ export type PromptTemplatePath =
   | 'video.sora2NineGridEnglish'
   | 'video.veoStartOnly'
   | 'video.veoStartEnd'
+  | 'video.minimaxH3StartOnly'
+  | 'video.minimaxH3StartEnd'
   | 'video.nineGridGuardrailsChinese'
   | 'video.nineGridGuardrailsEnglish'
   | 'video.endFrameConstraintNote'
@@ -1005,6 +1033,20 @@ export const PROMPT_TEMPLATE_FIELD_DEFINITIONS: PromptTemplateFieldDefinition[] 
     title: '视频模板-Veo 首尾帧模式',
     description: '首尾帧双约束模式使用的模板。',
     placeholders: ['actionSummary', 'cameraMovement', 'visualStyle', 'language'],
+  },
+  {
+    path: 'video.minimaxH3StartOnly',
+    category: 'video',
+    title: '视频模板-MiniMax H3 首帧模式',
+    description: 'MiniMax H3 原生音视频工作流（仅首帧）使用的 timeline 模板。',
+    placeholders: ['actionSummary', 'cameraMovement', 'visualStyle', 'duration', 'midDuration'],
+  },
+  {
+    path: 'video.minimaxH3StartEnd',
+    category: 'video',
+    title: '视频模板-MiniMax H3 首尾帧模式',
+    description: 'MiniMax H3 FLF2V 工作流使用的 timeline 模板。',
+    placeholders: ['actionSummary', 'cameraMovement', 'visualStyle', 'duration', 'midDuration'],
   },
   {
     path: 'video.nineGridGuardrailsChinese',
