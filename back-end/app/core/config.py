@@ -15,7 +15,8 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
-    database_url: str = "sqlite+aiosqlite:///./data/app.db"
+    # 本地开发可用 SQLite；多进程（API + Celery）请用 PostgreSQL，避免 database is locked
+    database_url: str = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/scenara"
 
     jwt_secret: str = DEFAULT_JWT_SECRET
     jwt_algorithm: str = "HS256"
@@ -28,6 +29,13 @@ class Settings(BaseSettings):
     s3_bucket: str = "bigbanana-media"
     s3_region: str = "us-east-1"
     s3_use_ssl: bool = False
+
+    # 媒体存储：local（默认，零依赖）| s3（需 MinIO/S3 可用）
+    media_backend: str = "local"
+    media_local_dir: str = "./data/media"
+    # 生成图/视频以签名 URL 形式写入 episode payload；浏览器经 Next `/api` rewrite 访问
+    media_url_prefix: str = "/api"
+    media_url_ttl_days: int = 3650
 
     redis_url: str = "redis://127.0.0.1:6379/0"
 

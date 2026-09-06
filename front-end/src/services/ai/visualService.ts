@@ -4,6 +4,7 @@
  */
 
 import { Character, Scene, Prop, AspectRatio, ArtDirection, CharacterTurnaroundPanel } from "../../types";
+import type { GenerationJobStatus, GenerationTarget } from "../../types/model";
 import { addRenderLogWithTokens } from '../renderLogService';
 import {
   retryOperation,
@@ -532,6 +533,11 @@ const MAX_IMAGE_PROMPT_CHARS = 5000;
 const IMAGE_PROMPT_SOFT_TARGET_CHARS = 4700;
 const MAX_NEGATIVE_PROMPT_TERMS = 64;
 const MAX_REFERENCE_IMAGES_PER_REQUEST = 5;
+/**
+ * ComfyUI Flux2 Edit 工作流只有 4 个参考图槽位（后端 `FLUX2_EDIT_MAX_REFS`）。
+ * 前端按 5 截断会让日志说“保留 5 张”，实际后端又静默丢掉第 5 张。
+ */
+const MAX_COMFY_REFERENCE_IMAGES = 4;
 const OPENAI_IMAGE_QUALITY = 'medium';
 const OPENAI_IMAGE_OUTPUT_FORMAT = 'png';
 const OPENAI_IMAGE_OUTPUT_COMPRESSION = 100;
@@ -584,12 +590,14 @@ const normalizeReferenceImageValue = (input?: string): string => String(input ||
 
 const buildBoundedReferenceImages = (
   referenceImages: string[],
-  continuityReferenceImage?: string
+  continuityReferenceImage?: string,
+  maxReferences: number = MAX_REFERENCE_IMAGES_PER_REQUEST
 ): {
   references: string[];
   continuityReferenceImage?: string;
   requestedCount: number;
   droppedCount: number;
+  maxReferences: number;
 } => {
   const dedupedBase: string[] = [];
   const seenBase = new Set<string>();
@@ -609,10 +617,10 @@ const buildBoundedReferenceImages = (
   let boundedReferences: string[];
   if (hasContinuity) {
     // Reserve one slot for continuity and keep it as the final reference.
-    const head = baseWithoutContinuity.slice(0, Math.max(0, MAX_REFERENCE_IMAGES_PER_REQUEST - 1));
+    const head = baseWithoutContinuity.slice(0, Math.max(0, maxReferences - 1));
     boundedReferences = [...head, normalizedContinuity];
   } else {
-    boundedReferences = baseWithoutContinuity.slice(0, MAX_REFERENCE_IMAGES_PER_REQUEST);
+    boundedReferences = baseWithoutContinuity.slice(0, maxReferences);
   }
 
   const requestedCount = dedupedBase.length + (hasContinuity && !dedupedBase.includes(normalizedContinuity) ? 1 : 0);
@@ -623,6 +631,7 @@ const buildBoundedReferenceImages = (
     continuityReferenceImage: hasContinuity ? normalizedContinuity : undefined,
     requestedCount,
     droppedCount,
+    maxReferences,
   };
 };
 
@@ -871,10 +880,27 @@ export const generateImage = async (
     referencePackType?: ReferencePackType;
     /** ComfyUI 九宫格等场景需纯文生图，禁止 img2img 锁定单张定妆图 */
     skipComfyImg2Img?: boolean;
+    /** 覆盖模型默认 workflowName（关键帧 / 九宫格等） */
+    workflowName?: string;
+    /** 覆盖模型默认 steps */
+    steps?: number;
+    target?: GenerationTarget;
+    onJobCreated?: (job: GenerationJobStatus) => void;
+    waitForResult?: boolean;
   }
 ): Promise<string> => {
   const startTime = Date.now();
-  const boundedReferences = buildBoundedReferenceImages(referenceImages, options?.continuityReferenceImage);
+  const activeImageModel = getActiveModel('image');
+  const imageRoutingFamily = resolveImageModelRoutingFamily(activeImageModel);
+  const imageModelId = activeImageModel?.apiModel || activeImageModel?.id || 'gemini-3-pro-image-preview';
+  const imageApiFormat = getImageApiFormat(activeImageModel as any);
+
+  // 参考图上限随实际后端而定，避免前端报“保留 5 张”而后端只吃 4 张
+  const boundedReferences = buildBoundedReferenceImages(
+    referenceImages,
+    options?.continuityReferenceImage,
+    imageApiFormat === 'comfyui' ? MAX_COMFY_REFERENCE_IMAGES : MAX_REFERENCE_IMAGES_PER_REQUEST
+  );
   const effectiveReferenceImages = boundedReferences.references;
   const continuityReferenceImage = boundedReferences.continuityReferenceImage;
   const referencePackType = options?.referencePackType || 'shot';
@@ -882,15 +908,11 @@ export const generateImage = async (
 
   if (boundedReferences.droppedCount > 0) {
     console.warn(
-      `[Image] Reference images capped at ${MAX_REFERENCE_IMAGES_PER_REQUEST}: ` +
+      `[Image] Reference images capped at ${boundedReferences.maxReferences}: ` +
       `${boundedReferences.requestedCount} -> ${effectiveReferenceImages.length}`
     );
   }
 
-  const activeImageModel = getActiveModel('image');
-  const imageRoutingFamily = resolveImageModelRoutingFamily(activeImageModel);
-  const imageModelId = activeImageModel?.apiModel || activeImageModel?.id || 'gemini-3-pro-image-preview';
-  const imageApiFormat = getImageApiFormat(activeImageModel as any);
   const imageModelEndpointTemplate = activeImageModel?.endpoint || getDefaultImageEndpoint(imageApiFormat, imageModelId);
   const imageModelEndpoint = imageModelEndpointTemplate.replace('{model}', imageModelId);
   const apiKey = imageApiFormat === 'comfyui' ? '' : checkApiKey('image', activeImageModel?.id);
@@ -939,7 +961,15 @@ export const generateImage = async (
           : characterRef
             ? 0.78
             : undefined,
+        workflowName: options?.workflowName,
+        steps: options?.steps,
+        target: options?.target,
+        onJobCreated: options?.onJobCreated,
+        waitForResult: options?.waitForResult,
       }, activeImageModel as any);
+      if (options?.waitForResult === false) {
+        return imageUrl;
+      }
       addRenderLogWithTokens({
         type: 'keyframe',
         resourceId: 'image-' + Date.now(),
@@ -1502,7 +1532,8 @@ export const generateCharacterTurnaroundImage = async (
   panels: CharacterTurnaroundPanel[],
   visualStyle: string,
   referenceImage?: string,
-  artDirection?: ArtDirection
+  artDirection?: ArtDirection,
+  options?: { target?: GenerationTarget }
 ): Promise<string> => {
   console.log(`🖼️ generateCharacterTurnaroundImage - 为角色 ${character.name} 生成九宫格造型图片`);
   logScriptProgress(`正在为角色「${character.name}」生成九宫格造型图片...`);
@@ -1577,6 +1608,7 @@ Top priority: the character must look like the same person in the same outfit in
         characterReferenceImage: isComfyUi ? masterReference : undefined,
         workflowName: isComfyUi ? turnaroundWorkflow : undefined,
         steps: isComfyUi ? turnaroundSteps : undefined,
+        target: options?.target,
       }
     );
     console.log(`✅ 角色 ${character.name} 九宫格造型图片生成完成`);

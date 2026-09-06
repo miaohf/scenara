@@ -57,9 +57,9 @@ const ShotRow: React.FC<Props> = ({
   const getShotDisplayNumber = () => getShotDisplayLabel(shot.id, shotNumber - 1);
 
   return (
-    <div className="group bg-[var(--bg-base)] hover:bg-[var(--bg-primary)] transition-colors p-8 flex gap-8">
+    <div className="group bg-[var(--bg-base)] hover:bg-[var(--bg-primary)] transition-colors p-6 flex gap-5 xl:gap-6">
       {/* Shot ID & Tech Data */}
-      <div className="w-32 flex-shrink-0 flex flex-col gap-4">
+      <div className="w-28 flex-shrink-0 flex flex-col gap-4">
         <div className="flex items-center justify-between gap-2 text-xs font-mono text-[var(--text-tertiary)] group-hover:text-[var(--text-primary)] transition-colors">
           <span>{getShotDisplayNumber()}</span>
           <div className="flex items-center gap-1">
@@ -91,7 +91,7 @@ const ShotRow: React.FC<Props> = ({
       </div>
 
       {/* Main Action */}
-      <div className="flex-1 space-y-4">
+      <div className="flex-1 xl:flex-none xl:w-[36%] xl:min-w-[14rem] xl:max-w-md space-y-4 min-w-0">
         {editingShotActionId === shot.id ? (
           <div className="space-y-3 p-4 bg-[var(--bg-primary)] border border-[var(--border-primary)] rounded-lg">
             <div className="space-y-2">
@@ -130,7 +130,7 @@ const ShotRow: React.FC<Props> = ({
         ) : (
           <div className="relative group/action">
             <div className="flex items-start gap-2">
-              <p className="text-[var(--text-secondary)] text-sm leading-7 font-medium max-w-2xl flex-1">
+              <p className="text-[var(--text-secondary)] text-sm leading-7 font-medium min-w-0 flex-1">
                 {shot.actionSummary}
               </p>
               <button
@@ -272,7 +272,7 @@ const ShotRow: React.FC<Props> = ({
       </div>
 
       {/* Prompt Preview (Desktop) */}
-      <div className="w-64 hidden xl:block pl-6 border-l border-[var(--border-subtle)]">
+      <div className="hidden xl:block flex-1 min-w-0 pl-6 border-l border-[var(--border-subtle)]">
         <div className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-widest mb-2 flex items-center gap-2 justify-between">
           <span className="flex items-center gap-2">
             <Aperture className="w-3 h-3" /> 画面提示词

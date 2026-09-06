@@ -32,8 +32,11 @@ class ImageRequest(BaseModel):
 
 
 class ImageResponse(BaseModel):
-    image_base64: str
+    # 媒体落盘后不再回传 base64；仅在存储不可用降级时才有值
+    image_base64: str | None = None
     image_data_url: str | None = None
+    image_url: str | None = None
+    media_key: str | None = None
 
 
 class ComfyImageRequest(BaseModel):
@@ -60,8 +63,10 @@ class ComfyVideoRequest(BaseModel):
 
 
 class VideoResponse(BaseModel):
-    video_base64: str
+    video_base64: str | None = None
     video_data_url: str | None = None
+    video_url: str | None = None
+    media_key: str | None = None
 
 
 # Backward-compatible alias for job payloads
@@ -83,8 +88,10 @@ class TtsResponse(BaseModel):
 
 
 class JobCreateRequest(BaseModel):
-    job_type: str  # video | comfyui | script_parse
+    job_type: str  # video | comfyui_image | comfyui_video
     episode_id: str | None = None
+    # 写回目标：{kind, id, shotId, characterId, type...}，完成后 Worker 据此更新剧集
+    target: dict[str, Any] | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -98,5 +105,10 @@ class JobResponse(BaseModel):
     error: str | None = None
     created_at: str
     updated_at: str
+    episode_id: str | None = None
+    target: dict[str, Any] | None = None
+    # 排队可见性：Worker concurrency=1 时长时间 pending 属正常，前端据此区分「排队」与「Worker 掉线」
+    queue_position: int | None = None
+    queue_running: bool | None = None
 
     model_config = {"from_attributes": True}

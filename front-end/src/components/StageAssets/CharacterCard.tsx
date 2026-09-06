@@ -14,6 +14,8 @@ interface CharacterCardProps {
   onUploadShapeReference: (file: File) => void;
   onClearShapeReference: () => void;
   onPromptSave: (newPrompt: string) => void;
+  onRegeneratePrompt?: () => void;
+  isRegeneratingPrompt?: boolean;
   onOpenWardrobe: () => void;
   onOpenTurnaround: () => void;
   onImageClick: (imageUrl: string) => void;
@@ -32,6 +34,8 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
   onUploadShapeReference,
   onClearShapeReference,
   onPromptSave,
+  onRegeneratePrompt,
+  isRegeneratingPrompt = false,
   onOpenWardrobe,
   onOpenTurnaround,
   onImageClick,
@@ -58,7 +62,7 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
       )}
       <div className="flex gap-4 p-4 pb-0">
         {/* Character Image */}
-        <div className="w-48 flex-shrink-0">
+        <div className="w-[19.6rem] flex-shrink-0">
           <div 
             className="aspect-video bg-[var(--bg-elevated)] relative rounded-lg overflow-hidden cursor-pointer"
             onClick={() => character.referenceImage && onImageClick(character.referenceImage)}
@@ -161,7 +165,7 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
           </div>
 
           {/* Actions Row */}
-          <div className="flex flex-col gap-2 mt-2">
+          <div className="flex flex-col gap-2 mt-2 w-full max-w-[9.5rem] self-end">
             {/* Manage Wardrobe Button */}
             <button 
               onClick={onOpenWardrobe}
@@ -220,6 +224,8 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
           <PromptEditor
             prompt={character.visualPrompt || ''}
             onSave={onPromptSave}
+            onRegenerate={onRegeneratePrompt}
+            isRegenerating={isRegeneratingPrompt}
             label="角色提示词"
             placeholder="输入角色的视觉描述..."
           />
@@ -263,24 +269,24 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
           )}
         </div>
 
-        <button
-          onClick={onAddToLibrary}
-          disabled={isGenerating}
-          className="w-full py-2 mt-2 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-        >
-          <FolderPlus className="w-3 h-3" />
-          加入资产库
-        </button>
-
-        {/* Delete Button */}
-        <button
-          onClick={onDelete}
-          disabled={isGenerating}
-          className="w-full py-2 mt-2 bg-transparent hover:bg-[var(--error-bg)] text-[var(--error-text)] hover:text-[var(--error-text)] border border-[var(--error-border)] hover:border-[var(--error-border)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-        >
-          <Trash2 className="w-3 h-3" />
-          删除角色
-        </button>
+        <div className="mt-2 flex gap-2">
+          <button
+            onClick={onAddToLibrary}
+            disabled={isGenerating}
+            className="flex-1 py-2 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <FolderPlus className="w-3 h-3" />
+            加入资产库
+          </button>
+          <button
+            onClick={onDelete}
+            disabled={isGenerating}
+            className="flex-1 py-2 bg-transparent hover:bg-[var(--error-bg)] text-[var(--error-text)] hover:text-[var(--error-text)] border border-[var(--error-border)] hover:border-[var(--error-border)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <Trash2 className="w-3 h-3" />
+            删除角色
+          </button>
+        </div>
       </div>
     </div>
   );

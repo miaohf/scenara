@@ -53,6 +53,16 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   const [showSceneLibraryPicker, setShowSceneLibraryPicker] = useState(false);
   const [showPropLibraryPicker, setShowPropLibraryPicker] = useState(false);
   const [pickerProject, setPickerProject] = useState<SeriesProject | null>(null);
+  const [regeneratingPromptIds, setRegeneratingPromptIds] = useState<Set<string>>(new Set());
+
+  const markPromptRegenerating = (id: string, active: boolean) => {
+    setRegeneratingPromptIds(prev => {
+      const next = new Set(prev);
+      if (active) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
 
   const loadPickerProject = async (): Promise<SeriesProject | null> => {
     if (!project.projectId) return null;
@@ -183,80 +193,6 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   const shotPromptModel = resolveShotGenerationModel(
     project.shotGenerationModel || project.scriptData?.shotGenerationModel
   );
-
-  /**
-   * 组件加载时，检测并重置卡住的生成状态
-   * 解决关闭页面后重新打开时，状态仍为"generating"导致无法重新生成的问题
-   */
-  useEffect(() => {
-    if (!project.scriptData) return;
-
-    const resolveStuckAssetStatus = (
-      status: 'pending' | 'generating' | 'completed' | 'failed' | undefined,
-      hasImage: boolean
-    ): 'pending' | 'generating' | 'completed' | 'failed' | undefined => {
-      if (status !== 'generating') return status;
-      return hasImage ? 'completed' : 'failed';
-    };
-
-    const hasStuckCharacters = project.scriptData.characters.some(char => {
-      const isCharStuck = char.status === 'generating';
-      const hasStuckVariations = char.variations?.some(v => v.status === 'generating');
-      return isCharStuck || hasStuckVariations;
-    });
-
-    const hasStuckScenes = project.scriptData.scenes.some(scene => 
-      scene.status === 'generating'
-    );
-
-    const hasStuckProps = (project.scriptData.props || []).some(prop =>
-      prop.status === 'generating'
-    );
-
-    if (hasStuckCharacters || hasStuckScenes || hasStuckProps) {
-      console.log('🔧 检测到卡住的生成状态，正在重置...');
-      const newData = cloneScriptData(project.scriptData);
-      
-      // 重置角色状态
-      newData.characters = newData.characters.map(char => {
-        const turnaroundStatus = char.turnaround?.status;
-        const stuckTurnaround =
-          turnaroundStatus === 'generating_panels' || turnaroundStatus === 'generating_image';
-        return {
-          ...char,
-          status: resolveStuckAssetStatus(char.status, !!char.referenceImage),
-          variations: char.variations?.map(v => ({
-            ...v,
-            status: resolveStuckAssetStatus(v.status, !!v.referenceImage),
-          })),
-          turnaround: char.turnaround && stuckTurnaround
-            ? {
-                ...char.turnaround,
-                status: (char.turnaround.status === 'generating_image' && char.turnaround.panels?.length
-                  ? 'panels_ready'
-                  : 'idle') as typeof char.turnaround.status,
-              }
-            : char.turnaround,
-        };
-      });
-      
-      // 重置场景状态
-      newData.scenes = newData.scenes.map(scene => ({
-        ...scene,
-        status: resolveStuckAssetStatus(scene.status, !!scene.referenceImage),
-      }));
-
-      // 重置道具状态
-      if (newData.props) {
-        newData.props = newData.props.map(prop => ({
-          ...prop,
-          status: resolveStuckAssetStatus(prop.status, !!prop.referenceImage),
-        }));
-      }
-      
-      updateProject({ scriptData: newData });
-    }
-  }, []); // 进入资产页时执行一次，清理离开页面后遗留的 generating 状态
 
   /**
    * 上报生成状态给父组件，用于导航锁定
@@ -466,10 +402,10 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         type === 'character' && !shapeReferenceImage ? characterHasTurnaroundReference : false,
         negativePrompt,
         shapeReferenceImage
-          ? { referencePackType: 'shape' }
+          ? { referencePackType: 'shape', target: { kind: type, id } }
           : type === 'character'
-            ? { referencePackType: 'character' }
-            : { referencePackType: 'scene' }
+            ? { referencePackType: 'character', target: { kind: type, id } }
+            : { referencePackType: 'scene', target: { kind: type, id } }
       );
 
       // 更新状态
@@ -760,6 +696,114 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       );
       char.visualPrompt = newPrompt;
       updateProject({ scriptData: invalidateShotGenerationMeta(newData) });
+    }
+  };
+
+  /**
+   * 按当前项目风格重新生成单个资产提示词（不生图）
+   */
+  const handleRegenerateAssetPrompt = async (
+    type: 'character' | 'scene' | 'prop',
+    id: string
+  ) => {
+    if (!project.scriptData) return;
+    const key = `${type}:${id}`;
+    markPromptRegenerating(key, true);
+
+    try {
+      const artDirection = project.scriptData.artDirection;
+      let prompts: { visualPrompt: string; negativePrompt: string };
+
+      if (type === 'character') {
+        const char = project.scriptData.characters.find(c => compareIds(c.id, id));
+        if (!char) return;
+        prompts = await generateVisualPrompts(
+          'character',
+          char,
+          genre,
+          shotPromptModel,
+          visualStyle,
+          language,
+          artDirection
+        );
+        updateProject(prev => {
+          if (!prev.scriptData) return prev;
+          const newData = cloneScriptData(prev.scriptData);
+          const target = newData.characters.find(c => compareIds(c.id, id));
+          if (!target) return prev;
+          target.promptVersions = updatePromptWithVersion(
+            target.visualPrompt,
+            prompts.visualPrompt,
+            target.promptVersions,
+            'ai-generated',
+            'Regenerated character prompt'
+          );
+          target.visualPrompt = prompts.visualPrompt;
+          target.negativePrompt = prompts.negativePrompt;
+          return { ...prev, scriptData: invalidateShotGenerationMeta(newData) };
+        });
+      } else if (type === 'scene') {
+        const scene = project.scriptData.scenes.find(s => compareIds(s.id, id));
+        if (!scene) return;
+        prompts = await generateVisualPrompts(
+          'scene',
+          scene,
+          genre,
+          shotPromptModel,
+          visualStyle,
+          language,
+          artDirection
+        );
+        updateProject(prev => {
+          if (!prev.scriptData) return prev;
+          const newData = cloneScriptData(prev.scriptData);
+          const target = newData.scenes.find(s => compareIds(s.id, id));
+          if (!target) return prev;
+          target.promptVersions = updatePromptWithVersion(
+            target.visualPrompt,
+            prompts.visualPrompt,
+            target.promptVersions,
+            'ai-generated',
+            'Regenerated scene prompt'
+          );
+          target.visualPrompt = prompts.visualPrompt;
+          target.negativePrompt = prompts.negativePrompt;
+          return { ...prev, scriptData: invalidateShotGenerationMeta(newData) };
+        });
+      } else {
+        const prop = (project.scriptData.props || []).find(p => compareIds(p.id, id));
+        if (!prop) return;
+        prompts = await generateVisualPrompts(
+          'prop',
+          prop,
+          genre,
+          shotPromptModel,
+          visualStyle,
+          language,
+          artDirection
+        );
+        updateProject(prev => {
+          if (!prev.scriptData) return prev;
+          const newData = cloneScriptData(prev.scriptData);
+          const target = (newData.props || []).find(p => compareIds(p.id, id));
+          if (!target) return prev;
+          target.promptVersions = updatePromptWithVersion(
+            target.visualPrompt,
+            prompts.visualPrompt,
+            target.promptVersions,
+            'ai-generated',
+            'Regenerated prop prompt'
+          );
+          target.visualPrompt = prompts.visualPrompt;
+          target.negativePrompt = prompts.negativePrompt;
+          return { ...prev, scriptData: invalidateShotGenerationMeta(newData) };
+        });
+      }
+    } catch (e: any) {
+      if (onApiKeyError?.(e)) return;
+      showAlert(e?.message || '重新生成提示词失败', { type: 'error' });
+    } finally {
+      markPromptRegenerating(key, false);
     }
   };
 
@@ -1098,8 +1142,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         false,
         negativePrompt,
         shapeReferenceImage
-          ? { referencePackType: 'shape' }
-          : { referencePackType: 'prop' }
+          ? { referencePackType: 'shape', target: { kind: 'prop', id: propId } }
+          : { referencePackType: 'prop', target: { kind: 'prop', id: propId } }
       );
 
       // 更新状态
@@ -1321,7 +1365,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         true,
         false,
         negativePrompt,
-        { referencePackType: 'character' }
+        { referencePackType: 'character', target: { kind: 'variation', characterId: charId, id: varId } }
       );
 
       const newData = cloneScriptData(project.scriptData!);
@@ -1461,7 +1505,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         panels,
         visualStyle,
         char.referenceImage,
-        project.scriptData?.artDirection
+        project.scriptData?.artDirection,
+        { target: { kind: 'turnaround', characterId: charId } }
       );
 
       // 更新状态为 completed
@@ -1882,6 +1927,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 onUploadShapeReference={(file) => handleUploadShapeReferenceImage('character', char.id, file)}
                 onClearShapeReference={() => handleClearShapeReferenceImage('character', char.id)}
                 onPromptSave={(newPrompt) => handleSaveCharacterPrompt(char.id, newPrompt)}
+                onRegeneratePrompt={() => handleRegenerateAssetPrompt('character', char.id)}
+                isRegeneratingPrompt={regeneratingPromptIds.has(`character:${char.id}`)}
                 onOpenWardrobe={() => setSelectedCharId(char.id)}
                 onOpenTurnaround={() => setTurnaroundCharId(char.id)}
                 onImageClick={setPreviewImage}
@@ -1954,6 +2001,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 onUploadShapeReference={(file) => handleUploadShapeReferenceImage('scene', scene.id, file)}
                 onClearShapeReference={() => handleClearShapeReferenceImage('scene', scene.id)}
                 onPromptSave={(newPrompt) => handleSaveScenePrompt(scene.id, newPrompt)}
+                onRegeneratePrompt={() => handleRegenerateAssetPrompt('scene', scene.id)}
+                isRegeneratingPrompt={regeneratingPromptIds.has(`scene:${scene.id}`)}
                 onImageClick={setPreviewImage}
                 onDelete={() => handleDeleteScene(scene.id)}
                 onUpdateInfo={(updates) => handleUpdateSceneInfo(scene.id, updates)}
@@ -2030,6 +2079,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                   onUploadShapeReference={(file) => handleUploadShapeReferenceImage('prop', prop.id, file)}
                   onClearShapeReference={() => handleClearShapeReferenceImage('prop', prop.id)}
                   onPromptSave={(newPrompt) => handleSavePropPrompt(prop.id, newPrompt)}
+                  onRegeneratePrompt={() => handleRegenerateAssetPrompt('prop', prop.id)}
+                  isRegeneratingPrompt={regeneratingPromptIds.has(`prop:${prop.id}`)}
                   onImageClick={setPreviewImage}
                   onDelete={() => handleDeleteProp(prop.id)}
                   onUpdateInfo={(updates) => handleUpdatePropInfo(prop.id, updates)}

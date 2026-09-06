@@ -84,3 +84,77 @@ export const toFriendlyModerationMessage = (
 
   return lines.join('\n');
 };
+
+const COMFYUI_UNAVAILABLE_MESSAGE =
+  '无法连接本地 ComfyUI。请先启动 ComfyUI（默认 http://127.0.0.1:8188），并在「模型配置」里核对 API 地址。';
+
+const BACKEND_UNAVAILABLE_MESSAGE =
+  '无法连接后端服务。请确认 API 已启动后重试。';
+
+const extractErrorText = (error: unknown): { message: string; status?: number } => {
+  if (!error) return { message: '' };
+  if (typeof error === 'string') return { message: error };
+  const maybe = error as { message?: unknown; status?: unknown; detail?: unknown };
+  const message =
+    typeof maybe.message === 'string'
+      ? maybe.message
+      : typeof maybe.detail === 'string'
+        ? maybe.detail
+        : '';
+  const status = typeof maybe.status === 'number' ? maybe.status : undefined;
+  return { message, status };
+};
+
+const looksLikeComfyUnavailable = (text: string): boolean => {
+  const lower = text.toLowerCase();
+  return (
+    /无法连接\s*comfyui/.test(text) ||
+    /comfyui.*无法连接|无法连接.*comfyui/.test(lower) ||
+    (/(econnrefused|err_connection_refused|connecterror|all connection attempts failed)/.test(lower) &&
+      /comfy|8188|8189/.test(lower))
+  );
+};
+
+const looksLikeNetworkFailure = (text: string): boolean => {
+  const lower = text.toLowerCase();
+  return (
+    /failed to fetch|networkerror|err_connection|econnrefused|enotfound|ehostunreach|connecterror|all connection attempts failed|connection refused|name or service not known|network request failed/.test(
+      lower
+    ) || /无法连接/.test(text)
+  );
+};
+
+export const toFriendlyAiError = (error: unknown, fallback: string): string => {
+  const { message, status } = extractErrorText(error);
+  const moderationMessage = toFriendlyModerationMessage(message, {
+    includeUnknownReasonCode: process.env.NODE_ENV === 'development',
+  });
+  if (moderationMessage) return moderationMessage;
+
+  if (looksLikeComfyUnavailable(message)) {
+    return COMFYUI_UNAVAILABLE_MESSAGE;
+  }
+  if (looksLikeNetworkFailure(message)) {
+    return /comfy|8188|8189/.test(message.toLowerCase())
+      ? COMFYUI_UNAVAILABLE_MESSAGE
+      : BACKEND_UNAVAILABLE_MESSAGE;
+  }
+  if (status === 503 || /service unavailable/i.test(message)) {
+    return /comfy/i.test(message) ? COMFYUI_UNAVAILABLE_MESSAGE : BACKEND_UNAVAILABLE_MESSAGE;
+  }
+  if (message === 'Internal Server Error' || message === 'Request failed') {
+    return '生成服务暂时不可用。若使用本地 ComfyUI，请先确认服务已启动后再试。';
+  }
+
+  let normalized = message || fallback;
+  if (!normalized) {
+    if (status === 400) normalized = '提示词可能被风控拦截，请修改提示词后重试。';
+    else if (status === 500 || status === 503) normalized = fallback;
+    else normalized = fallback;
+  }
+
+  if (process.env.NODE_ENV !== 'development') {
+    normalized = normalized.replace(/（接口信息：.*?）/g, '');
+  }
+  return normalized || fallback;
+};

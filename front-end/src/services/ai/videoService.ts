@@ -499,7 +499,8 @@ export const generateVideo = async (
   model: string = 'sora-2',
   aspectRatio: AspectRatio = '16:9',
   duration: VideoDuration = 8,
-  audioUrl?: string
+  audioUrl?: string,
+  options?: { target?: import("../../types/model").GenerationTarget }
 ): Promise<string> => {
   const activeVideoModel = getActiveVideoModel();
   const resolvedVideoModel = resolveModel('video', model) as ReturnType<typeof resolveModel>;
@@ -518,6 +519,7 @@ export const generateVideo = async (
       audioUrl,
       aspectRatio,
       duration,
+      target: options?.target,
     }, videoModel as any);
   }
 

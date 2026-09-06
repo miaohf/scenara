@@ -58,6 +58,19 @@ class EpisodeUpdate(BaseModel):
     payload: dict[str, Any] | None = None
 
 
+class EpisodePayloadPatch(BaseModel):
+    """只更新 payload 中给定的顶层键，其余保持不变。
+
+    整集覆盖会把所有角色/关键帧一起重传，是自动保存超限的主因；
+    改状态、追加日志这类高频写只需要提交受影响的那几个键。
+    """
+
+    payload: dict[str, Any] = Field(default_factory=dict)
+    title: str | None = None
+    stage: str | None = None
+    episode_number: int | None = None
+
+
 class EpisodeResponse(BaseModel):
     id: str
     project_id: str
@@ -67,6 +80,22 @@ class EpisodeResponse(BaseModel):
     title: str
     stage: str
     payload: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class EpisodeSummaryResponse(BaseModel):
+    """剧集列表用摘要，故意不含 payload（可能含定妆图等数 MB～百 MB 数据）。"""
+
+    id: str
+    project_id: str
+    series_id: str
+    user_id: int
+    episode_number: int
+    title: str
+    stage: str
     created_at: datetime
     updated_at: datetime
 

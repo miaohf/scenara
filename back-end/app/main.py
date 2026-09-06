@@ -12,6 +12,7 @@ from app.routers import ai, auth, jobs, media, projects, settings
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Path("data").mkdir(parents=True, exist_ok=True)
+    Path(get_settings().media_local_dir).mkdir(parents=True, exist_ok=True)
     await init_db()
     yield
 

@@ -2,6 +2,11 @@ import { clearTokens, getAccessToken, getRefreshToken, setTokens, type AuthToken
 import type { ApiError, Episode, Project } from "./types";
 
 const API_BASE = "/api";
+/** 与 next.config / .env 中 API_URL 对齐，供浏览器侧排查连接问题 */
+const API_UPSTREAM =
+  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_URL?.trim()) ||
+  (typeof process !== "undefined" && process.env.API_URL?.trim()) ||
+  "http://127.0.0.1:8000";
 
 let refreshPromise: Promise<boolean> | null = null;
 
@@ -76,6 +81,27 @@ export async function apiFetch<T>(
           : "Request cancelled",
       );
     }
+    const raw = error instanceof Error ? error.message : String(error);
+    if (/failed to fetch|networkerror|err_connection/i.test(raw)) {
+      const requestPath = `${API_BASE}${path}`;
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
+      const isComfyProxy = path.includes("/comfyui/");
+      console.error(
+        `[apiFetch] 网络连接失败\n` +
+          `  浏览器请求: ${origin}${requestPath}\n` +
+          `  Scenara 后端: ${API_UPSTREAM}${path}\n` +
+          (isComfyProxy
+            ? `  说明: 此接口由后端再转发到 ComfyUI；若此处失败，先确认 Scenara API (${API_UPSTREAM}) 已启动。\n` +
+              `        ComfyUI 实际地址请看浏览器 [ComfyUI Image] 日志与后端 uvicorn 日志中的 comfy_base / prompt URL。\n`
+            : "") +
+          `  原始错误: ${raw}`,
+      );
+      throw new Error(
+        isComfyProxy
+          ? `无法连接 Scenara 后端（${API_UPSTREAM}${path}）。ComfyUI 由后端转发，请先确认 API 已启动；ComfyUI 地址见控制台 [ComfyUI Image] 日志。`
+          : `无法连接后端服务（${API_UPSTREAM}）。请确认 API 已启动后重试。`,
+      );
+    }
     throw error;
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
@@ -104,7 +130,7 @@ export async function apiFetch<T>(
     } catch {
       // ignore parse errors
     }
-    throw new Error(message || "Request failed");
+    throw Object.assign(new Error(message || "Request failed"), { status: res.status });
   }
 
   if (res.status === 204) {
@@ -137,6 +163,11 @@ export const projectApi = {
       method: "POST",
       body: JSON.stringify({ title }),
     }),
+  update: (id: string, body: { title: string }) =>
+    apiFetch<Project>(`/v1/projects/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   remove: (id: string) =>
     apiFetch<void>(`/v1/projects/${id}`, { method: "DELETE" }),
   listEpisodes: (projectId: string) =>
@@ -149,7 +180,8 @@ export const projectApi = {
         episode_number: raw.episode_number,
         title: raw.title,
         stage: raw.stage,
-        payload: raw.payload,
+        // 列表接口不再返回 payload（可能数十～上百 MB），详情请走 episodeApi.get
+        payload: raw.payload ?? {},
         created_at: raw.created_at,
         updated_at: raw.updated_at,
       })),
@@ -164,7 +196,7 @@ interface ApiEpisodeResponse {
   episode_number: number;
   title: string;
   stage: string;
-  payload: Record<string, unknown>;
+  payload?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }

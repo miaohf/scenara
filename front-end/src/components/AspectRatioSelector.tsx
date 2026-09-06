@@ -125,6 +125,7 @@ interface VideoSettingsPanelProps {
   supportedAspectRatios?: AspectRatio[];
   /** 支持的时长列表 */
   supportedDurations?: VideoDuration[];
+  recommendedDuration?: VideoDuration;
 }
 
 /**
@@ -140,6 +141,7 @@ export const VideoSettingsPanel: React.FC<VideoSettingsPanelProps> = ({
   disabled = false,
   supportedAspectRatios,
   supportedDurations,
+  recommendedDuration,
 }) => {
   // 根据模型支持的比例过滤
   const allowSquare = supportedAspectRatios 
@@ -185,6 +187,9 @@ export const VideoSettingsPanel: React.FC<VideoSettingsPanelProps> = ({
                 `}
               >
                 {d}秒
+                {recommendedDuration === d ? (
+                  <span className="ml-1 text-[9px] opacity-80">荐</span>
+                ) : null}
               </button>
             ))}
           </div>

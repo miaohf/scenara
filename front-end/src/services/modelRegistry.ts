@@ -129,43 +129,66 @@ export const loadRegistry = (): ModelRegistryState => {
         chatModelAliasMigrated = true;
       }
 
-      // 定妆默认：Flux / 2steps Turbo → image_qwen_Image_2512（全量步数）；九宫格仍用 Qwen Edit
+      // 定妆默认：旧 Flux1 / Qwen T2I → FLUX.2 Klein 9B；关键帧 / 九宫格仍走 Qwen Edit
       parsed.models = parsed.models.map((model) => {
-        if (model.id !== 'comfyui-flux-dev-fp8' || model.type !== 'image') return model;
-        const params = (model as ImageModelDefinition).params;
-        let next = model as ImageModelDefinition;
-        const castingWorkflow = params?.workflowName;
-        const shouldMigrateCasting =
-          !castingWorkflow ||
-          castingWorkflow === 'flux-dev-fp8' ||
-          castingWorkflow === 'flux_dev1_fp8_text_to_image' ||
-          castingWorkflow === 'image_qwen_image_2512_with_2steps_lora';
-        if (shouldMigrateCasting) {
+        if (model.type !== 'image') return model;
+        const imageModel = model as ImageModelDefinition;
+        const params = imageModel.params;
+        if (params?.apiFormat !== 'comfyui' && model.id !== 'comfyui-flux-dev-fp8' && model.id !== 'comfyui-flux-dev-fp8-legacy') {
+          return model;
+        }
+
+        let next = imageModel;
+        let changed = false;
+
+        if (model.id === 'comfyui-flux-dev-fp8') {
+          const castingWorkflow = params?.workflowName;
+          const shouldMigrateCasting =
+            !castingWorkflow ||
+            castingWorkflow === 'flux-dev-fp8' ||
+            castingWorkflow === 'flux_dev1_fp8_text_to_image' ||
+            castingWorkflow === 'image_qwen_image_2512_with_2steps_lora' ||
+            castingWorkflow === 'image_qwen_Image_2512';
+          if (shouldMigrateCasting) {
+            changed = true;
+            next = {
+              ...next,
+              apiModel: 'flux2-klein-9b',
+              name: 'ComfyUI FLUX.2 Klein 9B (本地)',
+              params: {
+                ...params,
+                apiFormat: 'comfyui',
+                workflowName: 'image_flux2_text_to_image_9b',
+                steps: 20,
+                turnaroundWorkflowName:
+                  params?.turnaroundWorkflowName || 'qwen_image_edit_2511_fp8_character_turnaround',
+                turnaroundSteps: params?.turnaroundSteps || 4,
+              },
+            };
+          }
+        }
+
+        const nextParams = { ...next.params };
+        if (!nextParams.turnaroundWorkflowName) {
+          nextParams.turnaroundWorkflowName = 'qwen_image_edit_2511_fp8_character_turnaround';
+          nextParams.turnaroundSteps = nextParams.turnaroundSteps || 4;
+          changed = true;
+        }
+        if (
+          !nextParams.keyframeWorkflowName ||
+          nextParams.keyframeWorkflowName === 'image_qwen_image_edit_2511_flf' ||
+          nextParams.keyframeWorkflowName === 'image_qwen_image_edit_2511'
+        ) {
+          nextParams.keyframeWorkflowName = 'image_flux2_klein_image_edit_9b_base';
+          nextParams.keyframeSteps =
+            !nextParams.keyframeSteps || nextParams.keyframeSteps === 40
+              ? 20
+              : nextParams.keyframeSteps;
+          changed = true;
+        }
+        if (changed) {
           chatModelAliasMigrated = true;
-          next = {
-            ...next,
-            apiModel: 'qwen-image-2512',
-            name: 'ComfyUI Qwen Image 2512 (本地)',
-            params: {
-              ...params,
-              apiFormat: 'comfyui',
-              workflowName: 'image_qwen_Image_2512',
-              steps: 50,
-              turnaroundWorkflowName:
-                params?.turnaroundWorkflowName || 'qwen_image_edit_2511_fp8_character_turnaround',
-              turnaroundSteps: params?.turnaroundSteps || 4,
-            },
-          };
-        } else if (!params?.turnaroundWorkflowName) {
-          chatModelAliasMigrated = true;
-          next = {
-            ...next,
-            params: {
-              ...params,
-              turnaroundWorkflowName: 'qwen_image_edit_2511_fp8_character_turnaround',
-              turnaroundSteps: params?.turnaroundSteps || 4,
-            },
-          };
+          return { ...next, params: nextParams };
         }
         return next;
       });
@@ -255,6 +278,8 @@ export const loadRegistry = (): ModelRegistryState => {
             'defaultDuration',
             'workflowName',
             'steps',
+            'keyframeWorkflowName',
+            'keyframeSteps',
             'turnaroundWorkflowName',
             'turnaroundSteps',
           ];
@@ -280,6 +305,8 @@ export const loadRegistry = (): ModelRegistryState => {
             apiKey: existing.apiKey?.trim() || undefined,
             baseUrl: existing.baseUrl?.trim() || undefined,
             params: mergedParams as any,
+            name: existing.name?.trim() || bm.name,
+            description: existing.description !== undefined ? existing.description : bm.description,
           } as ModelDefinition;
           if (
             isComfyUiModel({ ...mergedModel, endpoint: existing.endpoint }) &&
@@ -825,6 +852,7 @@ export const updateModel = async (id: string, updates: Partial<ModelDefinition>)
   // - isEnabled: 启用/禁用
   // - params: 参数偏好（比例、时长等）
   // - apiKey: 模型专属密钥（覆盖全局/Provider）
+  // - name / description: 展示用文案
   if (state.models[index].isBuiltIn) {
     const allowedUpdates: Partial<ModelDefinition> = {};
     if (updates.isEnabled !== undefined) allowedUpdates.isEnabled = updates.isEnabled;
@@ -834,6 +862,13 @@ export const updateModel = async (id: string, updates: Partial<ModelDefinition>)
     }
     if (updates.baseUrl !== undefined) {
       allowedUpdates.baseUrl = updates.baseUrl?.trim() || undefined;
+    }
+    if (updates.name !== undefined) {
+      const nextName = updates.name.trim();
+      if (nextName) allowedUpdates.name = nextName;
+    }
+    if (updates.description !== undefined) {
+      allowedUpdates.description = updates.description.trim();
     }
     state.models[index] = { ...state.models[index], ...allowedUpdates } as ModelDefinition;
   } else {

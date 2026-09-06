@@ -62,8 +62,13 @@ export interface ImageModelParams {
   defaultAspectRatio: AspectRatio;
   supportedAspectRatios: AspectRatio[];
   apiFormat?: ImageApiFormat;
+  /** 定妆/通用文生图 ComfyUI 工作流 */
   workflowName?: string;
   steps?: number;
+  /** 镜头首尾帧专用 ComfyUI 工作流；未填则回退 workflowName */
+  keyframeWorkflowName?: string;
+  /** 镜头首尾帧 steps；未填则回退 steps */
+  keyframeSteps?: number;
   /** 造型九宫格专用 ComfyUI 工作流（基于定妆参考图）；未填则回退 workflowName */
   turnaroundWorkflowName?: string;
   /** 造型九宫格 steps；未填则回退 steps */
@@ -242,6 +247,32 @@ export interface ImageGenerateOptions {
   workflowName?: string;
   /** 覆盖模型默认 steps */
   steps?: number;
+  /** 异步任务归属剧集；带上后离开页面仍可按剧集找回结果 */
+  episodeId?: string;
+  /** 写回目标：Worker 完成后据此更新剧集对应资产 */
+  target?: GenerationTarget;
+  /** 任务状态回调（排队位次 / 进度），用于恢复与队列提示 */
+  onJobCreated?: (job: GenerationJobStatus) => void;
+  /** false 时只入队，不挂 SSE 等出图；批量提交用，避免占满浏览器连接 */
+  waitForResult?: boolean;
+}
+
+/** 生成结果写回剧集的目标定位 */
+export type GenerationTarget =
+  | { kind: "character" | "scene" | "prop"; id: string }
+  | { kind: "variation"; characterId: string; id: string }
+  | { kind: "turnaround"; characterId: string }
+  | { kind: "keyframe"; shotId: string; type: "start" | "end" }
+  | { kind: "video" | "nineGrid"; shotId: string };
+
+/** 生成任务状态（服务端 `/v1/jobs` 形态的最小子集） */
+export interface GenerationJobStatus {
+  id: string;
+  status: string;
+  progress?: number;
+  message?: string;
+  queue_position?: number | null;
+  queue_running?: boolean | null;
 }
 
 /**
@@ -254,6 +285,10 @@ export interface VideoGenerateOptions {
   audioUrl?: string;
   aspectRatio?: AspectRatio;
   duration?: VideoDuration;
+  /** 异步任务归属剧集 */
+  episodeId?: string;
+  target?: GenerationTarget;
+  onJobCreated?: (job: GenerationJobStatus) => void;
 }
 
 // ============================================
@@ -294,8 +329,10 @@ export const DEFAULT_IMAGE_PARAMS_COMFYUI: ImageModelParams = {
   defaultAspectRatio: '16:9',
   supportedAspectRatios: ['16:9', '9:16', '1:1'],
   apiFormat: 'comfyui',
-  workflowName: 'image_qwen_Image_2512',
-  steps: 50,
+  workflowName: 'image_flux2_text_to_image_9b',
+  steps: 20,
+  keyframeWorkflowName: 'image_flux2_klein_image_edit_9b_base',
+  keyframeSteps: 20,
   turnaroundWorkflowName: 'qwen_image_edit_2511_fp8_character_turnaround',
   turnaroundSteps: 4,
 };
@@ -546,18 +583,20 @@ export const BUILTIN_IMAGE_MODELS: ImageModelDefinition[] = [
   },
   {
     id: 'comfyui-flux-dev-fp8',
-    apiModel: 'qwen-image-2512',
-    name: 'ComfyUI Qwen Image 2512 (本地)',
+    apiModel: 'flux2-klein-9b',
+    name: 'ComfyUI FLUX.2 Klein 9B (本地)',
     type: 'image',
     providerId: 'comfyui-local',
     description:
-      '默认定妆：Qwen-Image-2512 全量步数（默认关 Lightning）；造型九宫格走 Qwen Edit turnaround。工作流读取 back-end/workflows/<名称>.json。',
+      '默认定妆：FLUX.2 Klein 9B T2I；关键帧：FLUX.2 Klein 9B Image Edit（最多 4 张参考）；造型九宫格：Qwen Edit turnaround。工作流读取 back-end/workflows/<名称>.json。',
     isBuiltIn: true,
     isEnabled: true,
     params: {
       ...DEFAULT_IMAGE_PARAMS_COMFYUI,
-      workflowName: 'image_qwen_Image_2512',
-      steps: 50,
+      workflowName: 'image_flux2_text_to_image_9b',
+      steps: 20,
+      keyframeWorkflowName: 'image_flux2_klein_image_edit_9b_base',
+      keyframeSteps: 20,
       turnaroundWorkflowName: 'qwen_image_edit_2511_fp8_character_turnaround',
       turnaroundSteps: 4,
     },
@@ -568,13 +607,15 @@ export const BUILTIN_IMAGE_MODELS: ImageModelDefinition[] = [
     name: 'ComfyUI Flux Dev1 FP8 (本地·备用)',
     type: 'image',
     providerId: 'comfyui-local',
-    description: 'Flux1-Dev FP8 文生图；英文短提示更稳，与 Qwen 中文长描述定妆风格差异较大。',
+    description: 'Flux1-Dev FP8 文生图（定妆）；关键帧可配 Qwen Edit FLF；九宫格走 Qwen Edit turnaround。',
     isBuiltIn: true,
     isEnabled: false,
     params: {
       ...DEFAULT_IMAGE_PARAMS_COMFYUI,
       workflowName: 'flux_dev1_fp8_text_to_image',
       steps: 20,
+      keyframeWorkflowName: 'image_qwen_image_edit_2511_flf',
+      keyframeSteps: 40,
       turnaroundWorkflowName: 'qwen_image_edit_2511_fp8_character_turnaround',
       turnaroundSteps: 4,
     },

@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { ChevronDown, ChevronUp, Trash2, ToggleLeft, ToggleRight, CheckCircle, Circle } from 'lucide-react';
+import { ChevronDown, ChevronUp, Trash2, ToggleLeft, ToggleRight, CheckCircle, Circle, Pencil } from 'lucide-react';
 import { 
   ModelDefinition, 
   ChatModelParams,
@@ -38,6 +38,9 @@ const ModelCard: React.FC<ModelCardProps> = ({
 }) => {
   const [editParams, setEditParams] = useState<any>(model.params);
   const [editApiKey, setEditApiKey] = useState<string>(model.apiKey || '');
+  const [editName, setEditName] = useState(model.name);
+  const [editDescription, setEditDescription] = useState(model.description || '');
+  const [editingDescription, setEditingDescription] = useState(false);
   const provider = getProviderById(model.providerId);
   const isVolcengineModel = model.providerId === 'volcengine';
   const isComfyUiImage = model.type === 'image' && (model.params as ImageModelParams).apiFormat === 'comfyui';
@@ -68,9 +71,12 @@ const ModelCard: React.FC<ModelCardProps> = ({
   useEffect(() => {
     setEditParams(model.params);
     setEditApiKey(model.apiKey || '');
+    setEditName(model.name);
+    setEditDescription(model.description || '');
+    setEditingDescription(false);
     setEditBaseUrl(resolveModelBaseUrlDisplay());
     setBaseUrlError('');
-  }, [model.id, model.params, model.apiKey, model.baseUrl, model.endpoint, model.providerId, provider?.baseUrl]);
+  }, [model.id, model.params, model.apiKey, model.name, model.description, model.baseUrl, model.endpoint, model.providerId, provider?.baseUrl]);
 
   const handleBaseUrlChange = (value: string) => {
     setEditBaseUrl(value);
@@ -140,6 +146,25 @@ const ModelCard: React.FC<ModelCardProps> = ({
     onUpdate({ apiKey: value.trim() || undefined });
   };
 
+  const commitName = () => {
+    const next = editName.trim();
+    if (!next) {
+      setEditName(model.name);
+      return;
+    }
+    if (next !== model.name) {
+      onUpdate({ name: next });
+    }
+  };
+
+  const commitDescription = () => {
+    const next = editDescription.trim();
+    if (next !== (model.description || '')) {
+      onUpdate({ description: next });
+    }
+    setEditingDescription(false);
+  };
+
   const renderChatParams = (params: ChatModelParams) => (
     <div className="grid grid-cols-2 gap-4">
       <div>
@@ -192,7 +217,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
             value={editParams.workflowName || ''}
             onChange={(e) => handleParamChange('workflowName', e.target.value.trim() || undefined)}
             className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] font-mono"
-            placeholder="image_qwen_Image_2512（定妆默认）"
+            placeholder="image_flux2_text_to_image_9b（定妆默认）"
           />
           <p className="text-[9px] text-[var(--text-muted)] mt-1">
             读取服务端 back-end/workflows/&lt;名称&gt;.json（不含 .json 后缀）
@@ -208,6 +233,38 @@ const ModelCard: React.FC<ModelCardProps> = ({
             max="100"
             value={editParams.steps || 20}
             onChange={(e) => handleParamChange('steps', parseInt(e.target.value) || 20)}
+            className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)]"
+          />
+        </div>
+      )}
+      {params.apiFormat === 'comfyui' && (
+        <div>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">关键帧工作流（首尾帧）</label>
+          <input
+            type="text"
+            value={editParams.keyframeWorkflowName || ''}
+            onChange={(e) => handleParamChange('keyframeWorkflowName', e.target.value.trim() || undefined)}
+            className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] font-mono"
+            placeholder="image_flux2_klein_image_edit_9b_base"
+          />
+          <p className="text-[9px] text-[var(--text-muted)] mt-1">
+            导演台「关键帧制作」首尾帧专用；多参考图一致性。留空则回退到上方定妆/通用工作流。
+          </p>
+        </div>
+      )}
+      {params.apiFormat === 'comfyui' && (
+        <div>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">Steps（关键帧）</label>
+          <input
+            type="number"
+            min="1"
+            max="100"
+            value={editParams.keyframeSteps ?? ''}
+            onChange={(e) => {
+              const value = e.target.value;
+              handleParamChange('keyframeSteps', value === '' ? undefined : parseInt(value) || 40);
+            }}
+            placeholder="默认回退定妆 Steps"
             className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)]"
           />
         </div>
@@ -384,10 +441,10 @@ const ModelCard: React.FC<ModelCardProps> = ({
       } ${!model.isEnabled ? 'opacity-60' : ''}`}
     >
       {/* 头部 */}
-      <div className="p-4 flex items-center justify-between">
-        <div className="flex items-center gap-3 flex-1">
+      <div className="p-4 flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3 flex-1 min-w-0">
           {/* 模型信息 */}
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-[var(--text-primary)]">{model.name}</span>
               {model.isBuiltIn && (
@@ -400,16 +457,52 @@ const ModelCard: React.FC<ModelCardProps> = ({
                 </span>
               )}
             </div>
-            <p className="text-[10px] text-[var(--text-tertiary)] mt-0.5">
-              API 模型名: {apiModelLabel}
-              {model.id !== apiModelLabel && ` · 内部ID: ${model.id}`}
-              {model.baseUrl && ` · ${model.baseUrl}`}
-              {!model.baseUrl && model.endpoint && !isAbsoluteHttpUrl(model.endpoint) && ` · ${model.endpoint}`}
-              {model.description && ` · ${model.description}`}
+            <p className="text-[10px] text-[var(--text-tertiary)] mt-0.5 truncate">
+              API: {apiModelLabel}
+              {model.id !== apiModelLabel && ` · ID: ${model.id}`}
             </p>
+            {isExpanded ? (
+              model.description ? (
+                <p className="text-[10px] text-[var(--text-muted)] leading-relaxed line-clamp-2 mt-1">
+                  {model.description}
+                </p>
+              ) : null
+            ) : editingDescription ? (
+              <textarea
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+                onBlur={commitDescription}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setEditDescription(model.description || '');
+                    setEditingDescription(false);
+                  }
+                }}
+                rows={2}
+                autoFocus
+                placeholder="简短说明，例如：本地首尾帧图生视频"
+                className="mt-1.5 w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-2 py-1.5 text-[10px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-y"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setEditingDescription(true)}
+                className="group/desc mt-1 flex items-start gap-1 text-left max-w-full min-w-0"
+                title="编辑描述"
+              >
+                <p className={`text-[10px] leading-relaxed line-clamp-2 min-w-0 ${
+                  model.description ? 'text-[var(--text-muted)]' : 'text-[var(--text-muted)]/70 italic'
+                }`}>
+                  {model.description || '添加描述'}
+                </p>
+                <Pencil className="w-3 h-3 mt-0.5 shrink-0 text-[var(--text-muted)] opacity-60 group-hover/desc:opacity-100" />
+              </button>
+            )}
             {isComfyUiImage && (
               <p className="text-[10px] text-[var(--text-muted)] mt-1 font-mono">
                 定妆：{(model.params as ImageModelParams).workflowName || '—'}
+                {' · '}
+                关键帧：{(model.params as ImageModelParams).keyframeWorkflowName || '（同定妆）'}
                 {' · '}
                 九宫格：{(model.params as ImageModelParams).turnaroundWorkflowName || '（同定妆）'}
               </p>
@@ -418,7 +511,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
         </div>
 
         {/* 操作按钮 */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           {/* 使用此模型按钮 */}
           {model.isEnabled && !isActive && (
             <button
@@ -481,6 +574,36 @@ const ModelCard: React.FC<ModelCardProps> = ({
       {isExpanded && (
         <div className="px-4 pb-4 pt-0 border-t border-[var(--border-primary)]">
           <div className="pt-4 space-y-4">
+            <div>
+              <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">显示名称</label>
+              <input
+                type="text"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                onBlur={commitName}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.currentTarget.blur();
+                  } else if (e.key === 'Escape') {
+                    setEditName(model.name);
+                    e.currentTarget.blur();
+                  }
+                }}
+                className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)]"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">描述</label>
+              <textarea
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+                onBlur={commitDescription}
+                rows={2}
+                placeholder="展示在模型列表和生成页的简短说明，不影响实际调用"
+                className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-y"
+              />
+            </div>
+
             {/* 模型专属 API Key */}
             <div>
               <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">

@@ -13,6 +13,7 @@ import {
 import { ApiKeyError } from './chatAdapter';
 import { resolveComfyApiBaseUrl, buildComfyApiUrl } from '../urlUtils';
 import { isApiAiMode, apiCallVideo, apiCallComfyVideo, fetchComfyWorkflowTemplate } from '../aiApiAdapter';
+import { toFriendlyAiError } from '../errorMessageService';
 
 /**
  * 重试操作
@@ -512,7 +513,7 @@ const callComfyVideoApi = async (
     throw new Error('ComfyUI 视频生成超时，请检查队列或工作流输出节点。');
   } catch (error) {
     console.error('[ComfyUI Video] Generation failed:', error);
-    throw error;
+    throw new Error(toFriendlyAiError(error, 'ComfyUI 视频生成失败，请稍后重试。'));
   }
 };
 

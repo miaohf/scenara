@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
-import { Edit3, Save, AlertCircle, Camera } from 'lucide-react';
+import { Edit3, Save, AlertCircle, Camera, RefreshCw } from 'lucide-react';
 
 interface PromptEditorProps {
   prompt: string;
   onSave: (newPrompt: string) => void;
+  onRegenerate?: () => void;
+  isRegenerating?: boolean;
   label?: string;
   placeholder?: string;
   maxHeight?: string;
@@ -12,6 +14,8 @@ interface PromptEditorProps {
 const PromptEditor: React.FC<PromptEditorProps> = ({
   prompt,
   onSave,
+  onRegenerate,
+  isRegenerating = false,
   label = '提示词',
   placeholder = '输入视觉描述...',
   maxHeight = 'max-h-[260px]',
@@ -36,19 +40,34 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
 
   return (
     <div className="flex flex-col">
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-2 gap-2">
         <label className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-widest flex items-center gap-1.5">
           <Camera className="w-3 h-3" />
           {label}
         </label>
         {!isEditing && (
-          <button
-            onClick={handleStartEdit}
-            className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors p-1 hover:bg-[var(--bg-hover)] rounded"
-            title="编辑提示词"
-          >
-            <Edit3 className="w-3 h-3" />
-          </button>
+          <div className="flex items-center gap-0.5 shrink-0">
+            {onRegenerate && (
+              <button
+                onClick={onRegenerate}
+                disabled={isRegenerating}
+                className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors p-1 hover:bg-[var(--bg-hover)] rounded disabled:opacity-40 disabled:cursor-not-allowed"
+                title="重新生成提示词（按当前项目风格，不会自动生图）"
+                aria-label="重新生成提示词"
+              >
+                <RefreshCw className={`w-3 h-3 ${isRegenerating ? 'animate-spin' : ''}`} />
+              </button>
+            )}
+            <button
+              onClick={handleStartEdit}
+              disabled={isRegenerating}
+              className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors p-1 hover:bg-[var(--bg-hover)] rounded disabled:opacity-40"
+              title="手工改写提示词"
+              aria-label="手工改写提示词"
+            >
+              <Edit3 className="w-3 h-3" />
+            </button>
+          </div>
         )}
       </div>
 
@@ -87,7 +106,7 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
             <div className="flex items-start gap-2 text-[var(--text-muted)]">
               <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
               <p className="text-[10px] leading-relaxed">
-                未设置提示词。点击编辑按钮添加视觉描述。
+                未设置提示词。可点刷新图标自动生成，或点编辑图标手工填写。
               </p>
             </div>
           )}

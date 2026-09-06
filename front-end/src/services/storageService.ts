@@ -16,6 +16,7 @@ import {
   apiGetEpisodesByProject,
   apiLoadEpisode,
   apiSaveEpisode,
+  apiSaveEpisodePartial,
   apiDeleteEpisode,
   apiCreateEpisode,
 } from './storageApiAdapter';
@@ -309,6 +310,21 @@ export const saveEpisode = async (ep: Episode): Promise<void> => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
+};
+
+/**
+ * 增量保存剧集：只提交变化的顶层字段。
+ * IndexedDB 模式没有部分写入的概念，退化为整集写入（本地写入无体积瓶颈）。
+ */
+export const saveEpisodePartial = async (
+  ep: Episode,
+  changedKeys: (keyof Episode)[],
+): Promise<void> => {
+  if (isApiStorageMode()) {
+    await apiSaveEpisodePartial(ep, changedKeys);
+    return;
+  }
+  await saveEpisode(ep);
 };
 
 export const loadEpisode = async (id: string): Promise<Episode> => {

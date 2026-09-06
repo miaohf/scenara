@@ -39,7 +39,7 @@ interface ApiEpisode {
   episode_number: number;
   title: string;
   stage: string;
-  payload: Record<string, unknown>;
+  payload?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }
@@ -187,6 +187,36 @@ export async function apiSaveEpisode(ep: Episode): Promise<void> {
   await apiFetch(`/v1/episodes/${ep.id}`, {
     method: "PATCH",
     body: JSON.stringify(episodeToApiBody({ ...ep, lastModified: Date.now() })),
+  });
+}
+
+/**
+ * 增量保存：只提交发生变化的顶层字段。
+ * 整集覆盖会把所有图片/关键帧一起重传，是自动保存请求体超限的主因。
+ */
+export async function apiSaveEpisodePartial(
+  ep: Episode,
+  changedKeys: (keyof Episode)[],
+): Promise<void> {
+  if (changedKeys.length === 0) return;
+
+  const payload: Record<string, unknown> = {};
+  const body: Record<string, unknown> = {};
+
+  changedKeys.forEach((key) => {
+    if (key === "title") body.title = ep.title;
+    else if (key === "stage") body.stage = ep.stage;
+    else if (key === "episodeNumber") body.episode_number = ep.episodeNumber;
+    // lastModified 由服务端 updated_at 维护，其余 top-level 键不可变
+    else if (!EPISODE_TOP_LEVEL_KEYS.has(key)) payload[key] = ep[key];
+  });
+
+  if (Object.keys(payload).length === 0 && Object.keys(body).length === 0) return;
+  body.payload = payload;
+
+  await apiFetch(`/v1/episodes/${ep.id}/payload`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
   });
 }
 

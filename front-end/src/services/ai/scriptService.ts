@@ -1940,11 +1940,19 @@ export const generateShotList = async (
 interface ContinueScriptOptions {
   maxAppendChars?: number;
   maxTotalChars?: number;
+  instruction?: string;
 }
 
 interface RewriteScriptOptions {
   maxOutputChars?: number;
+  instruction?: string;
 }
+
+const formatUserInstruction = (instruction?: string): string => {
+  const trimmed = instruction?.trim();
+  if (!trimmed) return '';
+  return `\n用户额外要求（必须遵守）：\n${trimmed.slice(0, 800)}\n`;
+};
 
 const toPositiveInteger = (value?: number): number | undefined => {
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
@@ -2017,7 +2025,7 @@ export const continueScript = async (
 7. 仅输出续写剧本内容，不添加任何说明、前缀或后缀。
 8. 若剧情信息量过大，请优先保留关键冲突并简洁推进，不要冗长铺陈。
 9. 当前已有剧本长度为 ${limits.existingLength} 字符。${limits.maxTotalChars ? `续写后总长度不得超过 ${limits.maxTotalChars} 字符。` : ''}
-
+${formatUserInstruction(options?.instruction)}
 已有剧本内容：
 ${existingScript}
 
@@ -2082,7 +2090,7 @@ export const continueScriptStream = async (
 7. 仅输出续写剧本内容，不添加任何说明、前缀或后缀。
 8. 若剧情信息量过大，请优先保留关键冲突并简洁推进，不要冗长铺陈。
 9. 当前已有剧本长度为 ${limits.existingLength} 字符。${limits.maxTotalChars ? `续写后总长度不得超过 ${limits.maxTotalChars} 字符。` : ''}
-
+${formatUserInstruction(options?.instruction)}
 已有剧本内容：
 ${existingScript}
 
@@ -2155,7 +2163,7 @@ export const rewriteScript = async (
 9. 严格遵循剧本格式规范，包括场景标注、人物台词、舞台指示等。
 10. 输出语言为：${language}，确保语言风格与剧本类型相符。
 11. 如果内容复杂，请通过精炼表达保证质量，但不得超过字数上限。
-
+${formatUserInstruction(options?.instruction)}
 原始剧本内容如下：
 ${originalScript}
 
@@ -2217,7 +2225,7 @@ export const rewriteScriptStream = async (
 9. 严格遵循剧本格式规范，包括场景标注、人物台词、舞台指示等。
 10. 输出语言为：${language}，确保语言风格与剧本类型相符。
 11. 如果内容复杂，请通过精炼表达保证质量，但不得超过字数上限。
-
+${formatUserInstruction(options?.instruction)}
 原始剧本内容如下：
 ${originalScript}
 

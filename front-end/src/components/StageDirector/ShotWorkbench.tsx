@@ -31,7 +31,7 @@ import SceneContext from './SceneContext';
 import KeyframeEditor from './KeyframeEditor';
 import VideoGenerator from './VideoGenerator';
 import DubbingPanel from './DubbingPanel';
-import { resolveVideoModelRouting } from './utils';
+import { resolveEffectiveVideoModelId, resolveVideoModelRouting } from './utils';
 import { getModelById } from '../../services/modelRegistry';
 import { findSceneByIdCompat, getShotDisplayKey } from '../../services/storyboardIdUtils';
 import {
@@ -73,6 +73,8 @@ interface ShotWorkbenchProps {
   useAIEnhancement: boolean;
   onToggleAIEnhancement: () => void;
   onGenerateVideo: (aspectRatio: AspectRatio, duration: VideoDuration, modelId: string) => void;
+  onCancelVideo?: () => void;
+  onCancelKeyframe?: (type: 'start' | 'end') => void;
   onGenerateDubbing: (mode: DubbingMode, text: string, modelId?: string) => void;
   onClearDubbing: () => void;
   onEditVideoPrompt: () => void;
@@ -122,6 +124,8 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   useAIEnhancement,
   onToggleAIEnhancement,
   onGenerateVideo,
+  onCancelVideo,
+  onCancelKeyframe,
   onGenerateDubbing,
   onClearDubbing,
   onEditVideoPrompt,
@@ -143,10 +147,17 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   const startKf = shot.keyframes?.find((k) => k.type === 'start');
   const endKf = shot.keyframes?.find((k) => k.type === 'end');
   const quality = shot.qualityAssessment;
-  const [localVideoModelId, setLocalVideoModelId] = useState(currentVideoModelId);
+  const [localVideoModelId, setLocalVideoModelId] = useState(
+    () => currentVideoModelId || resolveEffectiveVideoModelId(shot.videoModel)
+  );
   const [expandedCheckKey, setExpandedCheckKey] = useState<string | null>(null);
   const [isAdvancedMode, setIsAdvancedMode] = useState(false);
-  const [expandedSections, setExpandedSections] = useState<SectionKey[]>(['context']);
+  const [expandedSections, setExpandedSections] = useState<SectionKey[]>([
+    'context',
+    'narrative',
+    'keyframe',
+    'video',
+  ]);
   const lastAutoExpandedShotRef = useRef<string | null>(null);
 
   const isSectionOpen = (sectionKey: SectionKey) => expandedSections.includes(sectionKey);
@@ -160,10 +171,12 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   };
 
   useEffect(() => {
-    setLocalVideoModelId(currentVideoModelId);
-  }, [currentVideoModelId]);
+    setLocalVideoModelId(currentVideoModelId || resolveEffectiveVideoModelId(shot.videoModel));
+  }, [currentVideoModelId, shot.id, shot.videoModel]);
 
-  const modelRouting = resolveVideoModelRouting(localVideoModelId || currentVideoModelId || 'sora-2');
+  const modelRouting = resolveVideoModelRouting(
+    localVideoModelId || currentVideoModelId || resolveEffectiveVideoModelId(shot.videoModel)
+  );
   const recommendedInputMode: 'keyframes' | 'storyboard-grid' =
     modelRouting.family === 'sora' || modelRouting.family === 'doubao-task'
       ? 'storyboard-grid'
@@ -188,7 +201,8 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
       return 6;
     }
 
-    const modelId = localVideoModelId || currentVideoModelId || shot.videoModel || 'sora-2';
+    const modelId =
+      localVideoModelId || currentVideoModelId || resolveEffectiveVideoModelId(shot.videoModel);
     const model = getModelById(modelId) as any;
     const modelDefaultDuration = Number(model?.params?.defaultDuration);
     if (Number.isFinite(modelDefaultDuration) && modelDefaultDuration === 8) {
@@ -428,7 +442,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
     return (
       <button
         type="button"
-        className="w-full px-4 py-3 flex items-center justify-between text-left"
+        className="w-full px-3 py-2 flex items-center justify-between text-left"
         onClick={() => toggleSection(sectionKey)}
       >
         <div className="flex items-center gap-2 min-w-0">
@@ -452,7 +466,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   };
 
   return (
-    <div className="w-[500px] bg-[var(--bg-deep)] flex flex-col h-full shadow-2xl animate-in slide-in-from-right-10 duration-300 relative z-20">
+    <div className="w-[40%] min-w-0 shrink-0 bg-[var(--bg-deep)] flex flex-col h-full shadow-2xl animate-in slide-in-from-right-10 duration-300 relative z-20">
       <div className="h-16 px-6 border-b border-[var(--border-primary)] flex items-center justify-between bg-[var(--bg-surface)] shrink-0">
         <div className="flex items-center gap-3 min-w-0 flex-1 mr-2">
           <span className="min-w-[3rem] h-8 px-2 bg-[var(--accent-bg)] text-[var(--accent-text)] rounded-lg flex items-center justify-center font-bold font-mono text-[11px] whitespace-nowrap border border-[var(--accent-border)] shrink-0">
@@ -509,12 +523,74 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-5 space-y-4">
+      <div className="@container flex-1 min-h-0 overflow-y-auto p-4">
+        <div className="space-y-3">
+        <section className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-surface)] p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-widest">制作流程</p>
+            <span className="text-[10px] text-[var(--text-muted)] font-mono">
+              {completedSteps}/{steps.length} 完成
+            </span>
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {steps.map((step) => (
+              <button
+                key={step.key}
+                type="button"
+                onClick={() => {
+                  openSection(step.key);
+                  requestAnimationFrame(() => {
+                    document.getElementById(`shot-section-${step.key}`)?.scrollIntoView({
+                      behavior: 'smooth',
+                      block: 'start',
+                    });
+                  });
+                }}
+                className={`px-2 py-2 rounded border text-[10px] text-left flex items-center gap-1.5 min-w-0 ${
+                  isSectionOpen(step.key)
+                    ? 'border-[var(--accent-border)] bg-[var(--accent-bg)] text-[var(--accent-text)]'
+                    : 'border-[var(--border-primary)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'
+                }`}
+              >
+                {step.done ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> : <Circle className="w-3.5 h-3.5 shrink-0" />}
+                <span className="truncate">{step.label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <div className="min-w-0 flex items-center gap-2">
+              {quality ? (
+                <>
+                  <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono border shrink-0 ${qualityBadgeClass}`}>
+                    评分 {quality.score} · {qualityGradeLabel}
+                  </span>
+                  <p className="text-[10px] text-[var(--text-muted)] truncate" title={qualitySummary}>{qualitySummary}</p>
+                </>
+              ) : (
+                <p className="text-[10px] text-[var(--text-muted)]">尚未评估</p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => toggleSection('quality')}
+              className="text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] shrink-0"
+            >
+              {isSectionOpen('quality') ? '收起评估' : '查看评估'}
+            </button>
+          </div>
+          {!isAdvancedMode && (
+            <p className="text-[10px] text-[var(--text-muted)]">
+              当前为新手模式。需要拆镜/网格分镜时，可切换到顶部“高级”。
+            </p>
+          )}
+        </section>
+
+        {isSectionOpen('quality') && (
         <section className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-surface)] overflow-hidden">
           {renderSectionHeader('quality', '质量评估', '查看当前镜头可交付性')}
-          {isSectionOpen('quality') && quality && (
-            <div className="px-4 pb-4 border-t border-[var(--border-primary)] space-y-2">
-              <div className="pt-3 flex items-center justify-between gap-2">
+          {quality && (
+            <div className="px-3 pb-3 border-t border-[var(--border-primary)] space-y-2">
+              <div className="pt-2 flex items-center justify-between gap-2">
                 <span className={`px-2 py-1 rounded-md text-[10px] font-mono border ${qualityBadgeClass}`}>
                   评分 {quality.score} · {qualityGradeLabel}
                 </span>
@@ -529,22 +605,17 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                   {isAIReassessing ? '评估中...' : 'AI重评估'}
                 </button>
               </div>
-              <p className="text-xs text-[var(--text-secondary)]">{qualitySummary}</p>
               {qualityActionHint && (
-                <p className="text-[10px] text-[var(--accent-text)] bg-[var(--accent-bg)] border border-[var(--accent-border)] rounded px-2 py-1.5">
+                <p className="text-[10px] text-[var(--accent-text)] bg-[var(--accent-bg)] border border-[var(--accent-border)] rounded px-2 py-1">
                   下一步建议：{qualityActionHint}
                 </p>
               )}
-              <p className="text-[10px] text-[var(--text-muted)]">
-                来源：{qualitySourceLabel} · 评分时间：{new Date(quality.generatedAt).toLocaleString()}
-              </p>
-              <p className="text-[10px] text-[var(--text-muted)]">注：这里显示的是总分和等级，不是“warning条数”。点击每项右侧 ? 可查看评分依据。</p>
-              <div className="space-y-1.5">
+              <div className="grid grid-cols-2 gap-1.5">
                 {quality.checks.map((check) => (
                   <div key={check.key} className="space-y-1">
                     <div className="flex items-center gap-2">
-                      <span className={`w-16 text-[10px] font-mono ${check.passed ? 'text-[var(--success-text)]' : 'text-[var(--warning-text)]'}`}>
-                        {check.score}/100
+                      <span className={`w-12 shrink-0 text-[10px] font-mono ${check.passed ? 'text-[var(--success-text)]' : 'text-[var(--warning-text)]'}`}>
+                        {check.score}
                       </span>
                       <span className="flex-1 text-[11px] text-[var(--text-tertiary)] truncate" title={check.details || check.label}>
                         {getCheckLabel(check.key, check.label)}
@@ -559,55 +630,28 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                       </button>
                     </div>
                     {expandedCheckKey === check.key && (
-                      <div className="ml-16 rounded border border-[var(--border-primary)] bg-[var(--bg-base)]/60 px-2 py-1.5 text-[10px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-line">
+                      <div className="rounded border border-[var(--border-primary)] bg-[var(--bg-base)]/60 px-2 py-1.5 text-[10px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-line">
                         {check.details || '暂无评分依据。'}
                       </div>
                     )}
                   </div>
                 ))}
               </div>
+              <p className="text-[10px] text-[var(--text-muted)]">
+                {qualitySourceLabel} · {new Date(quality.generatedAt).toLocaleString()}
+              </p>
             </div>
           )}
-          {isSectionOpen('quality') && !quality && (
-            <div className="px-4 pb-4 border-t border-[var(--border-primary)]">
-              <p className="pt-3 text-xs text-[var(--text-muted)]">当前镜头还没有质量评估结果。</p>
+          {!quality && (
+            <div className="px-3 pb-3 border-t border-[var(--border-primary)]">
+              <p className="pt-2 text-xs text-[var(--text-muted)]">当前镜头还没有质量评估结果。</p>
             </div>
           )}
         </section>
+        )}
 
-        <section className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-surface)] p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-widest">流程进度</p>
-            <span className="text-[10px] text-[var(--text-muted)] font-mono">
-              {completedSteps}/{steps.length} 完成
-            </span>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            {steps.map((step) => (
-              <button
-                key={step.key}
-                type="button"
-                onClick={() => openSection(step.key)}
-                className={`px-2 py-1.5 rounded border text-[10px] text-left flex items-center gap-1.5 ${
-                  isSectionOpen(step.key)
-                    ? 'border-[var(--accent-border)] bg-[var(--accent-bg)] text-[var(--accent-text)]'
-                    : 'border-[var(--border-primary)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'
-                }`}
-              >
-                {step.done ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Circle className="w-3.5 h-3.5" />}
-                <span className="truncate">{step.label}</span>
-              </button>
-            ))}
-          </div>
-          {!isAdvancedMode && (
-            <p className="text-[10px] text-[var(--text-muted)]">
-              当前为新手模式。需要拆镜/网格分镜时，可切换到顶部“高级”。
-            </p>
-          )}
-        </section>
-
-        <section className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-surface)] overflow-hidden">
-          {renderSectionHeader('context', '资产上下文', '先确认场景、角色与道具绑定', steps[0]?.done)}
+        <section id="shot-section-context" className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-surface)] overflow-hidden">
+          {renderSectionHeader('context', '1 资产绑定', '先确认场景、角色与道具', steps[0]?.done)}
           {isSectionOpen('context') && (
             <div className="border-t border-[var(--border-primary)] p-3">
               {scriptData ? (
@@ -633,11 +677,11 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
           )}
         </section>
 
-        <section className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-surface)] overflow-hidden">
-          {renderSectionHeader('narrative', '动作与台词', '先明确叙事动作，再进入分镜与关键帧', steps[1]?.done)}
+        <section id="shot-section-narrative" className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-surface)] overflow-hidden">
+          {renderSectionHeader('narrative', '2 动作与台词', '先写清动作和台词，再做关键帧', steps[1]?.done)}
           {isSectionOpen('narrative') && (
-            <div className="border-t border-[var(--border-primary)] p-4 space-y-3">
-              <div className="flex items-center gap-2 border-b border-[var(--border-primary)] pb-2">
+            <div className="border-t border-[var(--border-primary)] p-3 space-y-2">
+              <div className="flex items-center gap-2">
                 <Film className="w-4 h-4 text-[var(--text-tertiary)]" />
                 <h4 className="text-xs font-bold text-[var(--text-tertiary)] uppercase tracking-widest">Narrative</h4>
                 <div className="ml-auto flex items-center gap-1">
@@ -665,13 +709,13 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                   </button>
                 </div>
               </div>
-              <div className="space-y-3 max-h-[220px] overflow-y-auto custom-scrollbar">
-                <div className="bg-[var(--bg-base)] p-4 rounded-lg border border-[var(--border-primary)]">
-                  <p className="text-[var(--text-secondary)] text-sm leading-relaxed">{shot.actionSummary || '暂无动作描述。'}</p>
+              <div className="grid grid-cols-1 @min-[520px]:grid-cols-2 gap-2">
+                <div className="bg-[var(--bg-base)] p-3 rounded-lg border border-[var(--border-primary)] max-h-28 overflow-y-auto custom-scrollbar">
+                  <p className="text-[var(--text-secondary)] text-xs leading-relaxed">{shot.actionSummary || '暂无动作描述。'}</p>
                 </div>
-                <div className="bg-[var(--bg-base)] p-4 rounded-lg border border-[var(--border-primary)] flex gap-3">
-                  <MessageSquare className="w-4 h-4 text-[var(--text-muted)] mt-0.5" />
-                  <div className="flex-1">
+                <div className="bg-[var(--bg-base)] p-3 rounded-lg border border-[var(--border-primary)] flex gap-2 max-h-28 overflow-y-auto custom-scrollbar">
+                  <MessageSquare className="w-4 h-4 text-[var(--text-muted)] mt-0.5 shrink-0" />
+                  <div className="flex-1 min-w-0">
                     {shot.dialogue ? (
                       <p className="text-[var(--text-tertiary)] text-xs italic leading-relaxed">"{shot.dialogue}"</p>
                     ) : (
@@ -684,10 +728,10 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
           )}
         </section>
 
-        <section className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-surface)] overflow-hidden">
+        <section id="shot-section-keyframe" className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-surface)] overflow-hidden">
           {renderSectionHeader(
             'keyframe',
-            effectiveVideoInputMode === 'storyboard-grid' ? '网格分镜' : '关键帧制作',
+            effectiveVideoInputMode === 'storyboard-grid' ? '3 网格分镜' : '3 关键帧制作',
             effectiveVideoInputMode === 'storyboard-grid'
               ? '网格分镜与首尾帧二选一，当前为网格模式'
               : '完成首帧/尾帧后再进入视频',
@@ -738,6 +782,8 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
 
               {effectiveVideoInputMode === 'keyframes' ? (
                 <KeyframeEditor
+                  shotId={shot.id}
+                  shotIndex={shotIndex}
                   startKeyframe={startKf}
                   endKeyframe={endKf}
                   showEndFrame={showEndFrame}
@@ -747,6 +793,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                   useAIEnhancement={useAIEnhancement}
                   onToggleAIEnhancement={onToggleAIEnhancement}
                   onGenerateKeyframe={onGenerateKeyframe}
+                  onCancelKeyframe={onCancelKeyframe}
                   onUploadKeyframe={onUploadKeyframe}
                   onEditPrompt={onEditKeyframePrompt}
                   onOptimizeWithAI={onOptimizeKeyframeWithAI}
@@ -848,15 +895,18 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
           )}
         </section>
 
-        <section className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-surface)] overflow-hidden">
-          {renderSectionHeader('video', '视频生成', '选模型、设参数、出片', steps[3]?.done)}
+        <section id="shot-section-video" className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-surface)] overflow-hidden">
+          {renderSectionHeader('video', '4 视频生成', '选模型、设参数、出片', steps[3]?.done)}
           {isSectionOpen('video') && (
             <div className="border-t border-[var(--border-primary)] p-3">
               <VideoGenerator
                 shot={shot}
+                shotIndex={shotIndex}
                 hasStartFrame={hasStartFrame}
                 hasEndFrame={hasEndFrame}
                 onGenerate={onGenerateVideo}
+                onCancel={onCancelVideo}
+                planningShotDuration={scriptData?.planningShotDuration}
                 onEditPrompt={onEditVideoPrompt}
                 onModelChange={(modelId) => {
                   setLocalVideoModelId(modelId);
@@ -876,7 +926,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
           <section className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-surface)] overflow-hidden">
             {renderSectionHeader('advanced', '高级工具', '镜头拆分与实验能力', undefined)}
             {isSectionOpen('advanced') && (
-              <div className="border-t border-[var(--border-primary)] p-4 space-y-3">
+              <div className="border-t border-[var(--border-primary)] p-3">
                 <button
                   onClick={onSplitShot}
                   disabled={isSplittingShot}
@@ -889,6 +939,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
             )}
           </section>
         )}
+        </div>
       </div>
 
       <div className="border-t border-[var(--border-primary)] bg-[var(--bg-surface)] p-4 space-y-2">

@@ -76,19 +76,21 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
         },
         {
             "id": "comfyui-flux-dev-fp8",
-            "apiModel": "qwen-image-2512",
-            "name": "ComfyUI Qwen Image 2512 (本地)",
+            "apiModel": "flux2-klein-9b",
+            "name": "ComfyUI FLUX.2 Klein 9B (本地)",
             "type": "image",
             "providerId": "comfyui-local",
-            "description": "默认定妆：Qwen-Image-2512 全量步数（默认关 Lightning）；造型九宫格走 Qwen Edit",
+            "description": "默认定妆：FLUX.2 Klein 9B T2I；关键帧：FLUX.2 Klein 9B Image Edit（最多 4 张参考）；造型九宫格：Qwen Edit turnaround",
             "isBuiltIn": True,
             "isEnabled": True,
             "params": {
                 "defaultAspectRatio": "16:9",
                 "supportedAspectRatios": ["16:9", "9:16", "1:1"],
                 "apiFormat": "comfyui",
-                "workflowName": "image_qwen_Image_2512",
-                "steps": 50,
+                "workflowName": "image_flux2_text_to_image_9b",
+                "steps": 20,
+                "keyframeWorkflowName": "image_flux2_klein_image_edit_9b_base",
+                "keyframeSteps": 20,
                 "turnaroundWorkflowName": "qwen_image_edit_2511_fp8_character_turnaround",
                 "turnaroundSteps": 4,
             },
@@ -99,7 +101,7 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
             "name": "ComfyUI Flux Dev1 FP8 (本地·备用)",
             "type": "image",
             "providerId": "comfyui-local",
-            "description": "Flux1-Dev FP8 文生图；英文短提示更稳，与 Qwen 中文长描述定妆风格差异较大",
+            "description": "Flux1-Dev FP8 文生图（定妆）；关键帧可配 Qwen Edit FLF；九宫格走 Qwen Edit turnaround",
             "isBuiltIn": True,
             "isEnabled": False,
             "params": {
@@ -108,6 +110,8 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
                 "apiFormat": "comfyui",
                 "workflowName": "flux_dev1_fp8_text_to_image",
                 "steps": 20,
+                "keyframeWorkflowName": "image_qwen_image_edit_2511_flf",
+                "keyframeSteps": 40,
                 "turnaroundWorkflowName": "qwen_image_edit_2511_fp8_character_turnaround",
                 "turnaroundSteps": 4,
             },
@@ -326,7 +330,7 @@ def sanitize_registry(
             changed = True
             continue
 
-        # 默认图片模型定妆：Flux / 2steps → image_qwen_Image_2512（全量步数）
+        # 默认图片模型定妆：旧 Flux1 / Qwen T2I → FLUX.2 Klein 9B
         if mid == "comfyui-flux-dev-fp8" and model.get("type") == "image":
             params = dict(model.get("params") or {})
             casting = params.get("workflowName") or "flux-dev-fp8"
@@ -334,24 +338,50 @@ def sanitize_registry(
                 "flux-dev-fp8",
                 "flux_dev1_fp8_text_to_image",
                 "image_qwen_image_2512_with_2steps_lora",
+                "image_qwen_Image_2512",
             }:
                 params.update(
                     {
                         "apiFormat": "comfyui",
-                        "workflowName": "image_qwen_Image_2512",
-                        "steps": 50,
+                        "workflowName": "image_flux2_text_to_image_9b",
+                        "steps": 20,
                     }
                 )
                 model = {
                     **model,
-                    "apiModel": "qwen-image-2512",
-                    "name": "ComfyUI Qwen Image 2512 (本地)",
+                    "apiModel": "flux2-klein-9b",
+                    "name": "ComfyUI FLUX.2 Klein 9B (本地)",
                     "params": params,
                 }
                 changed = True
-            # 补齐九宫格专用工作流配置
+            # 补齐九宫格 / 关键帧专用工作流配置
             params = dict(model.get("params") or {})
             if not params.get("turnaroundWorkflowName"):
+                params["turnaroundWorkflowName"] = "qwen_image_edit_2511_fp8_character_turnaround"
+                params["turnaroundSteps"] = params.get("turnaroundSteps") or 4
+                model = {**model, "params": params}
+                changed = True
+            params = dict(model.get("params") or {})
+            kf = params.get("keyframeWorkflowName")
+            if not kf or kf in {
+                "image_qwen_image_edit_2511_flf",
+                "image_qwen_image_edit_2511",
+            }:
+                params["keyframeWorkflowName"] = "image_flux2_klein_image_edit_9b_base"
+                steps = params.get("keyframeSteps")
+                params["keyframeSteps"] = 20 if not steps or steps == 40 else steps
+                model = {**model, "params": params}
+                changed = True
+
+        if mid == "comfyui-flux-dev-fp8-legacy" and model.get("type") == "image":
+            params = dict(model.get("params") or {})
+            if not params.get("keyframeWorkflowName"):
+                params["keyframeWorkflowName"] = "image_qwen_image_edit_2511_flf"
+                params["keyframeSteps"] = params.get("keyframeSteps") or 40
+                model = {**model, "params": params}
+                changed = True
+            if not params.get("turnaroundWorkflowName"):
+                params = dict(model.get("params") or {})
                 params["turnaroundWorkflowName"] = "qwen_image_edit_2511_fp8_character_turnaround"
                 params["turnaroundSteps"] = params.get("turnaroundSteps") or 4
                 model = {**model, "params": params}

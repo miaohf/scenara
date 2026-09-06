@@ -113,15 +113,15 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({
         >
           {models.map((model) => (
             <option key={model.id} value={model.id}>
-              {model.name} {model.description ? `- ${model.description}` : ''}
+              {model.name}
             </option>
           ))}
         </select>
         <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-tertiary)] pointer-events-none" />
       </div>
       {selectedModel && !compact && (
-        <p className="text-[9px] text-[var(--text-muted)]">
-          ID: {selectedModel.id}
+        <p className="text-[9px] text-[var(--text-muted)] leading-relaxed line-clamp-2" title={selectedModel.description || selectedModel.id}>
+          {selectedModel.description || `ID: ${selectedModel.id}`}
         </p>
       )}
     </div>

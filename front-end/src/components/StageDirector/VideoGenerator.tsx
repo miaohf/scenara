@@ -5,30 +5,38 @@ import { VideoSettingsPanel } from '../AspectRatioSelector';
 import { resolveVideoModelRouting } from './utils';
 import {
   getDefaultAspectRatio,
-  getDefaultVideoDuration,
   getVideoModels,
   getActiveVideoModel,
   getProviderById,
 } from '../../services/modelRegistry';
+import { recommendVideoDuration } from '../../services/videoDurationRecommend';
+import { useGenerationQueue } from '../../contexts/GenerationQueueContext';
+import { formatJobProgressLabel, resolveShotVideoBadge } from '../../services/generationQueue';
 import { VideoModelDefinition } from '../../types/model';
 import { useResolvedVideoUrl } from '../../hooks/useResolvedVideoUrl';
 
 interface VideoGeneratorProps {
   shot: Shot;
+  shotIndex?: number;
   hasStartFrame: boolean;
   hasEndFrame: boolean;
   onGenerate: (aspectRatio: AspectRatio, duration: VideoDuration, modelId: string) => void;
+  onCancel?: () => void;
   onEditPrompt: () => void;
   onModelChange?: (modelId: string) => void;
+  planningShotDuration?: number;
 }
 
 const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   shot,
+  shotIndex = 0,
   hasStartFrame,
   hasEndFrame,
   onGenerate,
+  onCancel,
   onEditPrompt,
   onModelChange,
+  planningShotDuration,
 }) => {
   const normalizeModelId = (modelId?: string) => {
     if (!modelId) return modelId;
@@ -67,7 +75,9 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
     resolveVeoFastQuality(shot.videoModel)
   );
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(() => getDefaultAspectRatio());
-  const [duration, setDuration] = useState<VideoDuration>(() => getDefaultVideoDuration());
+  const [duration, setDuration] = useState<VideoDuration>(5);
+  const [durationHint, setDurationHint] = useState('');
+  const [recommendedDuration, setRecommendedDuration] = useState<VideoDuration>(5);
 
   const selectedModel = videoModels.find((m) => m.id === selectedModelId) as VideoModelDefinition | undefined;
   const selectedProvider = selectedModel ? getProviderById(selectedModel.providerId) : undefined;
@@ -96,18 +106,10 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
             ? 'ComfyUI LTX'
             : 'Unknown';
 
-  const getRecommendedModeLabel = (modelId: string): string => {
-    const routing = resolveVideoModelRouting(modelId);
-    if (routing.family === 'sora' || routing.family === 'doubao-task') {
-      return '推荐网格分镜';
-    }
-    if (routing.family === 'veo-fast') {
-      return '网格/首尾帧';
-    }
-    return '按镜头选择';
-  };
-
-  const isGenerating = shot.interval?.status === 'generating';
+  const { jobs } = useGenerationQueue();
+  const videoBadge = resolveShotVideoBadge(shot, jobs, shotIndex);
+  const isBusy = videoBadge.status === 'running' || videoBadge.status === 'queued' || shot.interval?.status === 'generating';
+  const isGenerating = isBusy;
   const hasVideo = !!shot.interval?.videoUrl;
   const resolvedVideoSrc = useResolvedVideoUrl(shot.interval?.videoUrl);
 
@@ -117,10 +119,38 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
     if (!selectedModel.params.supportedAspectRatios.includes(aspectRatio)) {
       setAspectRatio(selectedModel.params.defaultAspectRatio);
     }
-    if (!selectedModel.params.supportedDurations.includes(duration)) {
-      setDuration(selectedModel.params.defaultDuration);
+    const recommendation = recommendVideoDuration(
+      shot,
+      selectedModel.params.supportedDurations,
+      planningShotDuration,
+    );
+    setRecommendedDuration(recommendation.duration);
+    setDurationHint(recommendation.reason);
+    const stored = Number(shot.interval?.duration) as VideoDuration;
+    if (selectedModel.params.supportedDurations.includes(stored)) {
+      setDuration(stored);
+    } else {
+      setDuration(recommendation.duration);
     }
-  }, [selectedModelId]);
+  }, [selectedModelId, shot.id]);
+
+  useEffect(() => {
+    if (!selectedModel) return;
+    const recommendation = recommendVideoDuration(
+      shot,
+      selectedModel.params.supportedDurations,
+      planningShotDuration,
+    );
+    setRecommendedDuration(recommendation.duration);
+    setDurationHint(recommendation.reason);
+  }, [
+    shot.dialogue,
+    shot.actionSummary,
+    shot.cameraMovement,
+    shot.dubbing?.text,
+    planningShotDuration,
+    selectedModelId,
+  ]);
 
   useEffect(() => {
     if (activeVideoModel?.id && videoModels.some((m) => m.id === activeVideoModel.id)) {
@@ -150,11 +180,12 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   const canGenerate = hasStartFrame && !isMissingVolcengineApiKey;
 
   return (
-    <div className="bg-[var(--bg-surface)] rounded-xl p-5 border border-[var(--border-primary)] space-y-4">
+    <div className="grid grid-cols-1 @min-[720px]:grid-cols-[minmax(0,22rem)_minmax(0,1fr)] gap-3 items-start">
+      <div className="space-y-3 min-w-0">
       <div className="flex items-center justify-between">
         <h4 className="text-xs font-bold text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-2">
           <Video className="w-3 h-3 text-[var(--accent)]" />
-          视频生成
+          参数
           <button
             onClick={onEditPrompt}
             className="p-1 text-[var(--warning-text)] hover:text-[var(--text-primary)] transition-colors"
@@ -188,34 +219,18 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
           className="w-full bg-[var(--bg-base)] text-[var(--text-primary)] border border-[var(--border-secondary)] rounded-lg px-3 py-2 text-xs outline-none focus:border-[var(--accent)] transition-colors"
           disabled={isGenerating}
         >
-          {videoModels.map((model) => {
-            const vm = model as VideoModelDefinition;
-            const modeLabel = vm.params.mode === 'comfyui'
-              ? 'ComfyUI'
-              : vm.params.mode === 'async'
-                ? '异步'
-                : '同步';
-            const recommendationLabel = getRecommendedModeLabel(model.id);
-            return (
-              <option key={model.id} value={model.id}>
-                {model.name}（{modeLabel} · {recommendationLabel}）
-              </option>
-            );
-          })}
+          {videoModels.map((model) => (
+            <option key={model.id} value={model.id}>
+              {model.name}
+            </option>
+          ))}
         </select>
-        {selectedModel && (
-          <p className="text-[9px] text-[var(--text-muted)] font-mono">
-            ✦ {selectedModel.name}:
-            {selectedModel.params.mode === 'comfyui'
-              ? ` ComfyUI 工作流，支持 ${selectedModel.params.supportedAspectRatios.join('/')}，可选 ${selectedModel.params.supportedDurations.join('/')}秒${
-                  selectedModel.params.supportsEndFrame ? '，支持首尾帧' : ''
-                }${
-                  selectedModel.params.supportsAudio ? '，可注入镜头配音' : ''
-                }`
-              : selectedModel.params.mode === 'async'
-              ? ` 支持 ${selectedModel.params.supportedAspectRatios.join('/')}，可选 ${selectedModel.params.supportedDurations.join('/')}秒`
-              : ` 同步模式，支持 ${selectedModel.params.supportedAspectRatios.join('/')}`}
-            {` ｜${getRecommendedModeLabel(effectiveModelId || selectedModel.id)}`}
+        {selectedModel?.description && (
+          <p
+            className="text-[9px] text-[var(--text-muted)] leading-relaxed line-clamp-2"
+            title={selectedModel.description}
+          >
+            {selectedModel.description}
           </p>
         )}
         {isMissingVolcengineApiKey && (
@@ -226,39 +241,34 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
             </p>
           </div>
         )}
-        <div className="bg-[var(--bg-base)] border border-[var(--border-secondary)] rounded-lg p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-bold uppercase tracking-wide text-[var(--text-tertiary)]">模型能力卡</span>
-            <span className="text-[10px] font-mono text-[var(--text-secondary)]">{routingLabel}</span>
-          </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] font-mono text-[var(--text-secondary)] mr-1">{routingLabel}</span>
           {[
-            { key: 'start-only', label: '首帧支持', enabled: modelRouting.supportsStartFrame },
+            { key: 'start-only', label: '首帧', enabled: modelRouting.supportsStartFrame },
             {
               key: 'start-end',
-              label: '首尾帧支持',
+              label: '首尾帧',
               enabled: modelRouting.supportsStartFrame && modelRouting.supportsEndFrame,
             },
             {
               key: 'nine-grid-priority',
-              label: '九宫格优先',
+              label: '九宫格',
               enabled: modelRouting.prefersNineGridStoryboard,
             },
           ].map((capability) => (
-            <div key={capability.key} className="flex items-center justify-between text-[10px]">
-              <span className="text-[var(--text-secondary)]">{capability.label}</span>
-              <span
-                className={`px-2 py-0.5 rounded border font-mono ${
-                  capability.enabled
-                    ? 'text-[var(--success)] border-[var(--success)]/40 bg-[var(--success)]/10'
-                    : 'text-[var(--text-muted)] border-[var(--border-primary)] bg-[var(--bg-hover)]'
-                }`}
-              >
-                {capability.enabled ? 'ON' : 'OFF'}
-              </span>
-            </div>
+            <span
+              key={capability.key}
+              className={`px-1.5 py-0.5 rounded border text-[10px] font-mono ${
+                capability.enabled
+                  ? 'text-[var(--success)] border-[var(--success)]/40 bg-[var(--success)]/10'
+                  : 'text-[var(--text-muted)] border-[var(--border-primary)] bg-[var(--bg-hover)]'
+              }`}
+            >
+              {capability.label} {capability.enabled ? 'ON' : 'OFF'}
+            </span>
           ))}
           {hasEndFrame && !modelRouting.supportsEndFrame && (
-            <p className="text-[9px] text-[var(--warning-text)] font-mono">
+            <p className="basis-full text-[9px] text-[var(--warning-text)] font-mono">
               当前模型会自动忽略尾帧输入，仅使用首帧驱动。
             </p>
           )}
@@ -313,37 +323,43 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
           disabled={isGenerating}
           supportedAspectRatios={selectedModel?.params.supportedAspectRatios}
           supportedDurations={selectedModel?.params.supportedDurations}
+          recommendedDuration={recommendedDuration}
         />
+        {durationHint && (
+          <p className="text-[9px] text-[var(--text-muted)] font-mono">{durationHint}，可手动改档</p>
+        )}
       </div>
 
-      {hasVideo ? (
-        <div className="w-full aspect-video bg-[var(--bg-base)] rounded-lg overflow-hidden border border-[var(--border-secondary)] relative shadow-lg">
-          <video src={resolvedVideoSrc} controls className="w-full h-full" />
-        </div>
-      ) : (
-        <div className="w-full aspect-video bg-[var(--nav-hover-bg)] rounded-lg border border-dashed border-[var(--border-primary)] flex items-center justify-center">
-          <span className="text-xs text-[var(--text-muted)] font-mono">PREVIEW AREA</span>
-        </div>
-      )}
-
-      <button
-        onClick={handleGenerate}
-        disabled={!canGenerate || isGenerating}
-        className={`w-full py-3 rounded-lg font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all ${
-          hasVideo
-            ? 'bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:bg-[var(--border-secondary)]'
-            : 'bg-[var(--accent)] text-[var(--text-primary)] hover:bg-[var(--accent-hover)] shadow-lg shadow-[var(--accent-shadow)]'
-        } ${!canGenerate ? 'opacity-50 cursor-not-allowed' : ''}`}
-      >
-        {isGenerating ? (
-          <>
-            <Loader2 className="w-4 h-4 animate-spin" />
-            {`生成视频中 (${aspectRatio}, ${modelType === 'sora' ? `${duration}秒` : selectedModel?.name})...`}
-          </>
-        ) : (
-          <>{hasVideo ? '重新生成视频' : '开始生成视频'}</>
+      <div className="flex gap-2">
+        <button
+          onClick={handleGenerate}
+          disabled={!canGenerate || isGenerating}
+          className={`flex-1 py-2.5 rounded-lg font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all ${
+            hasVideo
+              ? 'bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:bg-[var(--border-secondary)]'
+              : 'bg-[var(--accent)] text-[var(--text-primary)] hover:bg-[var(--accent-hover)] shadow-lg shadow-[var(--accent-shadow)]'
+          } ${!canGenerate || isGenerating ? 'opacity-50 cursor-not-allowed' : ''}`}
+        >
+          {isGenerating ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              {videoBadge.status === 'queued'
+                ? `排队中 ${formatJobProgressLabel(videoBadge.job, 'queued')} (${aspectRatio}, ${duration}秒)`
+                : `${formatJobProgressLabel(videoBadge.job, 'running')} (${aspectRatio}, ${duration}秒)`}
+            </>
+          ) : (
+            <>{hasVideo ? '重新生成视频' : '开始生成视频'}</>
+          )}
+        </button>
+        {isGenerating && onCancel && (
+          <button
+            onClick={onCancel}
+            className="px-4 py-2.5 rounded-lg font-bold text-xs uppercase tracking-widest border border-[var(--error-border)] bg-[var(--error-bg)] text-[var(--error-text)] hover:bg-[var(--error-hover-bg-strong)] transition-colors"
+          >
+            取消
+          </button>
         )}
-      </button>
+      </div>
       {isMissingVolcengineApiKey && (
         <div className="text-[9px] text-[var(--error-text)] text-center font-mono">
           * 请选择并配置火山引擎 API Key（模型 Key 或 Volcengine 提供商 Key）
@@ -355,6 +371,25 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
           * 未检测到结束帧，将使用单图生成模式 (Image-to-Video)
         </div>
       )}
+      </div>
+
+      <div className="min-w-0 flex justify-center items-start">
+        <div
+          className={`h-56 max-w-full rounded-lg overflow-hidden border relative ${
+            aspectRatio === '9:16'
+              ? 'aspect-[9/16]'
+              : aspectRatio === '1:1'
+                ? 'aspect-square'
+                : 'aspect-video'
+          } ${hasVideo ? 'bg-[var(--bg-base)] border-[var(--border-secondary)]' : 'bg-[var(--nav-hover-bg)] border-dashed border-[var(--border-primary)] flex items-center justify-center'}`}
+        >
+          {hasVideo ? (
+            <video src={resolvedVideoSrc} controls className="w-full h-full object-contain" />
+          ) : (
+            <span className="text-xs text-[var(--text-muted)] font-mono">{aspectRatio}</span>
+          )}
+        </div>
+      </div>
     </div>
   );
 };

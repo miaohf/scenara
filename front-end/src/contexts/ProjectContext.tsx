@@ -118,32 +118,46 @@ export function ProjectProvider({ children, projectId }: { children: React.React
   }) => {
     const { shouldSyncEpisode, syncEpisode, errorMessage } = params;
 
-    const syncedEpisodes: Episode[] = [];
-    const nextEpisodes = allEpisodes.map(episode => {
-      if (!shouldSyncEpisode(episode)) return episode;
-      const withTimestamp = { ...syncEpisode(episode), lastModified: Date.now() };
-      syncedEpisodes.push(withTimestamp);
-      return withTimestamp;
-    });
+    // 列表接口不再带 payload，同步前必须拉完整剧集，避免用空数据覆盖落库。
+    void (async () => {
+      try {
+        const syncedEpisodes: Episode[] = [];
+        const nextEpisodes = [...allEpisodes];
 
-    if (syncedEpisodes.length > 0) {
-      setAllEpisodes(nextEpisodes);
-    }
+        for (let index = 0; index < allEpisodes.length; index += 1) {
+          const summary = allEpisodes[index];
+          const full =
+            currentEpisode?.id === summary.id
+              ? currentEpisode
+              : await loadEpisode(summary.id);
+          if (!shouldSyncEpisode(full)) continue;
 
-    if (currentEpisode && shouldSyncEpisode(currentEpisode)) {
-      const currentWithTimestamp = { ...syncEpisode(currentEpisode), lastModified: Date.now() };
-      setCurrentEpisode(currentWithTimestamp);
+          const withTimestamp = { ...syncEpisode(full), lastModified: Date.now() };
+          syncedEpisodes.push(withTimestamp);
+          nextEpisodes[index] = {
+            ...summary,
+            title: withTimestamp.title,
+            stage: withTimestamp.stage,
+            lastModified: withTimestamp.lastModified,
+          };
+        }
 
-      if (!syncedEpisodes.some(ep => ep.id === currentWithTimestamp.id)) {
-        syncedEpisodes.push(currentWithTimestamp);
-      }
-    }
+        if (syncedEpisodes.length === 0) return;
 
-    if (syncedEpisodes.length > 0) {
-      void Promise.all(syncedEpisodes.map(ep => saveEpisode(ep))).catch(e => {
+        setAllEpisodes(nextEpisodes);
+
+        const syncedCurrent = currentEpisode
+          ? syncedEpisodes.find((ep) => ep.id === currentEpisode.id)
+          : undefined;
+        if (syncedCurrent) {
+          setCurrentEpisode(syncedCurrent);
+        }
+
+        await Promise.all(syncedEpisodes.map((ep) => saveEpisode(ep)));
+      } catch (e) {
         console.error(errorMessage, e);
-      });
-    }
+      }
+    })();
   }, [allEpisodes, currentEpisode]);
 
   const addCharacterToLibrary = useCallback((character: Character) => {

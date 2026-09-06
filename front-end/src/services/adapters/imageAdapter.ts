@@ -518,15 +518,35 @@ export const callImageApi = async (
       );
     }
     const aspectRatio = options.aspectRatio || activeModel.params.defaultAspectRatio;
-    return apiCallComfyImage({
-      ...options,
-      prompt: promptLimitResult.text,
-      negativePrompt: options.negativePrompt,
+    const workflowName = options.workflowName || activeModel.params.workflowName;
+    // API 模式下 ComfyUI 由后端 Worker 直连（COMFYUI_BASE_URL），前端注册表里的地址不参与请求，
+    // 打出来只会误导排查，因此这里不再输出。
+    console.info('[ComfyUI Image] API 模式（异步任务）:', {
+      jobType: 'comfyui_image',
+      pollEndpoint: '/api/v1/jobs/{id}',
       modelId: activeModel.id,
-      aspectRatio,
+      workflowName,
       steps: options.steps ?? activeModel.params.steps ?? 20,
-      workflowName: options.workflowName || activeModel.params.workflowName,
     });
+    try {
+      return await apiCallComfyImage({
+        ...options,
+        prompt: promptLimitResult.text,
+        negativePrompt: options.negativePrompt,
+        modelId: activeModel.id,
+        aspectRatio,
+        steps: options.steps ?? activeModel.params.steps ?? 20,
+        workflowName,
+      });
+    } catch (error) {
+      console.error('[ComfyUI Image] 异步任务失败:', {
+        workflowName,
+        modelId: activeModel.id,
+        // 直接打 Error 对象会被序列化成 [object Error]，丢掉真正的原因
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
   if (isApiAiMode() && apiFormat !== 'comfyui') {
     return apiCallImage(options);

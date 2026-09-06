@@ -1,0 +1,244 @@
+import type { Episode, Shot } from "@/types";
+import type { JobStatus } from "@/services/aiApiAdapter";
+import { getShotDisplayKey, getShotDisplayLabel, parseShotId } from "@/services/storyboardIdUtils";
+
+export type ShotVideoBadge = "ready" | "running" | "queued" | "unsubmitted" | "failed" | "empty";
+
+export const isActiveJob = (status?: string): boolean =>
+  status === "pending" || status === "running";
+
+export const jobTargetShotId = (job: JobStatus): string | undefined => {
+  const target = job.target;
+  if (!target) return undefined;
+  if (target.kind === "video" || target.kind === "nineGrid" || target.kind === "keyframe") {
+    return target.shotId;
+  }
+  return undefined;
+};
+
+export const isVideoJob = (job: JobStatus): boolean =>
+  job.target?.kind === "video" || job.job_type === "comfyui_video" || job.job_type === "video";
+
+export type JobKind = "video" | "keyframe" | "nineGrid" | "character" | "scene" | "prop" | "variation" | "turnaround" | "image" | "other";
+
+export const jobKind = (job: JobStatus): JobKind => {
+  const kind = job.target?.kind;
+  if (kind === "video" || kind === "nineGrid" || kind === "keyframe" || kind === "character" || kind === "scene" || kind === "prop" || kind === "variation" || kind === "turnaround") {
+    return kind;
+  }
+  if (job.job_type === "comfyui_video" || job.job_type === "video") return "video";
+  if (job.job_type === "comfyui_image") return "image";
+  return "other";
+};
+
+export const describeJobTitle = (job: JobStatus, episode?: Episode | null): string => {
+  const target = job.target;
+  if (!target) {
+    if (job.job_type === "comfyui_image") return "图片";
+    if (job.job_type === "comfyui_video" || job.job_type === "video") return "视频";
+    return "任务";
+  }
+
+  if (target.kind === "video" || target.kind === "nineGrid" || target.kind === "keyframe") {
+    const index = episode?.shots.findIndex((shot, shotIndex) => sameShotRef(String(target.shotId), shot.id, shotIndex)) ?? -1;
+    return getShotDisplayLabel(String(target.shotId), index >= 0 ? index : 0);
+  }
+
+  if (target.kind === "character" || target.kind === "scene" || target.kind === "prop") {
+    const list =
+      target.kind === "character"
+        ? episode?.scriptData?.characters
+        : target.kind === "scene"
+          ? episode?.scriptData?.scenes
+          : episode?.scriptData?.props;
+    return list?.find((item) => String(item.id) === String(target.id))?.name || (target.kind === "character" ? "角色" : target.kind === "scene" ? "场景" : "道具");
+  }
+
+  if (target.kind === "variation") {
+    const character = episode?.scriptData?.characters.find((item) => String(item.id) === String(target.characterId));
+    return character ? character.name : "造型";
+  }
+
+  if (target.kind === "turnaround") {
+    const character = episode?.scriptData?.characters.find((item) => String(item.id) === String(target.characterId));
+    return character ? character.name : "三视图";
+  }
+
+  return "任务";
+};
+
+export const describeJob = (job: JobStatus, episode?: Episode | null): string => {
+  const target = job.target;
+  if (!target) {
+    if (job.job_type === "comfyui_image") return "ComfyUI 图片";
+    if (job.job_type === "comfyui_video" || job.job_type === "video") return "ComfyUI 视频";
+    return "生成任务";
+  }
+
+  if (target.kind === "video" || target.kind === "nineGrid" || target.kind === "keyframe") {
+    const index = episode?.shots.findIndex((shot, shotIndex) => sameShotRef(String(target.shotId), shot.id, shotIndex)) ?? -1;
+    const shotLabel = getShotDisplayLabel(String(target.shotId), index >= 0 ? index : 0);
+    if (target.kind === "video") return `${shotLabel} 视频`;
+    if (target.kind === "nineGrid") return `${shotLabel} 网格`;
+    return `${shotLabel} ${target.type === "end" ? "尾帧" : "首帧"}`;
+  }
+
+  if (target.kind === "character" || target.kind === "scene" || target.kind === "prop") {
+    const list =
+      target.kind === "character"
+        ? episode?.scriptData?.characters
+        : target.kind === "scene"
+          ? episode?.scriptData?.scenes
+          : episode?.scriptData?.props;
+    const name = list?.find((item) => String(item.id) === String(target.id))?.name;
+    const kindLabel = target.kind === "character" ? "角色" : target.kind === "scene" ? "场景" : "道具";
+    return name ? `${kindLabel} ${name}` : kindLabel;
+  }
+
+  if (target.kind === "variation") {
+    const character = episode?.scriptData?.characters.find(
+      (item) => String(item.id) === String(target.characterId),
+    );
+    return character ? `${character.name} 造型` : "角色造型";
+  }
+
+  if (target.kind === "turnaround") {
+    const character = episode?.scriptData?.characters.find(
+      (item) => String(item.id) === String(target.characterId),
+    );
+    return character ? `${character.name} 三视图` : "角色三视图";
+  }
+
+  return "生成任务";
+};
+
+export const sortQueueJobs = (jobs: JobStatus[]): JobStatus[] =>
+  [...jobs].sort((left, right) => {
+    if (left.status === "running" && right.status !== "running") return -1;
+    if (right.status === "running" && left.status !== "running") return 1;
+    const leftPos = left.queue_position ?? Number.MAX_SAFE_INTEGER;
+    const rightPos = right.queue_position ?? Number.MAX_SAFE_INTEGER;
+    if (leftPos !== rightPos) return leftPos - rightPos;
+    return 0;
+  });
+
+export const sameShotRef = (leftId: string, rightId: string, rightIndex = 0): boolean => {
+  if (String(leftId) === String(rightId)) return true;
+  const leftParsed = parseShotId(leftId);
+  const rightParsed = parseShotId(rightId);
+  if (leftParsed.mode === "unknown" && rightParsed.mode === "unknown") return false;
+  const leftKey = leftParsed.mode === "unknown" ? null : getShotDisplayKey(leftId, 0);
+  const rightKey =
+    rightParsed.mode === "unknown" ? getShotDisplayKey(rightId, rightIndex) : getShotDisplayKey(rightId, 0);
+  if (leftKey && leftKey === rightKey) return true;
+  if (leftParsed.mode === "unknown") {
+    return getShotDisplayKey(leftId, rightIndex) === rightKey;
+  }
+  return false;
+};
+
+export const findShotVideoJob = (
+  jobs: JobStatus[],
+  shotId: string,
+  shotIndex = 0,
+): JobStatus | undefined =>
+  sortQueueJobs(jobs).find((job) => {
+    const targetId = jobTargetShotId(job);
+    return isActiveJob(job.status) && isVideoJob(job) && !!targetId && sameShotRef(targetId, shotId, shotIndex);
+  });
+
+export const findShotKeyframeJob = (
+  jobs: JobStatus[],
+  shotId: string,
+  type: "start" | "end",
+  shotIndex = 0,
+): JobStatus | undefined =>
+  sortQueueJobs(jobs).find((job) => {
+    const target = job.target;
+    const targetId = jobTargetShotId(job);
+    return (
+      isActiveJob(job.status) &&
+      target?.kind === "keyframe" &&
+      target.type === type &&
+      !!targetId &&
+      sameShotRef(targetId, shotId, shotIndex)
+    );
+  });
+
+export type ShotKeyframeBadge = "ready" | "running" | "queued" | "failed" | "empty";
+
+export const resolveShotKeyframeBadge = (
+  shot: Shot,
+  jobs: JobStatus[],
+  type: "start" | "end",
+  shotIndex = 0,
+): { status: ShotKeyframeBadge; job?: JobStatus; queuePosition?: number } => {
+  const job = findShotKeyframeJob(jobs, shot.id, type, shotIndex);
+  const frame = shot.keyframes?.find((keyframe) => keyframe.type === type);
+  if (job && jobDisplayState(job, jobs) === "running") {
+    return { status: "running", job };
+  }
+  if (job && isActiveJob(job.status)) {
+    return { status: "queued", job, queuePosition: job.queue_position ?? undefined };
+  }
+  if (frame?.status === "generating") {
+    return { status: "queued", queuePosition: undefined };
+  }
+  if (frame?.status === "failed") {
+    return { status: "failed" };
+  }
+  if (frame?.imageUrl) {
+    return { status: "ready" };
+  }
+  return { status: "empty" };
+};
+
+export const formatJobProgressLabel = (
+  job: JobStatus | undefined,
+  display: "running" | "queued",
+): string => {
+  if (display === "queued") {
+    return job?.queue_position ? `#${job.queue_position}` : "排队";
+  }
+  return typeof job?.progress === "number" ? `${job.progress}%` : "生成中";
+};
+
+/** ComfyUI / Celery 同时只跑一个：多个 running 也只认最早那条为真正生成中。 */
+export const primaryRunningJobId = (jobs: JobStatus[]): string | undefined => {
+  const running = jobs
+    .filter((job) => job.status === "running")
+    .sort((left, right) => (left.created_at || "").localeCompare(right.created_at || ""));
+  return running[0]?.id;
+};
+
+export const jobDisplayState = (job: JobStatus, jobs: JobStatus[]): "running" | "queued" => {
+  const runnerId = primaryRunningJobId(jobs);
+  return job.status === "running" && job.id === runnerId ? "running" : "queued";
+};
+
+export const resolveShotVideoBadge = (
+  shot: Shot,
+  jobs: JobStatus[],
+  shotIndex = 0,
+): { status: ShotVideoBadge; job?: JobStatus; queuePosition?: number } => {
+  const job = findShotVideoJob(jobs, shot.id, shotIndex);
+  if (job && jobDisplayState(job, jobs) === "running") {
+    return { status: "running", job };
+  }
+  if (job && isActiveJob(job.status)) {
+    return { status: "queued", job, queuePosition: job.queue_position ?? undefined };
+  }
+  if (shot.interval?.status === "generating") {
+    return { status: "queued", queuePosition: undefined };
+  }
+  if (shot.interval?.status === "failed") {
+    return { status: "failed" };
+  }
+  if (shot.interval?.videoUrl) {
+    return { status: "ready" };
+  }
+  if (shot.keyframes?.some((frame) => frame.type === "start" && frame.imageUrl)) {
+    return { status: "unsubmitted" };
+  }
+  return { status: "empty" };
+};

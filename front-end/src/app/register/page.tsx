@@ -3,28 +3,19 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/providers/auth-provider";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { AuthShell } from "@/components/AuthShell";
 
 export default function RegisterPage() {
   const { register } = useAuth();
-  const [email, setEmail] = useState("");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    const email = String(form.get("email") || "").trim();
+    const username = String(form.get("username") || "").trim();
+    const password = String(form.get("password") || "");
     setError("");
     setSubmitting(true);
     try {
@@ -37,62 +28,75 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <CardTitle>注册</CardTitle>
-          <CardDescription>创建 Scenara 账号</CardDescription>
-        </CardHeader>
-        <form onSubmit={handleSubmit}>
-          <CardContent className="space-y-4">
-            {error && <p className="text-sm text-destructive">{error}</p>}
-            <div className="space-y-2">
-              <Label htmlFor="email">邮箱</Label>
-              <Input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                autoComplete="email"
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="username">用户名</Label>
-              <Input
-                id="username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="username"
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">密码</Label>
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="new-password"
-                minLength={6}
-                required
-              />
-            </div>
-          </CardContent>
-          <CardFooter className="flex flex-col gap-3">
-            <Button type="submit" className="w-full" disabled={submitting}>
-              {submitting ? "注册中..." : "注册"}
-            </Button>
-            <p className="text-sm text-muted-foreground">
-              已有账号？{" "}
-              <Link href="/login" className="text-primary underline-offset-4 hover:underline">
-                登录
-              </Link>
+    <AuthShell>
+      <div className="w-full max-w-[420px] rounded-2xl border border-[var(--border-primary)] bg-[var(--bg-primary)]/90 p-8 shadow-[0_24px_80px_var(--overlay-light)] backdrop-blur-sm">
+        <div className="mb-8 space-y-2">
+          <p className="text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--accent-text)] lg:hidden">
+            SCENARA
+          </p>
+          <h2 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)]">创建账号</h2>
+          <p className="text-sm text-[var(--text-tertiary)]">加入后即可开始你的第一个项目</p>
+        </div>
+
+        <form method="post" action="#" onSubmit={handleSubmit} className="space-y-5">
+          {error ? (
+            <p className="rounded-lg border border-[var(--error-border)] bg-[var(--error-bg)] px-3 py-2 text-sm text-[var(--error-text)]">
+              {error}
             </p>
-          </CardFooter>
+          ) : null}
+
+          <label className="block space-y-2">
+            <span className="text-xs font-medium text-[var(--text-secondary)]">邮箱</span>
+            <input
+              name="email"
+              type="email"
+              autoComplete="email"
+              required
+              className="h-11 w-full rounded-xl border border-[var(--border-primary)] bg-[var(--bg-sunken)] px-3.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--accent-border)] focus:ring-2 focus:ring-[var(--accent-shadow)]"
+            />
+          </label>
+
+          <label className="block space-y-2">
+            <span className="text-xs font-medium text-[var(--text-secondary)]">用户名</span>
+            <input
+              name="username"
+              autoComplete="username"
+              required
+              className="h-11 w-full rounded-xl border border-[var(--border-primary)] bg-[var(--bg-sunken)] px-3.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--accent-border)] focus:ring-2 focus:ring-[var(--accent-shadow)]"
+            />
+          </label>
+
+          <label className="block space-y-2">
+            <span className="text-xs font-medium text-[var(--text-secondary)]">密码</span>
+            <input
+              name="password"
+              type="password"
+              autoComplete="new-password"
+              minLength={6}
+              required
+              className="h-11 w-full rounded-xl border border-[var(--border-primary)] bg-[var(--bg-sunken)] px-3.5 text-sm text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-muted)] focus:border-[var(--accent-border)] focus:ring-2 focus:ring-[var(--accent-shadow)]"
+            />
+          </label>
+
+          <button
+            type="submit"
+            disabled={submitting}
+            className="mt-2 h-11 w-full rounded-xl bg-[var(--btn-primary-bg)] text-sm font-semibold text-[var(--btn-primary-text)] shadow-[0_10px_28px_var(--btn-primary-shadow)] transition-colors hover:bg-[var(--btn-primary-hover)] disabled:opacity-50"
+          >
+            {submitting ? "注册中..." : "注册"}
+          </button>
         </form>
-      </Card>
-    </div>
+
+        <p className="mt-6 text-center text-sm text-[var(--text-muted)]">
+          已有账号？{" "}
+          <Link
+            href="/login"
+            className="font-medium text-[var(--accent-text)] transition-colors hover:text-[var(--accent-text-hover)]"
+          >
+            登录
+          </Link>
+        </p>
+      </div>
+    </AuthShell>
   );
 }

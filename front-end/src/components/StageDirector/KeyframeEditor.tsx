@@ -1,8 +1,12 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Loader2, Edit2, Upload, ArrowRight, ArrowLeft, Sparkles, Wand2 } from 'lucide-react';
 import { Keyframe } from '../../types';
+import { useGenerationQueue } from '../../contexts/GenerationQueueContext';
+import { findShotKeyframeJob, formatJobProgressLabel, jobDisplayState } from '../../services/generationQueue';
 
 interface KeyframeEditorProps {
+  shotId: string;
+  shotIndex?: number;
   startKeyframe?: Keyframe;
   endKeyframe?: Keyframe;
   showEndFrame?: boolean;
@@ -12,6 +16,7 @@ interface KeyframeEditorProps {
   useAIEnhancement: boolean;
   onToggleAIEnhancement: () => void;
   onGenerateKeyframe: (type: 'start' | 'end') => void;
+  onCancelKeyframe?: (type: 'start' | 'end') => void;
   onUploadKeyframe: (type: 'start' | 'end') => void;
   onEditPrompt: (type: 'start' | 'end', prompt: string) => void;
   onOptimizeWithAI: (type: 'start' | 'end') => void;
@@ -21,7 +26,45 @@ interface KeyframeEditorProps {
   onImageClick: (url: string, title: string) => void;
 }
 
+const KeyframeImage: React.FC<{ url: string; alt: string; onClick: () => void }> = ({
+  url,
+  alt,
+  onClick,
+}) => {
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [url]);
+
+  if (failed) {
+    return (
+      <div className="absolute inset-0 flex flex-col items-center justify-center text-[var(--text-muted)] p-2">
+        <span className="text-[10px] text-[var(--error)] mb-1">图片无法显示</span>
+        <span className="text-[9px] text-[var(--text-muted)] text-center">请重新生成或上传</span>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <img
+        src={url}
+        className="w-full h-full object-cover cursor-pointer transition-transform duration-300 group-hover:scale-105"
+        onClick={onClick}
+        onError={() => setFailed(true)}
+        alt={alt}
+      />
+      <div className="absolute inset-0 bg-[var(--bg-base)]/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+        <span className="text-[var(--text-primary)] text-xs font-mono">点击预览</span>
+      </div>
+    </>
+  );
+};
+
 const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
+  shotId,
+  shotIndex = 0,
   startKeyframe,
   endKeyframe,
   showEndFrame = true,
@@ -31,6 +74,7 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
   useAIEnhancement,
   onToggleAIEnhancement,
   onGenerateKeyframe,
+  onCancelKeyframe,
   onUploadKeyframe,
   onEditPrompt,
   onOptimizeWithAI,
@@ -39,13 +83,20 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
   onCopyNext,
   onImageClick
 }) => {
+  const { jobs } = useGenerationQueue();
+
   const renderKeyframePanel = (
     type: 'start' | 'end',
     label: string,
     keyframe?: Keyframe
   ) => {
-    const isGenerating = keyframe?.status === 'generating';
-    const hasFailed = keyframe?.status === 'failed';
+    const job = findShotKeyframeJob(jobs, shotId, type, shotIndex);
+    const display = job ? jobDisplayState(job, jobs) : (keyframe?.status === 'generating' ? 'queued' : undefined);
+    const isGenerating = keyframe?.status === 'generating' || display === 'running' || display === 'queued';
+    const hasFailed = keyframe?.status === 'failed' && !isGenerating;
+    const progressLabel = display
+      ? formatJobProgressLabel(job, display)
+      : null;
     
     return (
       <div className="space-y-2">
@@ -80,36 +131,41 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
         
         <div className="aspect-video bg-[var(--bg-base)] rounded-lg border border-[var(--border-primary)] overflow-hidden relative group">
           {keyframe?.imageUrl ? (
-            <>
-              <img
-                src={keyframe.imageUrl}
-                className="w-full h-full object-cover cursor-pointer transition-transform duration-300 group-hover:scale-105"
-                onClick={() => onImageClick(keyframe.imageUrl!, `${label} - 关键帧`)}
-                alt={label}
-              />
-              <div className="absolute inset-0 bg-[var(--bg-base)]/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                <span className="text-[var(--text-primary)] text-xs font-mono">点击预览</span>
-              </div>
-            </>
-          ) : (
+            <KeyframeImage
+              url={keyframe.imageUrl}
+              alt={label}
+              onClick={() => onImageClick(keyframe.imageUrl!, `${label} - 关键帧`)}
+            />
+          ) : !isGenerating && hasFailed ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-[var(--text-muted)] p-2">
-              {isGenerating ? (
-                <>
-                  <Loader2 className="w-6 h-6 animate-spin mb-2 text-[var(--accent)]" />
-                  <span className="text-[10px] text-[var(--text-tertiary)]">生成中...</span>
-                </>
-              ) : hasFailed ? (
-                <>
-                  <span className="text-[10px] text-[var(--error)] mb-2">生成失败</span>
-                  <button
-                    onClick={() => onGenerateKeyframe(type)}
-                    className="px-2 py-1 bg-[var(--error-bg)] text-[var(--error-text)] hover:bg-[var(--error-hover-bg-strong)] rounded text-[9px] font-bold transition-colors border border-[var(--error-border)]"
-                  >
-                    重试
-                  </button>
-                </>
-              ) : (
-                <span className="text-[10px] text-center">未生成</span>
+              <span className="text-[10px] text-[var(--error)] mb-2">生成失败</span>
+              <button
+                onClick={() => onGenerateKeyframe(type)}
+                className="px-2 py-1 bg-[var(--error-bg)] text-[var(--error-text)] hover:bg-[var(--error-hover-bg-strong)] rounded text-[9px] font-bold transition-colors border border-[var(--error-border)]"
+              >
+                重试
+              </button>
+            </div>
+          ) : !isGenerating ? (
+            <div className="absolute inset-0 flex flex-col items-center justify-center text-[var(--text-muted)] p-2">
+              <span className="text-[10px] text-center">未生成</span>
+            </div>
+          ) : null}
+          {isGenerating && (
+            <div className="absolute inset-0 bg-[var(--bg-base)]/70 flex flex-col items-center justify-center p-2">
+              <Loader2 className="w-6 h-6 animate-spin mb-2 text-[var(--accent)]" />
+              <span className="text-[10px] text-[var(--accent-text)] font-mono">
+                {display === 'queued'
+                  ? (job?.queue_position ? `排队 #${job.queue_position}` : '排队中')
+                  : progressLabel || '生成中'}
+              </span>
+              {display === 'running' && (
+                <div className="mt-2 w-20 h-0.5 rounded-full bg-[var(--bg-hover)] overflow-hidden">
+                  <div
+                    className="h-full bg-[var(--accent)] transition-all duration-300"
+                    style={{ width: `${Math.max(job?.progress ?? 0, 4)}%` }}
+                  />
+                </div>
               )}
             </div>
           )}
@@ -117,7 +173,16 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
 
         {/* Action Buttons */}
         <div className="flex gap-2">
-          {!isGenerating && (
+          {isGenerating ? (
+            onCancelKeyframe ? (
+              <button
+                onClick={() => onCancelKeyframe(type)}
+                className="flex-1 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider border border-[var(--error-border)] bg-[var(--error-bg)] text-[var(--error-text)] hover:bg-[var(--error-hover-bg-strong)] transition-colors"
+              >
+                取消生成
+              </button>
+            ) : null
+          ) : (
             <>
               <button
                 onClick={() => onGenerateKeyframe(type)}
@@ -137,25 +202,24 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
           )}
         </div>
 
-        {/* Copy Previous Button for Start Frame */}
-        {type === 'start' && canCopyPrevious && !keyframe?.imageUrl && (
+        {/* 有图时也可直接覆盖复制，避免为露出按钮去点「重新生成」触发多余 API */}
+        {type === 'start' && canCopyPrevious && !isGenerating && (
           <button
             onClick={onCopyPrevious}
             className="w-full py-1.5 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1 border border-[var(--border-secondary)]"
           >
             <ArrowRight className="w-3 h-3" />
-            复制上一镜头尾帧
+            {keyframe?.imageUrl ? '用上一镜头尾帧覆盖' : '复制上一镜头尾帧'}
           </button>
         )}
 
-        {/* Copy Next Button for End Frame */}
-        {type === 'end' && canCopyNext && !keyframe?.imageUrl && (
+        {type === 'end' && canCopyNext && !isGenerating && (
           <button
             onClick={onCopyNext}
             className="w-full py-1.5 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1 border border-[var(--border-secondary)]"
           >
             <ArrowLeft className="w-3 h-3" />
-            复制下一镜头首帧
+            {keyframe?.imageUrl ? '用下一镜头首帧覆盖' : '复制下一镜头首帧'}
           </button>
         )}
       </div>

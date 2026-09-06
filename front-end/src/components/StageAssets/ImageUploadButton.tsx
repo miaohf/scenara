@@ -69,7 +69,7 @@ const ImageUploadButton: React.FC<ImageUploadButtonProps> = ({
     );
   }
 
-  // Separate variant for regenerate + upload
+  // Separate variant for regenerate image + upload
   return (
     <div className="flex gap-2">
       {onGenerate && hasImage && (
@@ -77,6 +77,7 @@ const ImageUploadButton: React.FC<ImageUploadButtonProps> = ({
           onClick={onGenerate}
           disabled={isGenerating}
           className={`flex-1 py-1.5 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 border border-[var(--border-primary)] transition-colors`}
+          title="仅重新生成图片，不会改写提示词"
         >
           {isGenerating ? (
             <>
@@ -86,7 +87,7 @@ const ImageUploadButton: React.FC<ImageUploadButtonProps> = ({
           ) : (
             <>
               <Sparkles className="w-3 h-3" />
-              重新生成
+              {generateLabel === '生成' ? '重新生图' : generateLabel}
             </>
           )}
         </button>

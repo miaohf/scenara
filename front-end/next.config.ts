@@ -4,6 +4,9 @@ import path from "path";
 const apiUrl = process.env.API_URL || "http://127.0.0.1:8000";
 const mediaProxyUrl = process.env.MEDIA_PROXY_URL || "http://127.0.0.1:8787";
 const comfyuiProxyUrl = process.env.COMFYUI_PROXY_URL || "http://127.0.0.1:8789";
+
+console.info(`[Scenara] API_URL = ${apiUrl}  (/api/* → ${apiUrl}/*)`);
+
 const allowedDevOrigins = (
   process.env.ALLOWED_DEV_ORIGINS?.split(",").map((s) => s.trim()).filter(Boolean) ?? [
     "192.168.1.178",

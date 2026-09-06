@@ -167,6 +167,8 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
                 <p className="text-[10px] text-[var(--text-tertiary)] font-mono leading-relaxed">
                   定妆/通用：{imageParams.workflowName || '（未填）'}
                   <br />
+                  关键帧（首尾帧）：{imageParams.keyframeWorkflowName || '（回退到定妆工作流）'}
+                  <br />
                   造型九宫格：{imageParams.turnaroundWorkflowName || '（回退到定妆工作流）'}
                 </p>
               )}
@@ -181,11 +183,11 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
         <p className="text-[10px] text-[var(--text-tertiary)] leading-relaxed">
           点击「使用此模型」可设置{type === 'chat' ? '全局默认' : ''}激活模型。
           {type === 'chat' && '各项目在「剧本」阶段可单独选择分镜模型，与此处互不覆盖。'}
-          每张卡片可独立配置 API Key、Base URL 与参数；自定义模型配置了独立提供商后，请求会发往对应地址。
-          点击展开按钮可调整模型参数。
+          卡片上的铅笔可改描述；展开后可改显示名称、API Key、Base URL 与参数。
+          自定义模型配置了独立提供商后，请求会发往对应地址。
           {type === 'image' && (
             <>
-              {' '}本地 ComfyUI：展开模型卡片后有两套工作流——定妆/通用文生图、造型九宫格（Edit）。
+              {' '}本地 ComfyUI：展开模型卡片后有三套工作流——定妆/通用文生图、关键帧（首尾帧）、造型九宫格（Edit）。
               JSON 放在 <code className="font-mono">back-end/workflows/</code>，不含 .json 后缀。
             </>
           )}

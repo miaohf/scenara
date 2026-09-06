@@ -1,4 +1,5 @@
 from typing import Annotated
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +29,7 @@ from app.services.ai.comfyui import (
 from app.services.ai.tts import generate_speech
 
 router = APIRouter(prefix="/v1/ai", tags=["ai"])
+logger = logging.getLogger(__name__)
 
 
 async def _get_registry(user: User, db: AsyncSession) -> dict:
@@ -106,12 +108,16 @@ async def ai_comfyui_image(
                 "steps": body.steps,
                 "workflowName": body.workflow_name,
             },
+            user_id=current_user.id,
         )
     except AiConfigError as exc:
+        logger.warning("ComfyUI image failed: %s", exc)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return ImageResponse(
-        image_base64=result["image_base64"],
+        image_base64=result.get("image_base64"),
         image_data_url=result.get("image_data_url"),
+        image_url=result.get("image_url"),
+        media_key=result.get("media_key"),
     )
 
 
@@ -134,12 +140,15 @@ async def ai_comfyui_video(
                 "endImage": body.end_image,
                 "audioUrl": body.audio_url,
             },
+            user_id=current_user.id,
         )
     except AiConfigError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return VideoResponse(
-        video_base64=result["video_base64"],
+        video_base64=result.get("video_base64"),
         video_data_url=result.get("video_data_url"),
+        video_url=result.get("video_url"),
+        media_key=result.get("media_key"),
     )
 
 

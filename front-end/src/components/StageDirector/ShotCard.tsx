@@ -1,7 +1,9 @@
 import React from 'react';
-import { Image as ImageIcon, Video, Trash2 } from 'lucide-react';
+import { Image as ImageIcon, Video, Trash2, Loader2, Clock3, CircleAlert } from 'lucide-react';
 import { Shot } from '../../types';
 import { getShotDisplayLabel } from '../../services/storyboardIdUtils';
+import { useGenerationQueue } from '../../contexts/GenerationQueueContext';
+import { formatJobProgressLabel, resolveShotKeyframeBadge, resolveShotVideoBadge } from '../../services/generationQueue';
 
 interface ShotCardProps {
   shot: Shot;
@@ -12,9 +14,15 @@ interface ShotCardProps {
 }
 
 const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onDelete }) => {
+  const { jobs } = useGenerationQueue();
+  const { status: videoStatus, job: videoJob, queuePosition } = resolveShotVideoBadge(shot, jobs, index);
+  const startFrameBadge = resolveShotKeyframeBadge(shot, jobs, 'start', index);
   const sKf = shot.keyframes?.find(k => k.type === 'start');
   const hasImage = !!sKf?.imageUrl;
-  const hasVideo = !!shot.interval?.videoUrl;
+  const keyframeBusy = startFrameBadge.status === 'running' || startFrameBadge.status === 'queued';
+  const keyframeProgressLabel = keyframeBusy
+    ? formatJobProgressLabel(startFrameBadge.job, startFrameBadge.status === 'running' ? 'running' : 'queued')
+    : null;
   const quality = shot.qualityAssessment;
   const qualityGradeLabel = quality?.grade === 'pass'
     ? '通过'
@@ -76,6 +84,25 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
             <ImageIcon className="w-8 h-8 opacity-20" />
           </div>
         )}
+
+        {keyframeBusy && (
+          <div className="absolute inset-0 bg-[var(--bg-base)]/70 flex flex-col items-center justify-center gap-1.5">
+            <Loader2 className="w-6 h-6 animate-spin text-[var(--accent)]" />
+            <span className="text-[10px] font-mono text-[var(--accent-text)]">
+              {startFrameBadge.status === 'queued'
+                ? (startFrameBadge.queuePosition ? `排队 #${startFrameBadge.queuePosition}` : '排队中')
+                : keyframeProgressLabel}
+            </span>
+            {startFrameBadge.status === 'running' && (
+              <div className="w-16 h-0.5 rounded-full bg-[var(--bg-hover)] overflow-hidden">
+                <div
+                  className="h-full bg-[var(--accent)] transition-all duration-300"
+                  style={{ width: `${Math.max(startFrameBadge.job?.progress ?? 0, 4)}%` }}
+                />
+              </div>
+            )}
+          </div>
+        )}
         
         {/* Badges */}
         <div className="absolute top-2 right-2 flex flex-col gap-1 items-end">
@@ -84,15 +111,41 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
               评分 {quality.score} · {qualityGradeLabel}
             </div>
           )}
-          {hasVideo && (
-            <div className="px-2 py-1 bg-[var(--success)] text-[var(--text-primary)] rounded-full text-[9px] font-bold uppercase flex items-center gap-1 shadow-lg">
-              <Video className="w-2.5 h-2.5" />
-              VIDEO
+          {videoStatus === 'ready' && (
+            <div
+              className="w-7 h-7 rounded-full bg-[var(--success)] text-[var(--text-primary)] flex items-center justify-center shadow-lg"
+              title="视频已生成"
+            >
+              <Video className="w-3.5 h-3.5" />
+            </div>
+          )}
+          {videoStatus === 'running' && (
+            <div
+              className="min-w-7 h-7 px-1.5 rounded-full bg-[var(--accent)] text-[var(--text-primary)] flex items-center justify-center shadow-lg font-mono text-[9px]"
+              title={typeof videoJob?.progress === 'number' ? `生成中 ${videoJob.progress}%` : '生成中'}
+            >
+              {typeof videoJob?.progress === 'number' ? `${videoJob.progress}%` : <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            </div>
+          )}
+          {videoStatus === 'queued' && (
+            <div
+              className="w-7 h-7 rounded-full bg-[var(--warning)] text-[var(--bg-base)] flex items-center justify-center shadow-lg"
+              title={queuePosition ? `排队 #${queuePosition}` : '排队中'}
+            >
+              <Clock3 className="w-3.5 h-3.5" />
+            </div>
+          )}
+          {videoStatus === 'failed' && (
+            <div
+              className="w-7 h-7 rounded-full bg-[var(--error)] text-[var(--text-primary)] flex items-center justify-center shadow-lg"
+              title="生成失败"
+            >
+              <CircleAlert className="w-3.5 h-3.5" />
             </div>
           )}
         </div>
 
-        {!isActive && !hasImage && (
+        {!isActive && !hasImage && !keyframeBusy && (
           <div className="absolute inset-0 bg-[var(--bg-base)]/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
             <span className="text-[var(--text-primary)] text-xs font-mono">点击编辑</span>
           </div>

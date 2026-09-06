@@ -10,7 +10,7 @@ export const STYLES = {
   // 容器样式
   mainContainer: "flex flex-col h-full bg-[var(--bg-secondary)] relative overflow-hidden",
   toolbar: "h-16 border-b border-[var(--border-primary)] bg-[var(--bg-elevated)] px-6 flex items-center justify-between shrink-0",
-  workbench: "w-[480px] bg-[var(--bg-deep)] flex flex-col h-full shadow-2xl animate-in slide-in-from-right-10 duration-300 relative z-20",
+  workbench: "w-[40%] min-w-0 shrink-0 bg-[var(--bg-deep)] flex flex-col h-full shadow-2xl animate-in slide-in-from-right-10 duration-300 relative z-20",
   workbenchHeader: "h-16 px-6 border-b border-[var(--border-primary)] flex items-center justify-between bg-[var(--bg-surface)] shrink-0",
   workbenchContent: "flex-1 overflow-y-auto p-6 space-y-8",
   

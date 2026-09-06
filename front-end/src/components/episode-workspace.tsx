@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
+import { useProjectRoute } from "@/app/project/use-project-route";
 import { Save, CheckCircle } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import StageScript from "@/components/StageScript";
@@ -11,84 +12,54 @@ import StageExport from "@/components/StageExport";
 import StagePrompts from "@/components/StagePrompts";
 import ModelConfigModal from "@/components/ModelConfig";
 import AssetSyncBanner from "@/components/CharacterLibrary/AssetSyncBanner";
-import { ProjectState } from "@/types";
-import { saveEpisode, loadEpisode } from "@/services/storageService";
+import { Episode, ProjectState } from "@/types";
+import { saveEpisode, saveEpisodePartial, loadEpisode } from "@/services/storageService";
 import { setLogCallback, clearLogCallback } from "@/services/renderLogService";
+import { setGenerationEpisodeId } from "@/services/generationContext";
+import { listEpisodeJobs } from "@/services/aiApiAdapter";
+import { reconcileEpisodeWithJobs } from "@/services/jobReconcile";
 import { useAlert } from "@/components/GlobalAlert";
 import { useProjectContext } from "@/contexts/ProjectContext";
+import { GenerationQueueProvider } from "@/contexts/GenerationQueueContext";
 import {
   checkCharacterSync,
   checkSceneSync,
   checkPropSync,
 } from "@/services/characterSyncService";
 
-const isNineGridGenerating = (status?: string): boolean =>
-  status === "generating_panels" ||
-  status === "generating_image" ||
-  status === "generating";
+/** 渲染日志只用于界面回看，超出后丢弃最旧的，避免 payload 无限增长 */
+const MAX_RENDER_LOGS = 200;
 
-const resolveStuckAssetStatus = (
-  status: "pending" | "generating" | "completed" | "failed" | undefined,
-  hasImage: boolean,
-): "pending" | "generating" | "completed" | "failed" | undefined => {
-  if (status !== "generating") return status;
-  return hasImage ? "completed" : "failed";
+const episodeHasBackgroundJobs = (episode: Episode): boolean => {
+  const script = episode.scriptData;
+  if (
+    script?.characters.some(
+      (character) =>
+        character.status === "generating" ||
+        character.variations?.some((variation) => variation.status === "generating") ||
+        character.turnaround?.status === "generating_image",
+    )
+  ) {
+    return true;
+  }
+  if (script?.scenes.some((scene) => scene.status === "generating")) return true;
+  if ((script?.props || []).some((prop) => prop.status === "generating")) return true;
+  return episode.shots.some(
+    (shot) =>
+      shot.keyframes?.some((frame) => frame.status === "generating") ||
+      shot.interval?.status === "generating" ||
+      shot.nineGrid?.status === "generating_image",
+  );
 };
 
-const clearInFlightGenerationStates = (episode: ProjectState): ProjectState => {
-  const scriptData = episode.scriptData
-    ? {
-        ...episode.scriptData,
-        characters: episode.scriptData.characters.map((char) => ({
-          ...char,
-          status: resolveStuckAssetStatus(char.status, !!char.referenceImage),
-          turnaround:
-            char.turnaround &&
-            (char.turnaround.status === "generating_panels" ||
-              char.turnaround.status === "generating_image")
-              ? { ...char.turnaround, status: "failed" as const }
-              : char.turnaround,
-          variations: char.variations.map((variation) => ({
-            ...variation,
-            status: resolveStuckAssetStatus(variation.status, !!variation.referenceImage),
-          })),
-        })),
-        scenes: episode.scriptData.scenes.map((scene) => ({
-          ...scene,
-          status: resolveStuckAssetStatus(scene.status, !!scene.referenceImage),
-        })),
-        props: episode.scriptData.props.map((prop) => ({
-          ...prop,
-          status: resolveStuckAssetStatus(prop.status, !!prop.referenceImage),
-        })),
-      }
-    : null;
-
-  return {
-    ...episode,
-    isParsingScript: false,
-    scriptGenerationCheckpoint: null,
-    scriptData,
-    shots: episode.shots.map((shot) => ({
-      ...shot,
-      keyframes: shot.keyframes?.map((kf) =>
-        kf.status === "generating" ? { ...kf, status: "failed" as const } : kf,
-      ),
-      interval:
-        shot.interval?.status === "generating"
-          ? { ...shot.interval, status: "failed" as const }
-          : shot.interval,
-      nineGrid:
-        shot.nineGrid && isNineGridGenerating(shot.nineGrid.status)
-          ? { ...shot.nineGrid, status: "failed" as const }
-          : shot.nineGrid,
-    })),
-  };
+const diffEpisodeKeys = (next: Episode, prev: Episode | null): (keyof Episode)[] => {
+  if (!prev) return Object.keys(next) as (keyof Episode)[];
+  return (Object.keys(next) as (keyof Episode)[]).filter((key) => next[key] !== prev[key]);
 };
+
 
 export default function EpisodeWorkspace() {
-  const params = useParams<{ episodeId: string }>();
-  const episodeId = params.episodeId;
+  const { episodeId } = useProjectRoute();
   const router = useRouter();
   const { showAlert } = useAlert();
   const {
@@ -102,18 +73,39 @@ export default function EpisodeWorkspace() {
     syncAllPropsToEpisode,
   } = useProjectContext();
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isScriptBusy, setIsScriptBusy] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "unsaved">("saved");
   const [showSaveStatus, setShowSaveStatus] = useState(false);
   const [showModelConfig, setShowModelConfig] = useState(false);
   const [episodeLoadError, setEpisodeLoadError] = useState<string | null>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hideStatusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 上次成功保存的剧集快照，用于算出需要提交的字段 */
+  const lastSavedRef = useRef<Episode | null>(null);
+
+  // 生成任务据此带上 episode_id，落库后可按剧集检索
+  useEffect(() => {
+    setGenerationEpisodeId(episodeId);
+    return () => setGenerationEpisodeId(undefined);
+  }, [episodeId]);
 
   useEffect(() => {
     if (!episodeId) return;
     setEpisodeLoadError(null);
+    lastSavedRef.current = null;
     loadEpisode(episodeId)
-      .then((ep) => setCurrentEpisode(clearInFlightGenerationStates(ep)))
+      .then(async (ep) => {
+        try {
+          const jobs = await listEpisodeJobs(ep.id);
+          const { episode, changed } = reconcileEpisodeWithJobs(ep, jobs);
+          lastSavedRef.current = changed ? ep : episode;
+          setCurrentEpisode(episode);
+        } catch (error) {
+          console.warn("Failed to reconcile generation jobs:", error);
+          lastSavedRef.current = ep;
+          setCurrentEpisode(ep);
+        }
+      })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : "加载剧集失败";
         console.error("Failed to load episode:", error);
@@ -122,19 +114,21 @@ export default function EpisodeWorkspace() {
     return () => setCurrentEpisode(null);
   }, [episodeId, setCurrentEpisode]);
 
+  // 依赖只取 id：曾经依赖整个 currentEpisode，导致每次状态变化都重新注册日志回调
+  const currentEpisodeId = currentEpisode?.id;
   useEffect(() => {
-    if (currentEpisode) {
-      setLogCallback((log) => {
-        updateEpisode((prev) => ({
-          ...prev,
-          renderLogs: [...(prev.renderLogs || []), log],
-        }));
-      });
-    } else {
+    if (!currentEpisodeId) {
       clearLogCallback();
+      return;
     }
+    setLogCallback((log) => {
+      updateEpisode((prev) => ({
+        ...prev,
+        renderLogs: [...(prev.renderLogs || []), log].slice(-MAX_RENDER_LOGS),
+      }));
+    });
     return () => clearLogCallback();
-  }, [currentEpisode?.id, currentEpisode, updateEpisode]);
+  }, [currentEpisodeId, updateEpisode]);
 
   useEffect(() => {
     if (!currentEpisode) return;
@@ -142,9 +136,16 @@ export default function EpisodeWorkspace() {
     setShowSaveStatus(true);
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(async () => {
+      const changedKeys = diffEpisodeKeys(currentEpisode, lastSavedRef.current);
+      if (changedKeys.length === 0) {
+        setSaveStatus("saved");
+        return;
+      }
       setSaveStatus("saving");
       try {
-        await saveEpisode(currentEpisode);
+        // 只提交变化的字段：整集覆盖会把所有图片一起重传，请求体极易超限
+        await saveEpisodePartial(currentEpisode, changedKeys);
+        lastSavedRef.current = currentEpisode;
         setSaveStatus("saved");
       } catch (e) {
         console.error("Auto-save failed", e);
@@ -200,16 +201,16 @@ export default function EpisodeWorkspace() {
   };
 
   const setStage = (stage: "script" | "assets" | "director" | "export" | "prompts") => {
-    if (isGenerating) {
-      showAlert("当前正在执行生成任务，切换页面会导致生成数据丢失。\n\n确定要离开当前页面吗？", {
-        title: "生成任务进行中",
+    if (isScriptBusy) {
+      showAlert("剧本正在生成或改写，离开后未完成的文本会中断。\n\n确定要离开当前页面吗？", {
+        title: "剧本任务进行中",
         type: "warning",
         showCancel: true,
         confirmText: "确定离开",
         cancelText: "继续等待",
         onConfirm: () => {
-          setIsGenerating(false);
-          updateEpisode((prev) => ({ ...clearInFlightGenerationStates(prev), stage }));
+          setIsScriptBusy(false);
+          handleUpdateProject({ stage });
         },
       });
       return;
@@ -218,19 +219,16 @@ export default function EpisodeWorkspace() {
   };
 
   const handleExit = async () => {
-    if (isGenerating) {
-      showAlert("当前正在执行生成任务，退出会导致数据丢失。\n\n确定要退出吗？", {
-        title: "生成任务进行中",
+    if (isScriptBusy) {
+      showAlert("剧本正在生成或改写，退出后未完成的文本会中断。\n\n确定要退出吗？", {
+        title: "剧本任务进行中",
         type: "warning",
         showCancel: true,
         confirmText: "确定退出",
         cancelText: "继续等待",
         onConfirm: async () => {
-          setIsGenerating(false);
-          if (currentEpisode) {
-            const cleanedEpisode = clearInFlightGenerationStates(currentEpisode);
-            await saveEpisode(cleanedEpisode);
-          }
+          setIsScriptBusy(false);
+          if (currentEpisode) await saveEpisode(currentEpisode);
           router.push(`/project/${currentEpisode?.projectId || ""}`);
         },
       });
@@ -286,7 +284,7 @@ export default function EpisodeWorkspace() {
             project={currentEpisode}
             updateProject={handleUpdateProject}
             onShowModelConfig={() => setShowModelConfig(true)}
-            onGeneratingChange={setIsGenerating}
+            onGeneratingChange={setIsScriptBusy}
           />
         );
       case "assets":
@@ -325,6 +323,10 @@ export default function EpisodeWorkspace() {
   const episodeLabel = project ? `${project.title} / ${displayEpisodeTitle}` : displayEpisodeTitle;
 
   return (
+    <GenerationQueueProvider
+      episode={currentEpisode}
+      onEpisodeReconcile={(updater) => setCurrentEpisode((prev) => (prev ? updater(prev) : prev))}
+    >
     <div className="flex h-screen bg-[var(--bg-secondary)] font-sans text-[var(--text-secondary)] selection:bg-[var(--accent-bg)]">
       <Sidebar
         currentStage={currentEpisode.stage}
@@ -332,7 +334,9 @@ export default function EpisodeWorkspace() {
         onExit={handleExit}
         projectName={episodeLabel}
         onShowModelConfig={() => setShowModelConfig(true)}
-        isNavigationLocked={isGenerating}
+        isNavigationLocked={isScriptBusy}
+        isBackgroundBusy={isGenerating || episodeHasBackgroundJobs(currentEpisode)}
+        episode={currentEpisode}
         episodeInfo={
           project
             ? {
@@ -412,5 +416,6 @@ export default function EpisodeWorkspace() {
       </main>
       <ModelConfigModal isOpen={showModelConfig} onClose={() => setShowModelConfig(false)} />
     </div>
+    </GenerationQueueProvider>
   );
 }

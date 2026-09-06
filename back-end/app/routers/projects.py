@@ -3,16 +3,19 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import defer, selectinload
 
 from app.core.deps import get_current_user
 from app.db.session import get_db
+from app.db.sqlite import retry_on_lock_async
 from app.models.episode import Episode
 from app.models.project import Series, SeriesProject
 from app.models.user import User
 from app.schemas.project import (
     EpisodeCreate,
+    EpisodePayloadPatch,
     EpisodeResponse,
+    EpisodeSummaryResponse,
     EpisodeUpdate,
     ProjectCreate,
     ProjectResponse,
@@ -20,6 +23,7 @@ from app.schemas.project import (
     SeriesCreate,
     SeriesResponse,
 )
+from app.services.job_apply import merge_episode_payload
 
 router = APIRouter(prefix="/v1", tags=["projects"])
 
@@ -159,15 +163,17 @@ async def create_series(
     return series
 
 
-@router.get("/projects/{project_id}/episodes", response_model=list[EpisodeResponse])
+@router.get("/projects/{project_id}/episodes", response_model=list[EpisodeSummaryResponse])
 async def list_episodes(
     project_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[Episode]:
     await _get_owned_project(project_id, current_user, db)
+    # 不加载 payload：单集可能含数千万字节的定妆图 base64，列表页只需要元数据。
     result = await db.execute(
         select(Episode)
+        .options(defer(Episode.payload))
         .where(Episode.project_id == project_id, Episode.user_id == current_user.id)
         .order_by(Episode.episode_number)
     )
@@ -237,7 +243,36 @@ async def update_episode(
     updates = body.model_dump(exclude_unset=True)
     for key, value in updates.items():
         setattr(episode, key, value)
-    await db.commit()
+    await retry_on_lock_async(db.commit, label=f"update_episode:{episode_id}")
+    await db.refresh(episode)
+    return episode
+
+
+@router.patch("/episodes/{episode_id}/payload", response_model=EpisodeSummaryResponse)
+async def patch_episode_payload(
+    episode_id: str,
+    body: EpisodePayloadPatch,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Episode:
+    """增量保存：只合并 payload 中提交的顶层键。响应不含 payload，避免回传整集。"""
+    result = await db.execute(
+        select(Episode).where(Episode.id == episode_id, Episode.user_id == current_user.id)
+    )
+    episode = result.scalar_one_or_none()
+    if episode is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Episode not found")
+
+    if body.payload:
+        # 重新赋值而非原地修改：SQLAlchemy 不追踪 JSON 列的内部变更
+        episode.payload = merge_episode_payload(episode.payload or {}, body.payload)
+
+    for key in ("title", "stage", "episode_number"):
+        value = getattr(body, key)
+        if value is not None:
+            setattr(episode, key, value)
+
+    await retry_on_lock_async(db.commit, label=f"patch_episode:{episode_id}")
     await db.refresh(episode)
     return episode
 

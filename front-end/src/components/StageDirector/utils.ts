@@ -19,7 +19,7 @@ import {
   resolvePromptTemplateConfig,
   withTemplateFallback,
 } from '../../services/promptTemplateService';
-import { getModelById } from '../../services/modelRegistry';
+import { getActiveVideoModel, getModelById, getVideoModels } from '../../services/modelRegistry';
 import { findSceneByIdCompat } from '../../services/storyboardIdUtils';
 import { VideoModelParams } from '../../types/model';
 
@@ -127,6 +127,22 @@ const SORA_COMPATIBLE_MODELS = new Set([
   'sora-2',
   'doubao-seedance-1-5-pro',
 ]);
+
+/** 工作台/关键帧 UI 与视频生成共用：优先全局激活模型，其次镜头覆盖。 */
+export const resolveEffectiveVideoModelId = (shotVideoModel?: string): string => {
+  const enabled = getVideoModels().filter((model) => model.isEnabled);
+  const active = getActiveVideoModel();
+  if (active?.id && enabled.some((model) => model.id === active.id)) {
+    return active.id;
+  }
+
+  const perShot = (shotVideoModel || '').trim();
+  if (perShot && enabled.some((model) => model.id === perShot)) {
+    return perShot;
+  }
+
+  return enabled[0]?.id || 'sora-2';
+};
 
 export const resolveVideoModelRouting = (videoModel: string): VideoModelRouting => {
   const normalizedModelId = normalizeVideoModelIdForRouting(videoModel);

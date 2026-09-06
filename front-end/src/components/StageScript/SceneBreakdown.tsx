@@ -102,7 +102,7 @@ const SceneBreakdown: React.FC<Props> = ({
       {/* Content Split View */}
       <div className="flex-1 overflow-hidden flex">
         {/* Sidebar */}
-        <div className="w-72 border-r border-[var(--border-primary)] bg-[var(--bg-primary)] flex flex-col hidden lg:flex">
+        <div className="w-[30%] min-w-[22rem] border-r border-[var(--border-primary)] bg-[var(--bg-primary)] flex flex-col hidden lg:flex shrink-0">
           <div className="p-6 border-b border-[var(--border-subtle)]">
             <h3 className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-widest mb-4 flex items-center gap-2">
               <TextQuote className="w-3 h-3" /> 故事梗概
@@ -126,7 +126,7 @@ const SceneBreakdown: React.FC<Props> = ({
 
         {/* Main: Script & Shots */}
         <div className="flex-1 overflow-y-auto bg-[var(--bg-base)] p-0">
-          <div className="max-w-5xl mx-auto pb-20">
+          <div className="w-full pb-20">
             {project.scriptData?.scenes.map((scene, index) => {
               const sceneShots = filterBySceneIdCompat(project.shots, scene.id);
 

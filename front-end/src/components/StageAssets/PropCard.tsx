@@ -15,6 +15,8 @@ interface PropCardProps {
   onUploadShapeReference: (file: File) => void;
   onClearShapeReference: () => void;
   onPromptSave: (newPrompt: string) => void;
+  onRegeneratePrompt?: () => void;
+  isRegeneratingPrompt?: boolean;
   onImageClick: (imageUrl: string) => void;
   onDelete: () => void;
   onUpdateInfo: (updates: { name?: string; category?: string; description?: string }) => void;
@@ -30,6 +32,8 @@ const PropCard: React.FC<PropCardProps> = ({
   onUploadShapeReference,
   onClearShapeReference,
   onPromptSave,
+  onRegeneratePrompt,
+  isRegeneratingPrompt = false,
   onImageClick,
   onDelete,
   onUpdateInfo,
@@ -148,6 +152,8 @@ const PropCard: React.FC<PropCardProps> = ({
           <PromptEditor
             prompt={prop.visualPrompt || ''}
             onSave={onPromptSave}
+            onRegenerate={onRegeneratePrompt}
+            isRegenerating={isRegeneratingPrompt}
             label="道具提示词"
             placeholder="输入道具的视觉描述..."
             maxHeight="max-h-[160px]"
@@ -205,22 +211,19 @@ const PropCard: React.FC<PropCardProps> = ({
           )}
         </div>
 
-        <div className="mt-3 pt-3 border-t border-[var(--border-primary)]">
+        <div className="mt-3 pt-3 border-t border-[var(--border-primary)] flex gap-2">
           <button
             onClick={onAddToLibrary}
             disabled={isGenerating}
-            className="w-full py-2 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            className="flex-1 py-2 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <FolderPlus className="w-3 h-3" />
             加入资产库
           </button>
-        </div>
-
-        <div className="mt-3 pt-3 border-t border-[var(--border-primary)]">
           <button
             onClick={onDelete}
             disabled={isGenerating}
-            className="w-full py-2 bg-transparent hover:bg-[var(--error-bg)] text-[var(--error-text)] hover:text-[var(--error-text)] border border-[var(--error-border)] hover:border-[var(--error-border)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            className="flex-1 py-2 bg-transparent hover:bg-[var(--error-bg)] text-[var(--error-text)] hover:text-[var(--error-text)] border border-[var(--error-border)] hover:border-[var(--error-border)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <Trash2 className="w-3 h-3" />
             删除道具

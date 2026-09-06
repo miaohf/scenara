@@ -15,10 +15,11 @@ import {
   clearScriptLogCallback,
   logScriptProgress,
   inferVisualStyleFromImage,
+  generateVisualPrompts,
 } from '../../services/aiService';
 import { getFinalValue, validateConfig } from './utils';
 import { resolveShotGenerationModel } from '../../services/modelRegistry';
-import { DEFAULTS, SCRIPT_SOFT_LIMIT, SCRIPT_HARD_LIMIT } from './constants';
+import { DEFAULTS, SCRIPT_SOFT_LIMIT, SCRIPT_HARD_LIMIT, VISUAL_STYLE_OPTIONS } from './constants';
 import ConfigPanel from './ConfigPanel';
 import ScriptEditor from './ScriptEditor';
 import SceneBreakdown from './SceneBreakdown';
@@ -26,6 +27,7 @@ import AssetMatchDialog from './AssetMatchDialog';
 import { findAssetMatches, applyAssetMatches, AssetMatchResult } from '../../services/assetMatchService';
 import { loadSeriesProject } from '../../services/storageService';
 import { resolvePromptTemplateConfig } from '../../services/promptTemplateService';
+import { updatePromptWithVersion } from '../../services/promptVersionService';
 import {
   filterBySceneIdCompat,
   getNextMainShotId,
@@ -455,6 +457,167 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       getDraftValue(localModel, customModelInput, project.shotGenerationModel)
     );
 
+  const getStyleOptionLabel = (styleValue: string): string => {
+    const option = VISUAL_STYLE_OPTIONS.find(item => item.value === styleValue);
+    if (option) return option.label.replace(/^[^\p{L}\p{N}]+/u, '').trim() || option.label;
+    return styleValue === 'custom' ? '自定义风格' : styleValue;
+  };
+
+  const hasExistingAssetPrompts = (): boolean => {
+    const data = project.scriptData;
+    if (!data) return false;
+    const hasChar = (data.characters || []).some(c => !!String(c.visualPrompt || '').trim());
+    const hasScene = (data.scenes || []).some(s => !!String(s.visualPrompt || '').trim());
+    const hasProp = (data.props || []).some(p => !!String(p.visualPrompt || '').trim());
+    return hasChar || hasScene || hasProp;
+  };
+
+  const resolveStyleForPrompt = (styleValue: string, customInput?: string): string => {
+    if (styleValue !== 'custom') return styleValue;
+    const trimmed = (customInput ?? customStyleInput).trim();
+    return trimmed || project.visualStyle || DEFAULTS.visualStyle;
+  };
+
+  const regenerateAssetPromptsForStyle = async (styleValue: string, customInput?: string) => {
+    if (!project.scriptData) return;
+    const styleForPrompt = resolveStyleForPrompt(styleValue, customInput);
+    const model = getConfiguredModelForRequest();
+    const genre = project.scriptData.genre || 'drama';
+    const artDirection = project.scriptData.artDirection;
+
+    setIsProcessing(true);
+    setProcessingMessage('正在按新风格重新生成资产提示词...');
+    setError(null);
+
+    try {
+      const newData = cloneScriptData(project.scriptData);
+      let updatedCount = 0;
+
+      for (const char of newData.characters || []) {
+        if (!String(char.visualPrompt || '').trim()) continue;
+        const prompts = await generateVisualPrompts(
+          'character',
+          char,
+          genre,
+          model,
+          styleForPrompt,
+          localLanguage,
+          artDirection
+        );
+        char.promptVersions = updatePromptWithVersion(
+          char.visualPrompt,
+          prompts.visualPrompt,
+          char.promptVersions,
+          'ai-generated',
+          'Regenerated after visual style change'
+        );
+        char.visualPrompt = prompts.visualPrompt;
+        char.negativePrompt = prompts.negativePrompt;
+        updatedCount += 1;
+      }
+
+      for (const scene of newData.scenes || []) {
+        if (!String(scene.visualPrompt || '').trim()) continue;
+        const prompts = await generateVisualPrompts(
+          'scene',
+          scene,
+          genre,
+          model,
+          styleForPrompt,
+          localLanguage,
+          artDirection
+        );
+        scene.promptVersions = updatePromptWithVersion(
+          scene.visualPrompt,
+          prompts.visualPrompt,
+          scene.promptVersions,
+          'ai-generated',
+          'Regenerated after visual style change'
+        );
+        scene.visualPrompt = prompts.visualPrompt;
+        scene.negativePrompt = prompts.negativePrompt;
+        updatedCount += 1;
+      }
+
+      for (const prop of newData.props || []) {
+        if (!String(prop.visualPrompt || '').trim()) continue;
+        const prompts = await generateVisualPrompts(
+          'prop',
+          prop,
+          genre,
+          model,
+          styleForPrompt,
+          localLanguage,
+          artDirection
+        );
+        prop.promptVersions = updatePromptWithVersion(
+          prop.visualPrompt,
+          prompts.visualPrompt,
+          prop.promptVersions,
+          'ai-generated',
+          'Regenerated after visual style change'
+        );
+        prop.visualPrompt = prompts.visualPrompt;
+        prop.negativePrompt = prompts.negativePrompt;
+        updatedCount += 1;
+      }
+
+      updateProject({
+        visualStyle: styleForPrompt,
+        scriptData: attachGenerationMeta(newData, {
+          shotsKey: undefined,
+        }),
+      });
+
+      showAlert(
+        updatedCount > 0
+          ? `已按新风格重写 ${updatedCount} 条资产提示词。画面不会自动更新，请到「资产」页对需要的项点击「重新生图」。`
+          : '当前没有可重写的资产提示词。',
+        { type: updatedCount > 0 ? 'success' : 'info' }
+      );
+    } catch (err: any) {
+      console.error(err);
+      setError(err?.message || '重新生成提示词失败');
+      showAlert(err?.message || '重新生成提示词失败', { type: 'error' });
+    } finally {
+      setIsProcessing(false);
+      setProcessingMessage('');
+    }
+  };
+
+  const offerPromptRegenerateAfterStyleChange = (
+    nextStyle: string,
+    prevStyle: string,
+    options?: { customInput?: string; nextLabel?: string }
+  ) => {
+    if (!hasExistingAssetPrompts()) return;
+    if (nextStyle === prevStyle && !options?.customInput) return;
+
+    const nextLabel = options?.nextLabel || getStyleOptionLabel(nextStyle);
+    const prevLabel = getStyleOptionLabel(prevStyle);
+
+    showAlert(
+      `已从「${prevLabel}」切换为「${nextLabel}」。是否按新风格重新生成角色/场景/道具提示词？不会自动重新生图。`,
+      {
+        type: 'warning',
+        title: '视觉风格已切换',
+        showCancel: true,
+        confirmText: '重新生成提示词',
+        cancelText: '暂不重写',
+        onConfirm: () => {
+          void regenerateAssetPromptsForStyle(nextStyle, options?.customInput);
+        },
+      }
+    );
+  };
+
+  const handleVisualStyleChange = (nextStyle: string) => {
+    const prevStyle = localVisualStyle;
+    if (nextStyle === prevStyle) return;
+    setLocalVisualStyle(nextStyle);
+    offerPromptRegenerateAfterStyleChange(nextStyle, prevStyle);
+  };
+
   const fileToDataUrl = (file: File): Promise<string> => new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ''));
@@ -498,7 +661,14 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       const confidenceText = typeof result.confidence === 'number'
         ? `（置信度 ${(result.confidence * 100).toFixed(0)}%）`
         : '';
-      showAlert(`风格提示词已生成${confidenceText}`, { type: 'success' });
+      if (hasExistingAssetPrompts()) {
+        offerPromptRegenerateAfterStyleChange('custom', localVisualStyle, {
+          customInput: inferredPrompt,
+          nextLabel: `自定义风格（图推）${confidenceText}`,
+        });
+      } else {
+        showAlert(`风格提示词已生成${confidenceText}`, { type: 'success' });
+      }
     } catch (err: any) {
       console.error(err);
       setError(`Style inference failed: ${err?.message || 'request failed'}`);
@@ -883,7 +1053,8 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
         },
         {
           maxAppendChars: continueBudget,
-          maxTotalChars: SCRIPT_HARD_LIMIT
+          maxTotalChars: SCRIPT_HARD_LIMIT,
+          instruction: rewriteInstruction.trim() || undefined
         }
       );
       if (continuedContent) {
@@ -908,7 +1079,8 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           finalModel,
           {
             maxAppendChars: continueBudget,
-            maxTotalChars: SCRIPT_HARD_LIMIT
+            maxTotalChars: SCRIPT_HARD_LIMIT,
+            instruction: rewriteInstruction.trim() || undefined
           }
         );
         const safeContent = continuedContent.slice(0, continueBudget);
@@ -960,7 +1132,8 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           setLocalScript(safeStreamed);
         },
         {
-          maxOutputChars: SCRIPT_HARD_LIMIT
+          maxOutputChars: SCRIPT_HARD_LIMIT,
+          instruction: rewriteInstruction.trim() || undefined
         }
       );
       const finalContent = (rewrittenContent || streamed).trim().slice(0, SCRIPT_HARD_LIMIT);
@@ -972,6 +1145,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       }
       setLocalScript(finalContent);
       updateProject({ rawScript: finalContent });
+      setSelectionRange(null);
       if (wasTruncated || rewrittenContent.length > SCRIPT_HARD_LIMIT) {
         showAlert(`改写结果已按单集上限自动截断（最大 ${SCRIPT_HARD_LIMIT} 字符）。`, { type: 'warning' });
       }
@@ -983,7 +1157,8 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           localLanguage,
           finalModel,
           {
-            maxOutputChars: SCRIPT_HARD_LIMIT
+            maxOutputChars: SCRIPT_HARD_LIMIT,
+            instruction: rewriteInstruction.trim() || undefined
           }
         );
         const safeRewrittenContent = rewrittenContent.trim().slice(0, SCRIPT_HARD_LIMIT);
@@ -998,6 +1173,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
         }
         setLocalScript(safeRewrittenContent);
         updateProject({ rawScript: safeRewrittenContent });
+        setSelectionRange(null);
       } catch (fallbackErr: any) {
         console.error(fallbackErr);
         setLocalScript(baseScript);
@@ -1471,7 +1647,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
             onDurationChange={setLocalDuration}
             onLanguageChange={setLocalLanguage}
             onModelChange={handleModelChange}
-            onVisualStyleChange={setLocalVisualStyle}
+            onVisualStyleChange={handleVisualStyleChange}
             onCustomDurationChange={setCustomDurationInput}
             onCustomModelChange={setCustomModelInput}
             onCustomStyleChange={setCustomStyleInput}
@@ -1491,6 +1667,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
             onContinue={handleContinueScript}
             onRewrite={handleRewriteScript}
             onSelectionChange={handleSelectionChange}
+            selectionRange={selectionRange}
             selectedText={selectedText}
             rewriteInstruction={rewriteInstruction}
             onRewriteInstructionChange={setRewriteInstruction}

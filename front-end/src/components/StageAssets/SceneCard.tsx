@@ -21,6 +21,8 @@ interface SceneCardProps {
   onUploadShapeReference: (file: File) => void;
   onClearShapeReference: () => void;
   onPromptSave: (newPrompt: string) => void;
+  onRegeneratePrompt?: () => void;
+  isRegeneratingPrompt?: boolean;
   onImageClick: (imageUrl: string) => void;
   onDelete: () => void;
   onUpdateInfo: (updates: { location?: string; time?: string; atmosphere?: string }) => void;
@@ -36,6 +38,8 @@ const SceneCard: React.FC<SceneCardProps> = ({
   onUploadShapeReference,
   onClearShapeReference,
   onPromptSave,
+  onRegeneratePrompt,
+  isRegeneratingPrompt = false,
   onImageClick,
   onDelete,
   onUpdateInfo,
@@ -152,6 +156,8 @@ const SceneCard: React.FC<SceneCardProps> = ({
           <PromptEditor
             prompt={scene.visualPrompt || ''}
             onSave={onPromptSave}
+            onRegenerate={onRegeneratePrompt}
+            isRegenerating={isRegeneratingPrompt}
             label="场景提示词"
             placeholder="输入场景视觉描述..."
             maxHeight="max-h-[160px]"
@@ -210,23 +216,19 @@ const SceneCard: React.FC<SceneCardProps> = ({
           )}
         </div>
 
-        <div className="mt-3 pt-3 border-t border-[var(--border-primary)]">
+        <div className="mt-3 pt-3 border-t border-[var(--border-primary)] flex gap-2">
           <button
             onClick={onAddToLibrary}
             disabled={isGenerating}
-            className="w-full py-2 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            className="flex-1 py-2 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <FolderPlus className="w-3 h-3" />
             加入资产库
           </button>
-        </div>
-
-        {/* Delete Button */}
-        <div className="mt-3 pt-3 border-t border-[var(--border-primary)]">
           <button
             onClick={onDelete}
             disabled={isGenerating}
-            className="w-full py-2 bg-transparent hover:bg-[var(--error-bg)] text-[var(--error-text)] hover:text-[var(--error-text)] border border-[var(--error-border)] hover:border-[var(--error-border)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            className="flex-1 py-2 bg-transparent hover:bg-[var(--error-bg)] text-[var(--error-text)] hover:text-[var(--error-text)] border border-[var(--error-border)] hover:border-[var(--error-border)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <Trash2 className="w-3 h-3" />
             删除场景

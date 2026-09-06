@@ -22,7 +22,6 @@ import {
   buildVideoPrompt,
   extractBasePrompt,
   generateId,
-  delay,
   convertImageToBase64,
   createKeyframe,
   updateKeyframeInShot,
@@ -33,6 +32,7 @@ import {
   cropPanelFromNineGrid,
   ensureNineGridVideoPromptGuardrails,
   resolveVideoModelRouting,
+  resolveEffectiveVideoModelId,
   routeVideoFrameInputs,
   finalizeComfyUiVideoWorkflowPrompt,
 } from './utils';
@@ -52,7 +52,9 @@ import { assessShotQuality, getProjectAverageQualityScore } from '../../services
 import { assessShotQualityWithLLM } from '../../services/qualityAssessmentV2Service';
 import { updatePromptWithVersion } from '../../services/promptVersionService';
 import { resolvePromptTemplateConfig } from '../../services/promptTemplateService';
-import { toFriendlyModerationMessage } from '../../services/errorMessageService';
+import { toFriendlyAiError } from '../../services/errorMessageService';
+import { cancelJobsForTarget, isJobCancelled } from '../../services/aiApiAdapter';
+import { useGenerationQueue } from '../../contexts/GenerationQueueContext';
 
 interface Props {
   project: ProjectState;
@@ -63,6 +65,7 @@ interface Props {
 
 const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError, onGeneratingChange }) => {
   const { showAlert } = useAlert();
+  const { upsertJob } = useGenerationQueue();
   const [activeShotId, setActiveShotId] = useState<string | null>(null);
   const [batchProgress, setBatchProgress] = useState<{current: number, total: number, message: string} | null>(null);
   const [previewImage, setPreviewImage] = useState<{url: string, title: string} | null>(null);
@@ -148,30 +151,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
   };
 
   const formatUserFriendlyError = (error: any, fallback: string): string => {
-    if (!error) return fallback;
-
-    const status = error?.status;
-    const rawMessage = typeof error?.message === 'string' ? error.message : '';
-    const moderationMessage = toFriendlyModerationMessage(rawMessage, {
-      includeUnknownReasonCode: process.env.NODE_ENV === 'development',
-    });
-
-    let normalizedMessage = moderationMessage || rawMessage;
-    if (!normalizedMessage) {
-      if (status === 400) {
-        normalizedMessage = '提示词可能被风控拦截，请修改提示词后重试。';
-      } else if (status === 500 || status === 503) {
-        normalizedMessage = '服务器繁忙，请稍后重试。';
-      } else {
-        normalizedMessage = fallback;
-      }
-    }
-
-    if (process.env.NODE_ENV !== 'development') {
-      normalizedMessage = normalizedMessage.replace(/（接口信息：.*?）/g, '');
-    }
-
-    return normalizedMessage || fallback;
+    return toFriendlyAiError(error, fallback);
   };
   
   const buildShotNegativePrompt = (shot: Shot, visualStyle: string): string => {
@@ -232,46 +212,6 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
   
   const allStartFramesGenerated = project.shots.length > 0 && 
     project.shots.every(s => s.keyframes?.find(k => k.type === 'start')?.imageUrl);
-
-  /**
-   * 组件加载时，检测并重置卡住的生成状态
-   * 解决关闭系统后重新打开时，状态仍为"generating"导致无法重新生成的问题
-   */
-  useEffect(() => {
-    const hasStuckGenerating = project.shots.some(shot => {
-      const stuckKeyframes = shot.keyframes?.some(kf => kf.status === 'generating');
-      const stuckVideo = shot.interval?.status === 'generating';
-      const stuckDubbing = shot.dubbing?.status === 'generating';
-      const stuckNineGrid = shot.nineGrid?.status === 'generating_panels' || shot.nineGrid?.status === 'generating_image' || (shot.nineGrid?.status as string) === 'generating';
-      return stuckKeyframes || stuckVideo || stuckDubbing || stuckNineGrid;
-    });
-
-    if (hasStuckGenerating) {
-      console.log('🔧 检测到卡住的生成状态，正在重置...');
-      updateProject((prevProject: ProjectState) => ({
-        ...prevProject,
-        shots: prevProject.shots.map(shot =>
-          applyShotQuality({
-            ...shot,
-            keyframes: shot.keyframes?.map(kf => 
-              kf.status === 'generating'
-                ? { ...kf, status: 'failed' as const }
-                : kf
-            ),
-            interval: shot.interval && shot.interval.status === 'generating'
-              ? { ...shot.interval, status: 'failed' as const }
-              : shot.interval,
-            dubbing: shot.dubbing && shot.dubbing.status === 'generating'
-              ? { ...shot.dubbing, status: 'failed' as const, error: '任务中断，请重新生成' }
-              : shot.dubbing,
-            nineGrid: shot.nineGrid && (shot.nineGrid.status === 'generating_panels' || shot.nineGrid.status === 'generating_image' || (shot.nineGrid.status as string) === 'generating')
-              ? { ...shot.nineGrid, status: 'failed' as const }
-              : shot.nineGrid
-          }, prevProject.scriptData)
-        )
-      }));
-    }
-  }, []); // 进入导演页时执行一次，清理离开页面后遗留的 generating 状态
 
   /**
    * 上报生成状态给父组件，用于导航锁定
@@ -396,7 +336,11 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
   /**
    * 生成关键帧
    */
-  const handleGenerateKeyframe = async (shot: Shot, type: 'start' | 'end') => {
+  const handleGenerateKeyframe = async (
+    shot: Shot,
+    type: 'start' | 'end',
+    options?: { enqueueOnly?: boolean },
+  ) => {
     const existingKf = shot.keyframes?.find(k => k.type === type);
     const kfId = existingKf?.id || generateId(`kf-${shot.id}-${type}`);
     const startKf = shot.keyframes?.find(k => k.type === 'start');
@@ -518,41 +462,98 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       setToastMessage('未找到角色参考图：请先在资产阶段为角色生成/上传参考图，否则跨镜头角色一致性会较差。');
     }
 
-    try {
-      // 使用当前设置的横竖屏比例生成关键帧，传递 hasTurnaround 标记
-      const url = await generateImage(
-        prompt,
-        referenceImages,
-        keyframeAspectRatio,
-        false,
-        refResult.hasTurnaround,
-        negativePrompt,
-        {
-          referencePackType: 'shot',
-          continuityReferenceImage,
-          characterReferenceImage,
-        }
-      );
+    const imageParams = (getActiveImageModel() as any)?.params || {};
+    const keyframeWorkflowName = imageParams.keyframeWorkflowName as string | undefined;
+    const keyframeSteps =
+      typeof imageParams.keyframeSteps === 'number' ? imageParams.keyframeSteps : undefined;
 
-      updateShot(shot.id, (s) => {
-        const completedKeyframe = {
-          ...createKeyframe(kfId, type, prompt, url, 'completed'),
-          promptVersions,
-        };
-        return updateKeyframeInShot(s, type, completedKeyframe);
+    const runGeneration = async () => {
+      try {
+        const url = await generateImage(
+          prompt,
+          referenceImages,
+          keyframeAspectRatio,
+          false,
+          refResult.hasTurnaround,
+          negativePrompt,
+          {
+            referencePackType: 'shot',
+            continuityReferenceImage,
+            characterReferenceImage,
+            workflowName: keyframeWorkflowName,
+            steps: keyframeSteps,
+            target: { kind: 'keyframe', shotId: shot.id, type },
+            onJobCreated: upsertJob,
+            waitForResult: options?.enqueueOnly ? false : undefined,
+          }
+        );
+
+        if (options?.enqueueOnly) return;
+
+        updateShot(shot.id, (s) => {
+          const completedKeyframe = {
+            ...createKeyframe(kfId, type, prompt, url, 'completed'),
+            promptVersions,
+          };
+          return updateKeyframeInShot(s, type, completedKeyframe);
+        });
+      } catch (e: any) {
+        console.error(e);
+        if (isJobCancelled(e)) {
+          updateShot(shot.id, (s) => {
+            const current = s.keyframes?.find((frame) => frame.type === type);
+            const restoredUrl = current?.imageUrl || existingKf?.imageUrl;
+            const restored = {
+              ...createKeyframe(
+                kfId,
+                type,
+                existingKf?.visualPrompt || prompt,
+                restoredUrl,
+                restoredUrl ? 'completed' : 'pending',
+              ),
+              promptVersions: existingKf?.promptVersions || promptVersions,
+            };
+            return updateKeyframeInShot(s, type, restored);
+          });
+          return;
+        }
+        updateShot(shot.id, (s) => {
+          const current = s.keyframes?.find((frame) => frame.type === type);
+          if (current?.imageUrl) {
+            return updateKeyframeInShot(s, type, { ...current, status: 'completed' });
+          }
+          const failedKeyframe = {
+            ...createKeyframe(kfId, type, prompt, existingKf?.imageUrl, 'failed'),
+            promptVersions,
+          };
+          return updateKeyframeInShot(s, type, failedKeyframe);
+        });
+
+        if (onApiKeyError && onApiKeyError(e)) return;
+        showAlert(`生成失败: ${formatUserFriendlyError(e, '图片生成失败，请稍后重试。')}`, { type: 'error' });
+      }
+    };
+
+    await runGeneration();
+  };
+
+  const handleCancelKeyframe = async (shot: Shot, type: 'start' | 'end') => {
+    const existingKf = shot.keyframes?.find((frame) => frame.type === type);
+    updateShot(shot.id, (s) => {
+      const current = s.keyframes?.find((frame) => frame.type === type);
+      if (!current) return s;
+      return updateKeyframeInShot(s, type, {
+        ...current,
+        status: current.imageUrl ? 'completed' : 'pending',
       });
-    } catch (e: any) {
-      console.error(e);
-      updateShot(shot.id, (s) => {
-        const failedKeyframe = {
-          ...createKeyframe(kfId, type, prompt, undefined, 'failed'),
-          promptVersions,
-        };
-        return updateKeyframeInShot(s, type, failedKeyframe);
-      });
-      
-      if (onApiKeyError && onApiKeyError(e)) return;
-      showAlert(`生成失败: ${formatUserFriendlyError(e, '图片生成失败，请稍后重试。')}`, { type: 'error' });
+    });
+    try {
+      await cancelJobsForTarget({ kind: 'keyframe', shotId: shot.id, type });
+    } catch (error) {
+      console.warn('取消关键帧任务失败:', error);
+    }
+    if (existingKf?.status === 'generating' && !existingKf.imageUrl) {
+      setToastMessage('已取消关键帧生成');
     }
   };
 
@@ -751,7 +752,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         selectedModel,
         aspectRatio,
         duration,
-        dubbingAudioUrl
+        dubbingAudioUrl,
+        { target: { kind: 'video', shotId: shot.id }, onJobCreated: upsertJob }
       );
       const persistedVideoUrl = await persistVideoReference(videoUrl, {
         projectId: project.projectId || project.id,
@@ -775,6 +777,19 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       }));
     } catch (e: any) {
       console.error(e);
+      if (isJobCancelled(e)) {
+        updateShot(shot.id, (s) => ({
+          ...s,
+          interval: s.interval
+            ? {
+                ...s.interval,
+                status: s.interval.videoUrl ? 'completed' : 'pending',
+                promptVersions: intervalPromptVersions,
+              }
+            : s.interval,
+        }));
+        return;
+      }
       updateShot(shot.id, (s) => ({
         ...s,
         interval: s.interval ? { ...s.interval, status: 'failed', promptVersions: intervalPromptVersions } : {
@@ -792,6 +807,21 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       if (onApiKeyError && onApiKeyError(e)) return;
       showAlert(`视频生成失败: ${formatUserFriendlyError(e, '请稍后重试。')}`, { type: 'error' });
     }
+  };
+
+  const handleCancelVideo = async (shot: Shot) => {
+    updateShot(shot.id, (s) => ({
+      ...s,
+      interval: s.interval
+        ? { ...s.interval, status: s.interval.videoUrl ? 'completed' : 'pending' }
+        : s.interval,
+    }));
+    try {
+      await cancelJobsForTarget({ kind: 'video', shotId: shot.id });
+    } catch (error) {
+      console.warn('取消视频任务失败:', error);
+    }
+    setToastMessage('已取消视频生成');
   };
 
   /**
@@ -934,7 +964,10 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       });
       return;
     } else {
-      shotsToProcess = project.shots.filter(s => !s.keyframes?.find(k => k.type === 'start')?.imageUrl);
+      shotsToProcess = project.shots.filter((s) => {
+        const start = s.keyframes?.find((k) => k.type === 'start');
+        return !start?.imageUrl && start?.status !== 'generating';
+      });
     }
     
     if (shotsToProcess.length === 0) return;
@@ -942,24 +975,22 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
   };
 
   const executeBatchGenerate = async (shotsToProcess: any[], isRegenerate: boolean) => {
-    setBatchProgress({ 
-      current: 0, 
-      total: shotsToProcess.length, 
-      message: isRegenerate ? "正在重新生成所有首帧..." : "正在批量生成缺失的首帧..." 
+    setBatchProgress({
+      current: 0,
+      total: shotsToProcess.length,
+      message: isRegenerate ? '正在提交全部首帧任务...' : '正在提交缺失的首帧任务...',
     });
 
     for (let i = 0; i < shotsToProcess.length; i++) {
-      if (i > 0) await delay(DEFAULTS.batchGenerateDelay);
-      
       const shot = shotsToProcess[i];
-      setBatchProgress({ 
-        current: i + 1, 
-        total: shotsToProcess.length, 
-        message: `正在生成镜头 ${i+1}/${shotsToProcess.length}...` 
+      setBatchProgress({
+        current: i + 1,
+        total: shotsToProcess.length,
+        message: `正在提交镜头 ${i + 1}/${shotsToProcess.length}...`,
       });
-      
+
       try {
-        await handleGenerateKeyframe(shot, 'start');
+        await handleGenerateKeyframe(shot, 'start', { enqueueOnly: true });
       } catch (e: any) {
         console.error(`Failed to generate for shot ${shot.id}`, e);
         if (onApiKeyError && onApiKeyError(e)) {
@@ -1468,6 +1499,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           hasTurnaround: refResult.hasTurnaround,
           panelCount: layout.panelCount,
           promptTemplates,
+          target: { kind: 'nineGrid', shotId },
         }
       );
 
@@ -1732,23 +1764,6 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
   return (
     <div className="flex flex-col h-full bg-[var(--bg-secondary)] relative overflow-hidden">
       
-      {/* Batch Progress Overlay */}
-      {batchProgress && (
-        <div className="absolute inset-0 z-50 bg-[var(--bg-base)]/80 flex flex-col items-center justify-center backdrop-blur-md animate-in fade-in">
-          <Loader2 className="w-12 h-12 text-[var(--accent)] animate-spin mb-6" />
-          <h3 className="text-xl font-bold text-[var(--text-primary)] mb-2">{batchProgress.message}</h3>
-          <div className="w-64 h-1.5 bg-[var(--bg-hover)] rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-[var(--accent)] transition-all duration-300" 
-              style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
-            />
-          </div>
-          <p className="text-[var(--text-tertiary)] mt-3 text-xs font-mono">
-            {Math.round((batchProgress.current / batchProgress.total) * 100)}%
-          </p>
-        </div>
-      )}
-
       {toastMessage && (
         <div className="fixed left-1/2 top-1/3 z-[9999] w-full max-w-md -translate-x-1/2 rounded-xl border border-[var(--border-secondary)] bg-black/80 px-4 py-3 shadow-2xl backdrop-blur">
           <div className="text-xs text-white whitespace-pre-line">{toastMessage}</div>
@@ -1812,19 +1827,29 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
               allStartFramesGenerated
                 ? 'bg-[var(--bg-surface)] text-[var(--text-tertiary)] border border-[var(--border-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--border-secondary)]'
                 : 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] hover:bg-[var(--btn-primary-hover)] shadow-lg shadow-[var(--btn-primary-shadow)]'
-            }`}
+            } ${batchProgress ? 'opacity-60 cursor-not-allowed' : ''}`}
           >
-            <Sparkles className="w-3 h-3" />
-            {allStartFramesGenerated ? '重新生成所有首帧' : '批量生成首帧'}
+            {batchProgress ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+            {batchProgress
+              ? `提交 ${batchProgress.current}/${batchProgress.total}`
+              : allStartFramesGenerated ? '重新生成所有首帧' : '批量生成首帧'}
           </button>
         </div>
       </div>
 
       {/* Main Content Area */}
       <div className="flex-1 overflow-hidden flex">
-        {/* Grid View */}
-        <div className={`flex-1 overflow-y-auto p-6 transition-all duration-500 ease-in-out ${activeShotId ? 'border-r border-[var(--border-primary)]' : ''}`}>
-          <div className={`grid gap-4 ${activeShotId ? 'grid-cols-1 md:grid-cols-2 lg:grid-cols-2' : 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5'}`}>
+        {/* 打开详情：左侧约 60% 保持三列与原卡片尺寸，右侧详情占 40% */}
+        <div className={`overflow-y-auto transition-all duration-300 ease-in-out ${
+          activeShotId
+            ? 'w-[60%] min-w-0 p-6 border-r border-[var(--border-primary)]'
+            : 'flex-1 p-6'
+        }`}>
+          <div className={`grid gap-4 ${
+            activeShotId
+              ? 'grid-cols-3'
+              : 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5'
+          }`}>
             {project.shots.map((shot, idx) => (
               <ShotCard
                 key={shot.id}
@@ -1845,7 +1870,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
             shotIndex={activeShotIndex}
             totalShots={project.shots.length}
             scriptData={project.scriptData}
-            currentVideoModelId={activeShot.videoModel || DEFAULTS.videoModel}
+            currentVideoModelId={resolveEffectiveVideoModelId(activeShot.videoModel)}
             nextShotHasStartFrame={!!project.shots[activeShotIndex + 1]?.keyframes?.find(k => k.type === 'start')?.imageUrl}
             isAIOptimizing={isAIGenerating}
             isAIReassessing={isAIReassessing}
@@ -1889,6 +1914,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
             useAIEnhancement={useAIEnhancement}
             onToggleAIEnhancement={() => setUseAIEnhancement(!useAIEnhancement)}
             onGenerateVideo={(aspectRatio, duration, modelId) => handleGenerateVideo(activeShot, aspectRatio, duration, modelId)}
+            onCancelVideo={() => handleCancelVideo(activeShot)}
+            onCancelKeyframe={(type) => handleCancelKeyframe(activeShot, type)}
             onGenerateDubbing={(mode, text, modelId) => handleGenerateDubbing(activeShot, mode, text, modelId)}
             onClearDubbing={() =>
               updateShot(activeShot.id, (s) => ({

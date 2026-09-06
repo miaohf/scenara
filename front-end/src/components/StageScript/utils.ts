@@ -39,6 +39,59 @@ export const getTextStats = (text: string) => {
   };
 };
 
+export type ScriptOutlineItem = {
+  id: string;
+  level: 1 | 2 | 3;
+  title: string;
+  line: number;
+  offset: number;
+};
+
+/**
+ * 从 Markdown 标题提取场次/章节大纲，供编辑器跳转。
+ */
+export const parseScriptOutline = (script: string): ScriptOutlineItem[] => {
+  const items: ScriptOutlineItem[] = [];
+  let offset = 0;
+  const lines = script.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const heading = line.match(/^(#{1,3})\s+(.+?)\s*$/);
+    if (heading) {
+      const level = heading[1].length as 1 | 2 | 3;
+      items.push({
+        id: `outline-${i}-${offset}`,
+        level,
+        title: heading[2].replace(/\*+/g, '').trim() || `第 ${i + 1} 行`,
+        line: i,
+        offset,
+      });
+    }
+    offset += line.length + 1;
+  }
+  return items;
+};
+
+export const countSceneHeadings = (script: string): number => {
+  return parseScriptOutline(script).filter((item) => item.level >= 2).length;
+};
+
+export const findTextMatches = (script: string, query: string): number[] => {
+  const needle = query.trim();
+  if (!needle) return [];
+  const hay = script.toLowerCase();
+  const q = needle.toLowerCase();
+  const hits: number[] = [];
+  let from = 0;
+  while (from < hay.length) {
+    const index = hay.indexOf(q, from);
+    if (index < 0) break;
+    hits.push(index);
+    from = index + Math.max(q.length, 1);
+  }
+  return hits;
+};
+
 /**
  * 验证配置完整性
  */
