@@ -63,6 +63,14 @@ export function reconcileEpisodeWithJobs(
   options?: { markOrphans?: boolean },
 ): { episode: Episode; changed: boolean } {
   const markOrphans = options?.markOrphans !== false;
+  // API 为了展示最近任务按 created_at 倒序返回；对账必须反过来处理，
+  // 否则旧的已完成任务会在最新重生成结果之后再次覆盖媒体 URL。
+  const orderedJobs = [...jobs].sort((left, right) => {
+    const leftTime = left.created_at ? Date.parse(left.created_at) : 0;
+    const rightTime = right.created_at ? Date.parse(right.created_at) : 0;
+    if (leftTime !== rightTime) return leftTime - rightTime;
+    return left.id.localeCompare(right.id);
+  });
   let next: Episode = {
     ...episode,
     scriptData: episode.scriptData
@@ -91,7 +99,7 @@ export function reconcileEpisodeWithJobs(
 
   const markClaimed = (key: string) => claimed.add(key);
 
-  for (const job of jobs) {
+  for (const job of orderedJobs) {
     const target = job.target;
     if (!target) continue;
     const mediaKind = isImageJob(job.job_type) ? "image" : "video";

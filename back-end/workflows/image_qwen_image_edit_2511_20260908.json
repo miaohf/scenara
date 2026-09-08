@@ -1,8 +1,11 @@
 {
   "9": {
     "inputs": {
-      "filename_prefix": "Qwen_Edit_2511_FLF",
-      "images": ["170:158", 0]
+      "filename_prefix": "Qwen_Edit_2511",
+      "images": [
+        "170:158",
+        0
+      ]
     },
     "class_type": "SaveImage",
     "_meta": {
@@ -27,7 +30,7 @@
       "title": "Reference Image 2"
     }
   },
-  "171": {
+  "195": {
     "inputs": {
       "image": "example.png"
     },
@@ -36,39 +39,13 @@
       "title": "Reference Image 3"
     }
   },
-  "172": {
-    "inputs": {
-      "image": "example.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Reference Image 4"
-    }
-  },
-  "173": {
-    "inputs": {
-      "image": "example.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Reference Image 5"
-    }
-  },
-  "170:170": {
-    "inputs": {
-      "width": 1328,
-      "height": 1328,
-      "batch_size": 1
-    },
-    "class_type": "EmptyLatentImage",
-    "_meta": {
-      "title": "Empty Latent Image"
-    }
-  },
   "170:145": {
     "inputs": {
       "shift": 3.1,
-      "model": ["170:161", 0]
+      "model": [
+        "170:161",
+        0
+      ]
     },
     "class_type": "ModelSamplingAuraFlow",
     "_meta": {
@@ -87,43 +64,67 @@
   "170:147": {
     "inputs": {
       "reference_latents_method": "index_timestep_zero",
-      "conditioning": ["170:149", 0]
+      "conditioning": [
+        "170:149",
+        0
+      ]
     },
     "class_type": "FluxKontextMultiReferenceLatentMethod",
     "_meta": {
-      "title": "Edit Model Reference Method (Negative)"
+      "title": "Edit Model Reference Method"
     }
   },
   "170:148": {
     "inputs": {
       "reference_latents_method": "index_timestep_zero",
-      "conditioning": ["170:151", 0]
+      "conditioning": [
+        "170:151",
+        0
+      ]
     },
     "class_type": "FluxKontextMultiReferenceLatentMethod",
     "_meta": {
-      "title": "Edit Model Reference Method (Positive)"
+      "title": "Edit Model Reference Method"
     }
   },
   "170:149": {
     "inputs": {
       "prompt": "",
-      "clip": ["170:162", 0],
-      "vae": ["170:146", 0],
-      "image1": ["41", 0]
+      "clip": [
+        "170:162",
+        0
+      ],
+      "vae": [
+        "170:146",
+        0
+      ],
+      "image1": [
+        "170:160",
+        0
+      ]
     },
-    "class_type": "TextEncodeQwenImageEditPlus_lrzjason",
+    "class_type": "TextEncodeQwenImageEditPlus",
     "_meta": {
       "title": "Negative Conditioning"
     }
   },
   "170:151": {
     "inputs": {
-      "prompt": "Generate a cinematic keyframe matching the shot description. Picture 1 is the primary character lookbook. Later pictures are scene, props, or additional character lookbooks. Preserve identity, outfit, materials, and environment from the provided references while following the prompt for pose, camera, and action.",
-      "clip": ["170:162", 0],
-      "vae": ["170:146", 0],
-      "image1": ["41", 0]
+      "prompt": "Cinematic shot. Image 1 is the SCENE used as the canvas. Image 2 is the lead character lookbook: copy identity and outfit only, discard studio backdrop. Image 3 is a prop or background extra in that location.",
+      "clip": [
+        "170:162",
+        0
+      ],
+      "vae": [
+        "170:146",
+        0
+      ],
+      "image1": [
+        "170:160",
+        0
+      ]
     },
-    "class_type": "TextEncodeQwenImageEditPlus_lrzjason",
+    "class_type": "TextEncodeQwenImageEditPlus",
     "_meta": {
       "title": "Positive Prompt"
     }
@@ -132,7 +133,10 @@
     "inputs": {
       "strength": 1,
       "pre_cfg": false,
-      "model": ["170:145", 0]
+      "model": [
+        "170:145",
+        0
+      ]
     },
     "class_type": "CFGNorm",
     "_meta": {
@@ -143,7 +147,10 @@
     "inputs": {
       "lora_name": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
       "strength_model": 1,
-      "model": ["170:152", 0]
+      "model": [
+        "170:152",
+        0
+      ]
     },
     "class_type": "LoraLoaderModelOnly",
     "_meta": {
@@ -166,6 +173,22 @@
     "class_type": "PrimitiveFloat",
     "_meta": {
       "title": "CFG"
+    }
+  },
+  "170:156": {
+    "inputs": {
+      "pixels": [
+        "170:160",
+        0
+      ],
+      "vae": [
+        "170:146",
+        0
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
     }
   },
   "170:161": {
@@ -191,9 +214,18 @@
   },
   "170:163": {
     "inputs": {
-      "switch": ["170:168", 0],
-      "on_false": ["170:152", 0],
-      "on_true": ["170:153", 0]
+      "switch": [
+        "170:168",
+        0
+      ],
+      "on_false": [
+        "170:152",
+        0
+      ],
+      "on_true": [
+        "170:153",
+        0
+      ]
     },
     "class_type": "ComfySwitchNode",
     "_meta": {
@@ -229,9 +261,18 @@
   },
   "170:164": {
     "inputs": {
-      "switch": ["170:168", 0],
-      "on_false": ["170:154", 0],
-      "on_true": ["170:155", 0]
+      "switch": [
+        "170:168",
+        0
+      ],
+      "on_false": [
+        "170:154",
+        0
+      ],
+      "on_true": [
+        "170:155",
+        0
+      ]
     },
     "class_type": "ComfySwitchNode",
     "_meta": {
@@ -240,9 +281,18 @@
   },
   "170:167": {
     "inputs": {
-      "switch": ["170:168", 0],
-      "on_false": ["170:166", 0],
-      "on_true": ["170:165", 0]
+      "switch": [
+        "170:168",
+        0
+      ],
+      "on_false": [
+        "170:166",
+        0
+      ],
+      "on_true": [
+        "170:165",
+        0
+      ]
     },
     "class_type": "ComfySwitchNode",
     "_meta": {
@@ -251,16 +301,34 @@
   },
   "170:169": {
     "inputs": {
-      "seed": 0,
-      "steps": ["170:167", 0],
-      "cfg": ["170:164", 0],
+      "seed": 619816202606884,
+      "steps": [
+        "170:167",
+        0
+      ],
+      "cfg": [
+        "170:164",
+        0
+      ],
       "sampler_name": "euler",
       "scheduler": "simple",
       "denoise": 1,
-      "model": ["170:163", 0],
-      "positive": ["170:148", 0],
-      "negative": ["170:147", 0],
-      "latent_image": ["170:170", 0]
+      "model": [
+        "170:163",
+        0
+      ],
+      "positive": [
+        "170:148",
+        0
+      ],
+      "negative": [
+        "170:147",
+        0
+      ],
+      "latent_image": [
+        "170:156",
+        0
+      ]
     },
     "class_type": "KSampler",
     "_meta": {
@@ -269,12 +337,30 @@
   },
   "170:158": {
     "inputs": {
-      "samples": ["170:169", 0],
-      "vae": ["170:146", 0]
+      "samples": [
+        "170:169",
+        0
+      ],
+      "vae": [
+        "170:146",
+        0
+      ]
     },
     "class_type": "VAEDecode",
     "_meta": {
       "title": "VAE Decode"
+    }
+  },
+  "170:160": {
+    "inputs": {
+      "image": [
+        "41",
+        0
+      ]
+    },
+    "class_type": "FluxKontextImageScale",
+    "_meta": {
+      "title": "FluxKontextImageScale"
     }
   }
 }

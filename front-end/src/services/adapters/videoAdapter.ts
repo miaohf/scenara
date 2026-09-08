@@ -3,7 +3,7 @@
  * 处理同步（chat/completions）和异步（/v1/videos）视频 API
  */
 
-import { VideoModelDefinition, VideoGenerateOptions, AspectRatio, VideoDuration } from '../../types/model';
+import { VideoModelDefinition, VideoGenerateOptions, AspectRatio, VideoDuration, DEFAULT_VIDEO_WORKFLOW_NAME } from '../../types/model';
 import {
   getApiKeyForModel,
   getApiBaseUrlForModel,
@@ -403,8 +403,11 @@ const callComfyVideoApi = async (
   try {
     const aspectRatio = options.aspectRatio || model.params.defaultAspectRatio;
     const duration = Number(options.duration || model.params.defaultDuration || 5);
-    const workflowName = model.params.workflowName || model.apiModel || model.id;
-    const isMiniMax = String(workflowName).toLowerCase().includes('minimax');
+    const workflowName = model.params.workflowName || DEFAULT_VIDEO_WORKFLOW_NAME;
+    const isMiniMax =
+      String(workflowName).toLowerCase().includes('minimax') ||
+      String(model.id || '').toLowerCase().includes('minimax') ||
+      String(model.apiModel || '').toLowerCase().includes('minimax');
     const { width, height } = isMiniMax
       ? getMiniMaxH3Size(aspectRatio)
       : getSizeFromAspectRatio(aspectRatio);
@@ -864,7 +867,11 @@ export const callVideoApi = async (
 
   if (isComfyUiVideoModel(activeModel)) {
     if (isApiAiMode()) {
-      return apiCallComfyVideo({ ...options, modelId: activeModel.id });
+      return apiCallComfyVideo({
+        ...options,
+        modelId: activeModel.id,
+        workflowName: activeModel.params.workflowName || DEFAULT_VIDEO_WORKFLOW_NAME,
+      });
     }
     return callComfyVideoApi(options, activeModel, apiBase);
   }

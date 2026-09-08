@@ -3,7 +3,7 @@
  * 处理 Gemini Image API
  */
 
-import { ImageModelDefinition, ImageGenerateOptions, AspectRatio } from '../../types/model';
+import { ImageModelDefinition, ImageGenerateOptions, AspectRatio, DEFAULT_IMAGE_WORKFLOW_NAME } from '../../types/model';
 import { getApiKeyForModel, getApiBaseUrlForModel, getActiveImageModel } from '../modelRegistry';
 import {
   getImageApiFormat,
@@ -518,7 +518,7 @@ export const callImageApi = async (
       );
     }
     const aspectRatio = options.aspectRatio || activeModel.params.defaultAspectRatio;
-    const workflowName = options.workflowName || activeModel.params.workflowName;
+    const workflowName = options.workflowName || activeModel.params.workflowName || DEFAULT_IMAGE_WORKFLOW_NAME;
     // API 模式下 ComfyUI 由后端 Worker 直连（COMFYUI_BASE_URL），前端注册表里的地址不参与请求，
     // 打出来只会误导排查，因此这里不再输出。
     console.info('[ComfyUI Image] API 模式（异步任务）:', {
@@ -569,7 +569,7 @@ export const callImageApi = async (
         `(${promptLimitResult.originalLength}). Truncated before ComfyUI request.`
       );
     }
-    const workflowName = options.workflowName || activeModel.params.workflowName || apiModel;
+    const workflowName = options.workflowName || activeModel.params.workflowName || DEFAULT_IMAGE_WORKFLOW_NAME;
     return callComfyImageApi(apiBase, workflowName, {
       prompt: promptLimitResult.text,
       negativePrompt: options.negativePrompt,

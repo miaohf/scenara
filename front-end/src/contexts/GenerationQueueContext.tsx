@@ -114,12 +114,26 @@ export const GenerationQueueProvider: React.FC<{
           mediaSyncTickRef.current += 1;
           idleCatchupRef.current = 0;
           if (mediaSyncTickRef.current % 4 === 0) {
-            // 剧集 payload 很大时不要卡住队列轮询，否则进度会停在第一拍。
+            // 不要只依赖 active -> finished 的边沿：批量入队时任务可能在第一次
+            // 轮询前就完成，previousIds 里根本不会出现它。每 8 秒补拉一次最近任务，
+            // 同时读取剧集快照，兼容 Worker 写回和事件漏接两种情况。
+            void listEpisodeJobs(episodeId)
+              .then((recent) => {
+                if (cancelled) return;
+                applyJobs([...active, ...recent], false);
+              })
+              .catch(() => undefined);
             void syncFromServer();
           }
         } else if (idleCatchupRef.current < 3) {
           idleCatchupRef.current += 1;
           mediaSyncTickRef.current = 0;
+          // 队列刚变空时再补拉一次最近任务，避免任务完成事件早于页面订阅。
+          await listEpisodeJobs(episodeId)
+            .then((recent) => {
+              if (!cancelled) applyJobs(recent, false);
+            })
+            .catch(() => undefined);
           await syncFromServer();
         } else {
           mediaSyncTickRef.current = 0;

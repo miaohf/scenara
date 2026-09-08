@@ -35,9 +35,15 @@ export interface RefImagesResult {
   hasTurnaround: boolean;
   selectedTurnaroundCount: number;
   droppedTurnaroundCount: number;
+  sceneFirst: boolean;
 }
 
 const MAX_SHOT_REFERENCE_IMAGES = 5;
+
+export const isQwenEditKeyframeWorkflow = (workflowName?: string): boolean => {
+  const name = String(workflowName || '').toLowerCase();
+  return name.includes('qwen_image_edit') && !name.includes('turnaround');
+};
 
 const dedupeImageRefs = (images: string[]): string[] => {
   const output: string[] = [];
@@ -233,11 +239,16 @@ export const routeVideoFrameInputs = (
  * 增强版：如果角色有九宫格造型图，将整张九宫格图作为额外参考传入，
  * 并通过 hasTurnaround 标记告知调用方，以便在提示词中正确描述。
  */
-export const getRefImagesForShot = (shot: Shot, scriptData: ProjectState['scriptData']): RefImagesResult => {
+export const getRefImagesForShot = (
+  shot: Shot,
+  scriptData: ProjectState['scriptData'],
+  options?: { sceneFirst?: boolean },
+): RefImagesResult => {
   const characterImages: string[] = [];
   const sceneImages: string[] = [];
   const propImages: string[] = [];
   const turnaroundImages: string[] = [];
+  const sceneFirst = options?.sceneFirst === true;
 
   if (!scriptData) {
     return {
@@ -245,12 +256,14 @@ export const getRefImagesForShot = (shot: Shot, scriptData: ProjectState['script
       hasTurnaround: false,
       selectedTurnaroundCount: 0,
       droppedTurnaroundCount: 0,
+      sceneFirst,
     };
   }
 
   const extraCharacterImages: string[] = [];
 
-  // 1. 主角色定妆 = Image 1 身份锁。群像/配角定妆不要插在场景前面，否则 Klein Edit 会改发型、冲掉环境。
+  // Klein：主定妆 = Image 1，避免群像插在场景前改发型。
+  // Qwen Edit：Image 1 会当成构图底图，定妆棚拍必须让路给场景。
   if (shot.characters) {
     shot.characters.forEach(charId => {
       const char = scriptData.characters.find(c => String(c.id) === String(charId));
@@ -274,13 +287,11 @@ export const getRefImagesForShot = (shot: Shot, scriptData: ProjectState['script
     });
   }
 
-  // 2. 场景参考图紧跟身份锁，让环境成为 Image 2
   const scene = findSceneByIdCompat(scriptData.scenes, shot.sceneId);
   if (scene?.referenceImage) {
     sceneImages.push(scene.referenceImage);
   }
 
-  // 3. 道具参考图
   if (shot.props && scriptData.props) {
     shot.props.forEach(propId => {
       const prop = scriptData.props.find(p => String(p.id) === String(propId));
@@ -290,12 +301,10 @@ export const getRefImagesForShot = (shot: Shot, scriptData: ProjectState['script
     });
   }
 
-  const dedupedPrimary = dedupeImageRefs([
-    ...characterImages,
-    ...sceneImages,
-    ...propImages,
-    ...extraCharacterImages,
-  ]);
+  const orderedPrimary = sceneFirst
+    ? [...sceneImages, ...characterImages, ...propImages, ...extraCharacterImages]
+    : [...characterImages, ...sceneImages, ...propImages, ...extraCharacterImages];
+  const dedupedPrimary = dedupeImageRefs(orderedPrimary);
   const primarySet = new Set(dedupedPrimary);
   const dedupedTurnaround = dedupeImageRefs(turnaroundImages).filter((img) => !primarySet.has(img));
   const remainingSlots = Math.max(0, MAX_SHOT_REFERENCE_IMAGES - dedupedPrimary.length);
@@ -306,6 +315,7 @@ export const getRefImagesForShot = (shot: Shot, scriptData: ProjectState['script
     hasTurnaround: selectedTurnaround.length > 0,
     selectedTurnaroundCount: selectedTurnaround.length,
     droppedTurnaroundCount: Math.max(0, dedupedTurnaround.length - selectedTurnaround.length),
+    sceneFirst,
   };
 };
 
@@ -425,7 +435,8 @@ export const buildKeyframePrompt = (
   cameraMovement: string,
   frameType: 'start' | 'end',
   propsInfo?: { name: string; description: string; hasImage: boolean }[],
-  promptTemplates?: PromptTemplateConfig
+  promptTemplates?: PromptTemplateConfig,
+  sceneFirst: boolean = false,
 ): string => {
   const templates = promptTemplates || resolvePromptTemplateConfig();
   const stylePrompt = VISUAL_STYLE_PROMPTS[visualStyle] || visualStyle;
@@ -438,10 +449,16 @@ export const buildKeyframePrompt = (
     templates.keyframe.endFrameGuide,
     DEFAULT_PROMPT_TEMPLATE_CONFIG.keyframe.endFrameGuide
   );
-  const characterConsistencyTemplate = withTemplateFallback(
-    templates.keyframe.characterConsistencyGuide,
-    DEFAULT_PROMPT_TEMPLATE_CONFIG.keyframe.characterConsistencyGuide
-  );
+  const characterConsistencyTemplate = sceneFirst
+    ? `【角色一致性要求】CHARACTER CONSISTENCY REQUIREMENTS - CRITICAL
+⚠️ Image 1 是场景/环境参考，用它作为地点、光线和空间。不要画成棚拍定妆棚，也不要把人物并排摆在灰背景前。
+⚠️ Image 2 是主角色定妆照片：只抄五官、发型、体型、衣着；丢掉定妆棚背景、台子和棚拍姿势。
+• 更后面的图才是道具或路人/配角定妆；路人要出现在场景里，不是第二名棚拍主角
+• 随身道具按道具参考图加入；不要因为定妆图里没有某件道具就禁止它出现`
+    : withTemplateFallback(
+        templates.keyframe.characterConsistencyGuide,
+        DEFAULT_PROMPT_TEMPLATE_CONFIG.keyframe.characterConsistencyGuide
+      );
   const propWithImageTemplate = withTemplateFallback(
     templates.keyframe.propWithImageGuide,
     DEFAULT_PROMPT_TEMPLATE_CONFIG.keyframe.propWithImageGuide
@@ -529,7 +546,8 @@ export const buildKeyframePromptWithAI = async (
   frameType: 'start' | 'end',
   enhanceWithAI: boolean = true,
   propsInfo?: { name: string; description: string; hasImage: boolean }[],
-  promptTemplates?: PromptTemplateConfig
+  promptTemplates?: PromptTemplateConfig,
+  sceneFirst: boolean = false,
 ): Promise<string> => {
   // 先构建基础提示词
   const basicPrompt = buildKeyframePrompt(
@@ -538,7 +556,8 @@ export const buildKeyframePromptWithAI = async (
     cameraMovement,
     frameType,
     propsInfo,
-    promptTemplates
+    promptTemplates,
+    sceneFirst,
   );
   
   // 如果不需要AI增强,直接返回基础提示词

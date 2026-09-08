@@ -44,6 +44,17 @@ interface ApiEpisode {
   updated_at: string;
 }
 
+// 同一剧集的自动保存可能由多个 debounce 回调并发触发。
+// 串行化 PATCH，避免旧快照晚到并覆盖刚生成的媒体 URL。
+let episodeSaveQueue: Promise<void> = Promise.resolve();
+
+const enqueueEpisodeSave = (operation: () => Promise<void>): Promise<void> => {
+  const next = episodeSaveQueue.then(operation, operation);
+  // 队列不能因为一次保存失败而永久进入 rejected 状态。
+  episodeSaveQueue = next.catch(() => undefined);
+  return next;
+};
+
 export const isApiStorageMode = (): boolean => {
   if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_USE_API_STORAGE === "true") {
     return true;
@@ -184,10 +195,12 @@ export async function apiLoadEpisode(id: string): Promise<Episode> {
 }
 
 export async function apiSaveEpisode(ep: Episode): Promise<void> {
-  await apiFetch(`/v1/episodes/${ep.id}`, {
-    method: "PATCH",
-    body: JSON.stringify(episodeToApiBody({ ...ep, lastModified: Date.now() })),
-  });
+  await enqueueEpisodeSave(() =>
+    apiFetch(`/v1/episodes/${ep.id}`, {
+      method: "PATCH",
+      body: JSON.stringify(episodeToApiBody({ ...ep, lastModified: Date.now() })),
+    }),
+  );
 }
 
 /**
@@ -214,10 +227,12 @@ export async function apiSaveEpisodePartial(
   if (Object.keys(payload).length === 0 && Object.keys(body).length === 0) return;
   body.payload = payload;
 
-  await apiFetch(`/v1/episodes/${ep.id}/payload`, {
-    method: "PATCH",
-    body: JSON.stringify(body),
-  });
+  await enqueueEpisodeSave(() =>
+    apiFetch(`/v1/episodes/${ep.id}/payload`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  );
 }
 
 export async function apiDeleteEpisode(id: string): Promise<void> {

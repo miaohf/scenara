@@ -21,6 +21,7 @@ import redis
 
 from app.core.config import get_settings
 from app.services.ai.chat import AiConfigError, _pick_model, _provider_for_model
+from app.services.model_registry import DEFAULT_IMAGE_WORKFLOW_NAME, DEFAULT_VIDEO_WORKFLOW_NAME
 from app.services.storage import (
     MediaStoreError,
     build_media_url,
@@ -53,7 +54,7 @@ COMFY_EDIT_MAX_REFS = QWEN_EDIT_MAX_REFS
 
 
 def _collect_reference_images(payload: dict[str, Any]) -> list[str]:
-    """按关键帧语义收集参考图：主定妆在前，场景/道具随后，第二定妆与连贯性图靠后。"""
+    """收集参考图。若已有打包列表则保持其顺序，不再把定妆图强行插到 Image 1。"""
     refs: list[str] = []
     seen: set[str] = set()
 
@@ -64,9 +65,12 @@ def _collect_reference_images(payload: dict[str, Any]) -> list[str]:
         seen.add(text)
         refs.append(text)
 
-    add(payload.get("characterReferenceImage") or payload.get("character_reference_image"))
-    for img in payload.get("referenceImages") or payload.get("reference_images") or []:
-        add(img)
+    packed = payload.get("referenceImages") or payload.get("reference_images") or []
+    if packed:
+        for img in packed:
+            add(img)
+    else:
+        add(payload.get("characterReferenceImage") or payload.get("character_reference_image"))
     continuity = payload.get("continuityReferenceImage") or payload.get("continuity_reference_image")
     if continuity:
         add(continuity)
@@ -195,20 +199,81 @@ def _is_qwen_edit_workflow(nodes: dict[str, Any]) -> bool:
     )
 
 
+_DEFAULT_QWEN_REF_NAMES = {"example.png", "1.png", "2.png", "3.png"}
+
+
+def _is_placeholder_ref_name(name: str) -> bool:
+    text = str(name or "").strip().lower()
+    return (not text) or text in _DEFAULT_QWEN_REF_NAMES or text.startswith("pasted/")
+
+
+def _load_image_id_from_link(nodes: dict[str, Any], link: Any) -> str | None:
+    if not isinstance(link, list) or not link:
+        return None
+    nid = str(link[0])
+    node = nodes.get(nid)
+    if not node:
+        return None
+    class_type = str(node.get("class_type", "")).lower()
+    if class_type == "loadimage":
+        return nid
+    if class_type == "fluxkontextimagescale":
+        return _load_image_id_from_link(nodes, (node.get("inputs") or {}).get("image"))
+    return None
+
+
+def _infer_qwen_slot_ids(nodes: dict[str, Any]) -> dict[int, str]:
+    """标题没有 Reference Image N 时，按编码器 image1/2/3 反查 Load Image。"""
+    slot_ids: dict[int, str] = {}
+    for node in nodes.values():
+        if "textencodeqwenimageedit" not in str(node.get("class_type", "")).lower():
+            continue
+        inputs = node.get("inputs") or {}
+        for n in range(1, QWEN_EDIT_MAX_REFS + 1):
+            load_id = _load_image_id_from_link(nodes, inputs.get(f"image{n}"))
+            if load_id and n not in slot_ids:
+                slot_ids[n] = load_id
+    return slot_ids
+
+
+def _qwen_encoder_max_refs(nodes: dict[str, Any]) -> int:
+    for node in nodes.values():
+        class_type = str(node.get("class_type", "")).lower()
+        if "textencodeqwenimageeditplus_lrzjason" in class_type:
+            return 5
+    return 3 if _is_qwen_edit_workflow(nodes) else QWEN_EDIT_MAX_REFS
+
+
+def _qwen_encoder_image_source(nodes: dict[str, Any], load_id: str) -> str:
+    """Image 1 若先经 FluxKontextImageScale，编码器应接缩放输出，不能直连 Load Image。"""
+    for scale_id, node in nodes.items():
+        if str(node.get("class_type", "")).lower() != "fluxkontextimagescale":
+            continue
+        image = (node.get("inputs") or {}).get("image")
+        if isinstance(image, list) and image and str(image[0]) == str(load_id):
+            return str(scale_id)
+    return load_id
+
+
 def _trim_qwen_reference_slots(
     nodes: dict[str, Any],
     used_count: int,
     slot_ids: dict[int, str] | None = None,
 ) -> None:
     """只把实际用到的 Reference Image 接到编码器，其余断开并删掉，避免 example.png 进模型。"""
-    used = max(0, min(QWEN_EDIT_MAX_REFS, int(used_count)))
-    drop_titles = {f"reference image {n}" for n in range(used + 1, QWEN_EDIT_MAX_REFS + 1)}
+    max_refs = _qwen_encoder_max_refs(nodes)
+    used = max(0, min(max_refs, int(used_count)))
+    drop_titles = {f"reference image {n}" for n in range(used + 1, max(QWEN_EDIT_MAX_REFS, max_refs) + 1)}
     for nid in [
         nid
         for nid, node in list(nodes.items())
         if str((node.get("_meta") or {}).get("title", "")).lower() in drop_titles
     ]:
         nodes.pop(nid, None)
+    for n in range(used + 1, QWEN_EDIT_MAX_REFS + 1):
+        extra_id = (slot_ids or {}).get(n)
+        if extra_id:
+            nodes.pop(extra_id, None)
 
     for node in nodes.values():
         class_type = str(node.get("class_type", "")).lower()
@@ -218,7 +283,7 @@ def _trim_qwen_reference_slots(
         for n in range(1, QWEN_EDIT_MAX_REFS + 1):
             nid = (slot_ids or {}).get(n)
             if n <= used and nid and nid in nodes:
-                inputs[f"image{n}"] = [nid, 0]
+                inputs[f"image{n}"] = [_qwen_encoder_image_source(nodes, nid), 0]
             else:
                 inputs.pop(f"image{n}", None)
 
@@ -234,7 +299,15 @@ def normalize_comfy_base(base_url: str) -> str:
 def resolve_comfy_base(registry: dict[str, Any], model_id: str | None, kind: str) -> str:
     model = _pick_model(registry, model_id, kind)
     provider = _provider_for_model(registry, model)
-    endpoint = (model.get("endpoint") or provider.get("baseUrl") or "").strip()
+    # 模型卡片允许为单个 ComfyUI 模型配置独立地址（model.baseUrl）。
+    # 旧逻辑只看 endpoint/provider.baseUrl，导致界面保存的 Tailscale 地址
+    # 被忽略，Worker 最终总是回退到 provider 的 127.0.0.1:8188。
+    endpoint = (
+        model.get("baseUrl")
+        or model.get("endpoint")
+        or provider.get("baseUrl")
+        or ""
+    ).strip()
     if endpoint.startswith("http"):
         return normalize_comfy_base(endpoint)
     return normalize_comfy_base(provider.get("baseUrl", ""))
@@ -543,10 +616,18 @@ def patch_image_workflow(
             slot_nodes[slot] = inputs
             slot_ids[slot] = str(nid)
 
+    if _is_qwen_edit_workflow(nodes):
+        for slot, nid in _infer_qwen_slot_ids(nodes).items():
+            slot_ids.setdefault(slot, nid)
+            if slot not in slot_nodes:
+                slot_nodes[slot] = (nodes.get(nid) or {}).get("inputs") or {}
+
+    patched_slots: set[int] = set()
     for slot, name in enumerate(ref_names, start=1):
         if slot in slot_nodes and isinstance(slot_nodes[slot].get("image"), str):
             slot_nodes[slot]["image"] = name
             reference_patched = True
+            patched_slots.add(slot)
 
     for node in nodes.values():
         inputs = node.get("inputs") or {}
@@ -603,8 +684,23 @@ def patch_image_workflow(
             inputs["noise_seed"] = seed
         if "steps" in inputs and isinstance(inputs["steps"], int | float):
             inputs["steps"] = steps
+        if (
+            class_type == "primitiveboolean"
+            and "4step" in title
+            and "lora" in title
+            and isinstance(inputs.get("value"), bool)
+        ):
+            inputs["value"] = steps <= 8
         if denoise is not None and "denoise" in inputs and isinstance(inputs["denoise"], int | float):
             inputs["denoise"] = denoise
+
+        # Qwen Edit FLF / turnaround 等图片工作流通常用一个布尔开关
+        # 在完整模型（40 steps）和 Lightning（4 steps）之间切换。
+        # 不能依赖 JSON 模板的默认值，否则请求 40 步时可能仍挂着 4-step LoRA。
+        if class_type == "primitiveboolean" and any(
+            marker in title for marker in ("4step", "4steps", "lightning", "turbo")
+        ) and isinstance(inputs.get("value"), bool):
+            inputs["value"] = steps <= 8
 
         if (
             not reference_patched
@@ -631,11 +727,20 @@ def patch_image_workflow(
             )
             target[0]["value"] = steps
 
-    if slot_nodes:
-        if _is_qwen_edit_workflow(nodes):
-            _trim_qwen_reference_slots(nodes, len(ref_names), slot_ids)
-        else:
-            _trim_flux2_reference_slots(nodes, len(ref_names), width=width, height=height)
+    if _is_qwen_edit_workflow(nodes):
+        used = len(patched_slots) if patched_slots else len(ref_names)
+        _trim_qwen_reference_slots(nodes, used, slot_ids)
+        used_load_ids = {slot_ids[n] for n in patched_slots if n in slot_ids}
+        for nid, node in list(nodes.items()):
+            if str(node.get("class_type", "")).lower() != "loadimage":
+                continue
+            if nid in used_load_ids:
+                continue
+            image_name = str((node.get("inputs") or {}).get("image") or "")
+            if _is_placeholder_ref_name(image_name):
+                nodes.pop(nid, None)
+    elif slot_nodes:
+        _trim_flux2_reference_slots(nodes, len(ref_names), width=width, height=height)
 
     if not prompt_patched:
         raise AiConfigError("工作流中未找到 prompt 节点")
@@ -1199,8 +1304,7 @@ async def run_comfy_image(
     workflow_name = (
         (payload.get("workflowName") or "").strip()
         or (model.get("params") or {}).get("workflowName")
-        or model.get("apiModel")
-        or model.get("id")
+        or DEFAULT_IMAGE_WORKFLOW_NAME
     )
     steps = int((model.get("params") or {}).get("steps") or payload.get("steps") or 20)
     if payload.get("steps") is not None:
@@ -1322,13 +1426,16 @@ async def run_comfy_video(
     base = resolve_comfy_base(registry, model_id, "video")
     model = _pick_model(registry, model_id, "video")
     params = model.get("params") or {}
-    workflow_name = params.get("workflowName") or model.get("apiModel") or model.get("id")
+    workflow_name = (
+        (payload.get("workflowName") or params.get("workflowName") or "").strip()
+        or DEFAULT_VIDEO_WORKFLOW_NAME
+    )
     steps = int(params.get("steps") or payload.get("steps") or 20)
     if payload.get("steps") is not None:
         steps = int(payload["steps"])
     aspect_ratio = payload.get("aspectRatio") or params.get("defaultAspectRatio") or "16:9"
     duration = float(payload.get("duration") or params.get("defaultDuration") or 5)
-    is_minimax = "minimax" in str(workflow_name).lower()
+    is_minimax = "minimax" in f"{workflow_name} {model_id or ''} {model.get('id') or ''} {model.get('apiModel') or ''}".lower()
     width, height = _aspect_ratio_size(aspect_ratio, video=True, minimax=is_minimax)
     seed = random.randint(0, 2**31 - 1)
 

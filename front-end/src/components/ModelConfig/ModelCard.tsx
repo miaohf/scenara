@@ -217,7 +217,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
             value={editParams.workflowName || ''}
             onChange={(e) => handleParamChange('workflowName', e.target.value.trim() || undefined)}
             className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] font-mono"
-            placeholder="image_flux2_text_to_image_9b（定妆默认）"
+            placeholder="default_image_generate"
           />
           <p className="text-[9px] text-[var(--text-muted)] mt-1">
             读取服务端 back-end/workflows/&lt;名称&gt;.json（不含 .json 后缀）
@@ -333,7 +333,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
             value={editParams.workflowName || ''}
             onChange={(e) => handleParamChange('workflowName', e.target.value.trim() || undefined)}
             className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] font-mono"
-            placeholder="video-workflow"
+            placeholder="default_video_generate"
           />
           <p className="text-[9px] text-[var(--text-muted)] mt-1">
             读取服务端 back-end/workflows/&lt;名称&gt;.json（不含 .json 后缀）

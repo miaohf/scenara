@@ -23,6 +23,7 @@ import {
   DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE,
   DEFAULT_VIDEO_PARAMS_COMFYUI,
   DEFAULT_AUDIO_PARAMS,
+  DEFAULT_IMAGE_WORKFLOW_NAME,
 } from '../../types/model';
 import { getProviders, addProvider } from '../../services/modelRegistry';
 import { resolveComfyApiBaseUrl } from '../../services/urlUtils';
@@ -78,7 +79,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
         setCustomProviderBaseUrl('http://127.0.0.1:8188');
       }
       if (!workflowName.trim()) {
-        setWorkflowName('flux-dev-fp8');
+        setWorkflowName(DEFAULT_IMAGE_WORKFLOW_NAME);
       }
     }
   }, [type, imageApiFormat]);
@@ -301,11 +302,11 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
             type="text"
             value={workflowName}
             onChange={(e) => setWorkflowName(e.target.value)}
-            placeholder="如：flux-dev-fp8"
+            placeholder="如：default_image_generate"
             className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
           />
           <p className="text-[9px] text-[var(--text-muted)] mt-1">
-            对应 `public/workflows/flux-dev-fp8.json`；也可以填 `/workflows/xxx.json` 或完整 URL。
+            对应 `back-end/workflows/default_image_generate.json`（名称不含 .json）。前端填写后以前端为准。
           </p>
         </div>
       )}
@@ -538,11 +539,11 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
             type="text"
             value={workflowName}
             onChange={(e) => setWorkflowName(e.target.value)}
-            placeholder="如：wan-i2v 或 video-workflow"
+            placeholder="如：default_video_generate"
             className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
           />
           <p className="text-[9px] text-[var(--text-muted)] mt-1">
-            对应 `public/workflows/&lt;工作流名称&gt;.json`；也可以填 `/workflows/xxx.json` 或完整 URL。
+            对应 `back-end/workflows/default_video_generate.json`（名称不含 .json）。前端填写后以前端为准。
           </p>
         </div>
       )}

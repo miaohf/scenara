@@ -13,6 +13,7 @@ from app.services.ai.chat import AiConfigError
 from app.services.ai.comfyui import run_comfy_image, run_comfy_video
 from app.services.ai.video_job import publish_job_event, run_video_job
 from app.services.job_apply import apply_job_result_to_episode
+from app.services.model_registry import apply_deployment_overrides
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,10 @@ def _load_registry(user_id: int) -> dict:
                 return row.model_registry
         return {"globalApiKey": settings.default_api_key or ""}
 
-    return retry_on_lock(_read, label=f"load_registry:{user_id}")
+    return apply_deployment_overrides(
+        retry_on_lock(_read, label=f"load_registry:{user_id}"),
+        settings,
+    )
 
 
 def _job_status(job_id: str) -> str | None:
@@ -71,16 +75,19 @@ def _job_status(job_id: str) -> str | None:
 def _apply_job_to_episode(job_id: str, result: dict | None) -> None:
     """写回剧集失败不能把已经成功的生成改判失败。"""
 
-    def _write() -> None:
+    def _write() -> bool:
         with SessionLocal() as session:
             job = session.get(Job, job_id)
             if not job:
-                return
-            apply_job_result_to_episode(session, job, result)
+                return False
+            applied = apply_job_result_to_episode(session, job, result)
             session.commit()
+            return applied
 
     try:
-        retry_on_lock(_write, label=f"apply_job:{job_id}")
+        applied = retry_on_lock(_write, label=f"apply_job:{job_id}")
+        if not applied:
+            logger.warning("任务 %s 已结束，但没有匹配到可写回的剧集目标", job_id)
     except Exception:
         logger.exception("任务 %s 生成已完成，但写回剧集失败", job_id)
 

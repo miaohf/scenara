@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 from typing import Any
 
 from app.core.config import Settings, get_settings
@@ -16,6 +17,10 @@ LOCAL_PROVIDER_ENV_KEYS = (
 # ComfyUI 仅用于 image/video workflow，不能作为 LLM 端点
 INVALID_CHAT_PROVIDER_IDS = frozenset({"comfyui-local"})
 DEPRECATED_PROVIDER_IDS = frozenset({"ollama-local"})
+
+# 代码内置默认工作流名（不含 .json）；账号/前端已填写则不覆盖
+DEFAULT_IMAGE_WORKFLOW_NAME = "default_image_generate"
+DEFAULT_VIDEO_WORKFLOW_NAME = "default_video_generate"
 
 
 def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
@@ -87,7 +92,7 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
                 "defaultAspectRatio": "16:9",
                 "supportedAspectRatios": ["16:9", "9:16", "1:1"],
                 "apiFormat": "comfyui",
-                "workflowName": "image_flux2_text_to_image_9b",
+                "workflowName": DEFAULT_IMAGE_WORKFLOW_NAME,
                 "steps": 20,
                 "keyframeWorkflowName": "image_flux2_klein_image_edit_9b_base",
                 "keyframeSteps": 20,
@@ -101,16 +106,16 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
             "name": "ComfyUI Flux Dev1 FP8 (本地·备用)",
             "type": "image",
             "providerId": "comfyui-local",
-            "description": "Flux1-Dev FP8 文生图（定妆）；关键帧可配 Qwen Edit FLF；九宫格走 Qwen Edit turnaround",
+            "description": "Flux1-Dev FP8 文生图（定妆）；关键帧走 Qwen Image Edit 2511；九宫格走 Qwen Edit turnaround",
             "isBuiltIn": True,
             "isEnabled": False,
             "params": {
                 "defaultAspectRatio": "16:9",
                 "supportedAspectRatios": ["16:9", "9:16", "1:1"],
                 "apiFormat": "comfyui",
-                "workflowName": "flux_dev1_fp8_text_to_image",
+                "workflowName": DEFAULT_IMAGE_WORKFLOW_NAME,
                 "steps": 20,
-                "keyframeWorkflowName": "image_qwen_image_edit_2511_flf",
+                "keyframeWorkflowName": "image_qwen_image_edit_2511_20260908",
                 "keyframeSteps": 40,
                 "turnaroundWorkflowName": "qwen_image_edit_2511_fp8_character_turnaround",
                 "turnaroundSteps": 4,
@@ -131,7 +136,7 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
                 "supportedAspectRatios": ["16:9", "9:16"],
                 "defaultDuration": 5,
                 "supportedDurations": [5, 10, 15],
-                "workflowName": "video_minimax_h3_i2v_new",
+                "workflowName": DEFAULT_VIDEO_WORKFLOW_NAME,
                 "steps": 8,
                 "supportsEndFrame": True,
                 "supportsAudio": False,
@@ -152,7 +157,7 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
                 "supportedAspectRatios": ["16:9", "9:16"],
                 "defaultDuration": 5,
                 "supportedDurations": [5, 10, 15],
-                "workflowName": "video_ltx2_5_flf2v",
+                "workflowName": DEFAULT_VIDEO_WORKFLOW_NAME,
                 "steps": 20,
                 "supportsEndFrame": True,
                 "supportsAudio": False,
@@ -173,7 +178,7 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
                 "supportedAspectRatios": ["16:9", "9:16"],
                 "defaultDuration": 5,
                 "supportedDurations": [5, 10, 15],
-                "workflowName": "video_ltx2_3_i2v",
+                "workflowName": DEFAULT_VIDEO_WORKFLOW_NAME,
                 "steps": 20,
                 "supportsEndFrame": False,
                 "supportsAudio": False,
@@ -214,19 +219,27 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
 
 
 def _provider_env_overrides(settings: Settings) -> dict[str, dict[str, str]]:
-    return {
-        "vllm-local": {
+    # 仅在部署环境明确提供变量时覆盖账号配置。
+    # 不能把 Settings 的默认值（例如 127.0.0.1:8188）当成运维覆盖值，
+    # 否则用户在界面保存的 Tailscale 地址会在服务端读取时被悄悄改回本机。
+    overrides: dict[str, dict[str, str]] = {}
+    if os.getenv("VLLM_BASE_URL"):
+        overrides["vllm-local"] = {
             "baseUrl": settings.vllm_base_url.rstrip("/"),
-            "apiKey": settings.vllm_api_key,
-        },
-        "indextts-local": {
+        }
+    if os.getenv("VLLM_API_KEY"):
+        overrides.setdefault("vllm-local", {})["apiKey"] = settings.vllm_api_key
+    if os.getenv("INDEXTTS_BASE_URL"):
+        overrides["indextts-local"] = {
             "baseUrl": settings.indextts_base_url.rstrip("/"),
-            "apiKey": settings.indextts_api_key,
-        },
-        "comfyui-local": {
+        }
+    if os.getenv("INDEXTTS_API_KEY"):
+        overrides.setdefault("indextts-local", {})["apiKey"] = settings.indextts_api_key
+    if os.getenv("COMFYUI_BASE_URL"):
+        overrides["comfyui-local"] = {
             "baseUrl": settings.comfyui_base_url.rstrip("/"),
-        },
-    }
+        }
+    return overrides
 
 
 def apply_deployment_overrides(registry: dict[str, Any], settings: Settings | None = None) -> dict[str, Any]:
@@ -331,15 +344,13 @@ def sanitize_registry(
             changed = True
             continue
 
-        # 只补齐空工作流，按该模型卡片自己的默认值；不把用户已选的 Qwen/Flux 改写到 Klein
+        # 只补空工作流；前端已填写的名称一律保留
         if model.get("type") == "image":
             fallback = dict((default_models.get(mid) or {}).get("params") or {})
             params = dict(model.get("params") or {})
             filled = False
-            if (not params.get("workflowName") or params.get("workflowName") == "flux-dev-fp8") and fallback.get(
-                "workflowName"
-            ):
-                params["workflowName"] = fallback["workflowName"]
+            if not params.get("workflowName"):
+                params["workflowName"] = fallback.get("workflowName") or DEFAULT_IMAGE_WORKFLOW_NAME
                 if not params.get("steps") and fallback.get("steps"):
                     params["steps"] = fallback["steps"]
                 filled = True
@@ -356,19 +367,12 @@ def sanitize_registry(
                 model = {**model, "params": params}
                 changed = True
 
-        if mid == "comfyui-minimax-h3-flft2v" and model.get("type") == "video":
+        if model.get("type") == "video":
+            fallback = dict((default_models.get(mid) or {}).get("params") or {})
             params = dict(model.get("params") or {})
-            old_workflow = params.get("workflowName") or ""
-            if old_workflow in {"", "video_minimax_h3_flft2v"}:
-                params["workflowName"] = "video_minimax_h3_i2v_new"
-                if params.get("steps") in {None, 20}:
-                    params["steps"] = 8
-                params["supportsEndFrame"] = True
-                model = {
-                    **model,
-                    "description": "本地 MiniMax H3 首尾帧图生视频，8-step 768p Turbo",
-                    "params": params,
-                }
+            if not params.get("workflowName"):
+                params["workflowName"] = fallback.get("workflowName") or DEFAULT_VIDEO_WORKFLOW_NAME
+                model = {**model, "params": params}
                 changed = True
 
         models.append(model)

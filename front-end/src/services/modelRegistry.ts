@@ -18,6 +18,8 @@ import {
   DEFAULT_ACTIVE_MODELS,
   DEFAULT_CHAT_PARAMS,
   DEFAULT_IMAGE_PARAMS_COMFYUI,
+  DEFAULT_IMAGE_WORKFLOW_NAME,
+  DEFAULT_VIDEO_WORKFLOW_NAME,
   ImageModelParams,
   AspectRatio,
   VideoDuration,
@@ -131,8 +133,22 @@ export const loadRegistry = (): ModelRegistryState => {
         chatModelAliasMigrated = true;
       }
 
-      // 只补齐空的 Comfy 工作流；已填写的定妆/关键帧以卡片展示为准，不再改写到 Klein
+      // 只补齐空的 Comfy 工作流；前端已填写的名称一律保留
       parsed.models = parsed.models.map((model) => {
+        if (model.type === 'video') {
+          const videoModel = model as VideoModelDefinition;
+          const nextParams = { ...videoModel.params };
+          if (!nextParams.workflowName) {
+            const builtin = ALL_BUILTIN_MODELS.find((item) => item.id === model.id) as
+              | VideoModelDefinition
+              | undefined;
+            nextParams.workflowName =
+              builtin?.params?.workflowName || DEFAULT_VIDEO_WORKFLOW_NAME;
+            chatModelAliasMigrated = true;
+            return { ...videoModel, params: nextParams };
+          }
+          return model;
+        }
         if (model.type !== 'image') return model;
         const imageModel = model as ImageModelDefinition;
         const params = imageModel.params;
@@ -151,8 +167,8 @@ export const loadRegistry = (): ModelRegistryState => {
         const nextParams = { ...params };
         let changed = false;
 
-        if ((!nextParams.workflowName || nextParams.workflowName === 'flux-dev-fp8') && fallback.workflowName) {
-          nextParams.workflowName = fallback.workflowName;
+        if (!nextParams.workflowName && fallback.workflowName) {
+          nextParams.workflowName = fallback.workflowName || DEFAULT_IMAGE_WORKFLOW_NAME;
           if (!nextParams.steps && fallback.steps) nextParams.steps = fallback.steps;
           changed = true;
         }
@@ -263,11 +279,19 @@ export const loadRegistry = (): ModelRegistryState => {
             'turnaroundWorkflowName',
             'turnaroundSteps',
           ];
+          const WORKFLOW_PREF_KEYS = new Set([
+            'workflowName',
+            'keyframeWorkflowName',
+            'turnaroundWorkflowName',
+          ]);
           const mergedParams = { ...(bm as any).params };
           const existingParams = (existing as any).params;
           if (existingParams) {
             for (const key of USER_PREF_KEYS) {
               if (key in existingParams && existingParams[key] !== undefined) {
+                if (WORKFLOW_PREF_KEYS.has(key) && String(existingParams[key]).trim() === '') {
+                  continue;
+                }
                 if (key === 'defaultDuration') {
                   const candidate = existingParams[key];
                   const supported = (mergedParams as any).supportedDurations;

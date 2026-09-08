@@ -36,6 +36,7 @@ import {
   resolveEffectiveVideoModelId,
   routeVideoFrameInputs,
   finalizeComfyUiVideoWorkflowPrompt,
+  isQwenEditKeyframeWorkflow,
 } from './utils';
 import { DEFAULTS, resolveStoryboardGridLayout } from './constants';
 import EditModal from './EditModal';
@@ -362,6 +363,11 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       ? `${rawBasePrompt}\n\n${continuityHint}`
       : rawBasePrompt;
     const negativePrompt = buildShotNegativePrompt(shot, visualStyle);
+    const imageParams = (getActiveImageModel() as any)?.params || {};
+    const keyframeWorkflowName = imageParams.keyframeWorkflowName as string | undefined;
+    const keyframeSteps =
+      typeof imageParams.keyframeSteps === 'number' ? imageParams.keyframeSteps : undefined;
+    const sceneFirst = isQwenEditKeyframeWorkflow(keyframeWorkflowName);
 
     // 获取道具信息用于提示词注入
     const propsInfo = getPropsInfoForShot(shot, project.scriptData);
@@ -377,7 +383,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           type,
           true,
           propsInfo,
-          promptTemplates
+          promptTemplates,
+          sceneFirst,
         );
       } catch (error) {
         console.error('AI增强失败,使用基础提示词:', error);
@@ -387,7 +394,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           shot.cameraMovement,
           type,
           propsInfo,
-          promptTemplates
+          promptTemplates,
+          sceneFirst,
         );
       }
     } else {
@@ -397,11 +405,12 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         shot.cameraMovement,
         type,
         propsInfo,
-        promptTemplates
+        promptTemplates,
+        sceneFirst,
       );
     }
 
-    const refResult = getRefImagesForShot(shot, project.scriptData);
+    const refResult = getRefImagesForShot(shot, project.scriptData, { sceneFirst });
     const referenceImages = [...refResult.images];
     const continuityReferenceImage =
       type === 'end' && startKf?.imageUrl && !referenceImages.includes(startKf.imageUrl)
@@ -459,15 +468,12 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     });
 
     const characterReferenceImage =
-      type === 'start' ? pickPrimaryCharacterReference(shot, project.scriptData) : undefined;
-    if (type === 'start' && !characterReferenceImage && (shot.characters?.length || 0) > 0) {
+      type === 'start' && !sceneFirst
+        ? pickPrimaryCharacterReference(shot, project.scriptData)
+        : undefined;
+    if (type === 'start' && !pickPrimaryCharacterReference(shot, project.scriptData) && (shot.characters?.length || 0) > 0) {
       setToastMessage('未找到角色参考图：请先在资产阶段为角色生成/上传参考图，否则跨镜头角色一致性会较差。');
     }
-
-    const imageParams = (getActiveImageModel() as any)?.params || {};
-    const keyframeWorkflowName = imageParams.keyframeWorkflowName as string | undefined;
-    const keyframeSteps =
-      typeof imageParams.keyframeSteps === 'number' ? imageParams.keyframeSteps : undefined;
 
     const runGeneration = async () => {
       try {

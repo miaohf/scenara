@@ -397,6 +397,7 @@ export async function apiCallComfyVideo(
       startImage: options.startImage,
       endImage: options.endImage,
       audioUrl: options.audioUrl,
+      workflowName: options.workflowName,
     },
     options.episodeId,
     options.target,

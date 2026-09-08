@@ -923,10 +923,13 @@ export const generateImage = async (
   const imageApiFormat = getImageApiFormat(activeImageModel as any);
 
   // 参考图上限随实际后端而定，避免前端报“保留 5 张”而后端只吃 4 张
+  const workflowName = String(options?.workflowName || '');
+  const qwenBuiltinEdit = /qwen_image_edit/i.test(workflowName) && !/flf/i.test(workflowName);
+  const maxComfyRefs = qwenBuiltinEdit ? 3 : MAX_COMFY_REFERENCE_IMAGES;
   const boundedReferences = buildBoundedReferenceImages(
     referenceImages,
     options?.continuityReferenceImage,
-    imageApiFormat === 'comfyui' ? MAX_COMFY_REFERENCE_IMAGES : MAX_REFERENCE_IMAGES_PER_REQUEST
+    imageApiFormat === 'comfyui' ? maxComfyRefs : MAX_REFERENCE_IMAGES_PER_REQUEST
   );
   const effectiveReferenceImages = boundedReferences.references;
   const continuityReferenceImage = boundedReferences.continuityReferenceImage;
@@ -960,8 +963,18 @@ export const generateImage = async (
             : undefined);
 
       let comfyPrompt = normalizedUserPrompt;
+      const qwenEditShot =
+        referencePackType === 'shot'
+        && hasAnyReference
+        && !continuityReferenceImage
+        && (() => {
+          const name = String(options?.workflowName || '').toLowerCase();
+          return name.includes('qwen_image_edit') && !name.includes('turnaround');
+        })();
       if (continuityReferenceImage) {
         comfyPrompt += '\n\n[ComfyUI end frame] Keep the same subject identity, body plan, attire, and scene from the reference image, but show a clearly different pose, camera angle, and action moment for the END frame. Shot-listed props may be added from prop reference images; do not invent a different item.';
+      } else if (qwenEditShot) {
+        comfyPrompt += '\n\n[ComfyUI qwen-edit] Image 1 is the SCENE/location. Build this shot in that environment and lighting. Image 2 is the lead character lookbook: copy face, hair, body, and outfit only — discard the studio backdrop, posing block, and extra lookbook people. Later images are props or background extras standing in that location, not a second studio portrait.';
       } else if (characterRef) {
         if (referencePackType === 'shot') {
           comfyPrompt += '\n\n[ComfyUI character anchor] Image 1 is the character lookbook and the identity lock. Copy that exact subject appearance and body plan into this shot. Later images are scene or prop references only. Shot-listed props may be added from prop reference images; do not invent a different item. A missing carried item in the lookbook does not forbid it in this shot. Apply the shot description for pose, camera and environment.';

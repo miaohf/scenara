@@ -32,10 +32,21 @@ const KeyframeImage: React.FC<{ url: string; alt: string; onClick: () => void }>
   onClick,
 }) => {
   const [failed, setFailed] = useState(false);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     setFailed(false);
+    setRetry(0);
   }, [url]);
+
+  useEffect(() => {
+    if (!failed || retry >= 2) return;
+    const timer = window.setTimeout(() => {
+      setFailed(false);
+      setRetry((value) => value + 1);
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [failed, retry]);
 
   if (failed) {
     return (
@@ -49,8 +60,8 @@ const KeyframeImage: React.FC<{ url: string; alt: string; onClick: () => void }>
   return (
     <>
       <img
-        key={url}
-        src={url}
+        key={`${url}:${retry}`}
+        src={retry ? `${url}${url.includes('?') ? '&' : '?'}_r=${retry}` : url}
         className="w-full h-full object-cover cursor-pointer transition-transform duration-300 group-hover:scale-105"
         onClick={onClick}
         onError={() => setFailed(true)}

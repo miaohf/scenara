@@ -285,6 +285,8 @@ export interface VideoGenerateOptions {
   audioUrl?: string;
   aspectRatio?: AspectRatio;
   duration?: VideoDuration;
+  /** 覆盖模型默认 workflowName；未填则回退模型配置或代码默认 */
+  workflowName?: string;
   /** 异步任务归属剧集 */
   episodeId?: string;
   target?: GenerationTarget;
@@ -322,6 +324,11 @@ export const DEFAULT_IMAGE_PARAMS_OPENAI: ImageModelParams = {
   apiFormat: 'openai',
 };
 
+/** 代码内置默认图片工作流名（不含 .json）；前端填写后以前端为准 */
+export const DEFAULT_IMAGE_WORKFLOW_NAME = 'default_image_generate';
+/** 代码内置默认视频工作流名（不含 .json）；前端填写后以前端为准 */
+export const DEFAULT_VIDEO_WORKFLOW_NAME = 'default_video_generate';
+
 /**
  * ComfyUI Workflow 默认参数
  */
@@ -329,7 +336,7 @@ export const DEFAULT_IMAGE_PARAMS_COMFYUI: ImageModelParams = {
   defaultAspectRatio: '16:9',
   supportedAspectRatios: ['16:9', '9:16', '1:1'],
   apiFormat: 'comfyui',
-  workflowName: 'image_flux2_text_to_image_9b',
+  workflowName: DEFAULT_IMAGE_WORKFLOW_NAME,
   steps: 20,
   keyframeWorkflowName: 'image_flux2_klein_image_edit_9b_base',
   keyframeSteps: 20,
@@ -407,7 +414,7 @@ export const DEFAULT_VIDEO_PARAMS_COMFYUI: VideoModelParams = {
   supportedAspectRatios: ['16:9', '9:16', '1:1'],
   defaultDuration: 5,
   supportedDurations: [5, 10, 15],
-  workflowName: 'video-workflow',
+  workflowName: DEFAULT_VIDEO_WORKFLOW_NAME,
   steps: 20,
 };
 
@@ -593,7 +600,7 @@ export const BUILTIN_IMAGE_MODELS: ImageModelDefinition[] = [
     isEnabled: true,
     params: {
       ...DEFAULT_IMAGE_PARAMS_COMFYUI,
-      workflowName: 'image_flux2_text_to_image_9b',
+      workflowName: DEFAULT_IMAGE_WORKFLOW_NAME,
       steps: 20,
       keyframeWorkflowName: 'image_flux2_klein_image_edit_9b_base',
       keyframeSteps: 20,
@@ -607,14 +614,14 @@ export const BUILTIN_IMAGE_MODELS: ImageModelDefinition[] = [
     name: 'ComfyUI Flux Dev1 FP8 (本地·备用)',
     type: 'image',
     providerId: 'comfyui-local',
-    description: 'Flux1-Dev FP8 文生图（定妆）；关键帧可配 Qwen Edit FLF；九宫格走 Qwen Edit turnaround。',
+    description: 'Flux1-Dev FP8 文生图（定妆）；关键帧走 Qwen Image Edit 2511；九宫格走 Qwen Edit turnaround。',
     isBuiltIn: true,
     isEnabled: false,
     params: {
       ...DEFAULT_IMAGE_PARAMS_COMFYUI,
-      workflowName: 'flux_dev1_fp8_text_to_image',
+      workflowName: DEFAULT_IMAGE_WORKFLOW_NAME,
       steps: 20,
-      keyframeWorkflowName: 'image_qwen_image_edit_2511_flf',
+      keyframeWorkflowName: 'image_qwen_image_edit_2511_20260908',
       keyframeSteps: 40,
       turnaroundWorkflowName: 'qwen_image_edit_2511_fp8_character_turnaround',
       turnaroundSteps: 4,
@@ -695,7 +702,7 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
     isEnabled: true,
     params: {
       ...DEFAULT_VIDEO_PARAMS_COMFYUI,
-      workflowName: 'video_minimax_h3_i2v_new',
+      workflowName: DEFAULT_VIDEO_WORKFLOW_NAME,
       defaultDuration: 5,
       supportedDurations: [5, 10, 15],
       supportedAspectRatios: ['16:9', '9:16'],
@@ -716,7 +723,7 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
     isEnabled: true,
     params: {
       ...DEFAULT_VIDEO_PARAMS_COMFYUI,
-      workflowName: 'video_ltx2_5_flf2v',
+      workflowName: DEFAULT_VIDEO_WORKFLOW_NAME,
       defaultDuration: 5,
       supportedDurations: [5, 10, 15],
       supportedAspectRatios: ['16:9', '9:16'],
@@ -736,7 +743,7 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
     isEnabled: true,
     params: {
       ...DEFAULT_VIDEO_PARAMS_COMFYUI,
-      workflowName: 'video_ltx2_3_i2v',
+      workflowName: DEFAULT_VIDEO_WORKFLOW_NAME,
       defaultDuration: 5,
       supportedDurations: [5, 10, 15],
       supportedAspectRatios: ['16:9', '9:16'],
@@ -756,7 +763,7 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
     isEnabled: false,
     params: {
       ...DEFAULT_VIDEO_PARAMS_COMFYUI,
-      workflowName: 'video_ltx2_3_ia2v_flf2v',
+      workflowName: DEFAULT_VIDEO_WORKFLOW_NAME,
       defaultDuration: 5,
       supportedDurations: [5, 10, 15],
       supportedAspectRatios: ['16:9', '9:16'],

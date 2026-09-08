@@ -51,12 +51,18 @@ def _preserve_completed_media(
     *,
     done_status: str = "completed",
 ) -> dict[str, Any]:
-    """前端自动保存若带着过期的空快照，不要把 Worker 已写回的媒体擦掉。"""
+    """前端自动保存若带着过期快照，不要把 Worker 已写回的媒体擦掉。
+
+    生成期间的前端快照仍可能携带上一张图片，而 Worker 会先把新图片写入
+    数据库。此时不能只判断 incoming URL 是否为空，否则旧图仍会覆盖新图。
+    """
     merged = dict(new)
     old_url = old.get(url_key)
-    if old_url and not merged.get(url_key):
+    incoming_status = str(merged.get("status") or "")
+    is_stale_generation_snapshot = incoming_status in _EMPTY_SNAPSHOT_STATUSES
+    if old_url and (not merged.get(url_key) or is_stale_generation_snapshot):
         merged[url_key] = old_url
-        if str(merged.get("status") or "") in _EMPTY_SNAPSHOT_STATUSES:
+        if is_stale_generation_snapshot:
             merged["status"] = done_status
     return merged
 
