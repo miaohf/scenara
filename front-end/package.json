@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "setup": "npm install && cp -n .env.example .env.local",
     "check:utf8": "node scripts/check-utf8.mjs",
     "media-proxy": "node server/mediaProxyServer.mjs",

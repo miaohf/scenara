@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Users, Sparkles, RefreshCw, Loader2, MapPin, Archive, X, Search, Trash2, Package, Link2 } from 'lucide-react';
 import { ProjectState, CharacterVariation, Character, Scene, Prop, AspectRatio, AssetLibraryItem, CharacterTurnaroundPanel } from '../../types';
-import { generateImage, generateVisualPrompts, generateCharacterTurnaroundPanels, generateCharacterTurnaroundImage } from '../../services/aiService';
+import { generateImage, generateVisualPrompts, generateArtDirection, generateCharacterTurnaroundPanels, generateCharacterTurnaroundImage, resolveCharacterCastingAspectRatio, applyCharacterCastingPositivePrompt, buildLookbookRegenerateVariation, listProjectPropNames, mergeCharacterCastingNegativePrompt, CHARACTER_IDENTITY_LOCK } from '../../services/aiService';
 import { 
   getRegionalPrefix, 
   handleImageUpload, 
@@ -310,7 +310,17 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
             prompt = char.visualPrompt;
             negativePrompt = char.negativePrompt || '';
           } else {
-            const prompts = await generateVisualPrompts('character', char, genre, shotPromptModel, visualStyle, language);
+            const prompts = await generateVisualPrompts(
+              'character',
+              char,
+              genre,
+              shotPromptModel,
+              visualStyle,
+              language,
+              scriptSnapshot.artDirection,
+              undefined,
+              listProjectPropNames(scriptSnapshot.props)
+            );
             prompt = prompts.visualPrompt;
             negativePrompt = prompts.negativePrompt;
 
@@ -368,7 +378,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         }
       }
 
-      // 娣诲姞鍦板煙鐗瑰緛鍓嶇紑
+      // 添加地域特征前缀
       const regionalPrefix = getRegionalPrefix(language, type);
       let enhancedPrompt = regionalPrefix + prompt;
 
@@ -377,13 +387,32 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         enhancedPrompt += '. IMPORTANT: This is a pure environment/background scene with absolutely NO people, NO human figures, NO characters, NO silhouettes, NO crowds - empty scene only.';
       }
 
+      if (type === 'character') {
+        const castingCharacter = scriptSnapshot.characters.find(c => compareIds(c.id, id));
+        enhancedPrompt = applyCharacterCastingPositivePrompt(
+          enhancedPrompt,
+          listProjectPropNames(scriptSnapshot.props),
+          castingCharacter
+        );
+        negativePrompt = mergeCharacterCastingNegativePrompt(
+          visualStyle,
+          negativePrompt,
+          castingCharacter
+        );
+      }
+
       if (shapeReferenceImage) {
         enhancedPrompt += shapeReferenceStyleInstruction;
       }
 
-      // 生成图片（使用选择的横竖屏比例）
+      // 重新生图仍复用 visualPrompt，Qwen 会画出几乎同一张；注入姿态变化但不改已存提示词
+      if (type === 'character' && scriptSnapshot.characters.find(c => compareIds(c.id, id))?.referenceImage) {
+        enhancedPrompt += `\n\n${buildLookbookRegenerateVariation()}`;
+      }
+
+      // 生成图片（角色定妆固定竖构图；场景沿用页面比例）
       if (type === 'character' && characterReferenceImages.length > 0 && !shapeReferenceImage) {
-        enhancedPrompt += '\n\nIMPORTANT IDENTITY LOCK: Use the provided references as the same character identity anchor. Keep face, hairstyle, body proportions, outfit materials, and signature accessories consistent. Do NOT redesign this character.';
+        enhancedPrompt += `\n\n${CHARACTER_IDENTITY_LOCK}`;
         if (characterHasTurnaroundReference) {
           enhancedPrompt += ' If a 3x3 turnaround sheet is included, prioritize the panel that matches the camera angle and preserve angle-specific details.';
         }
@@ -397,7 +426,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       const imageUrl = await generateImage(
         enhancedPrompt,
         referenceImagesForGeneration,
-        aspectRatio,
+        type === 'character' ? resolveCharacterCastingAspectRatio() : aspectRatio,
         false,
         type === 'character' && !shapeReferenceImage ? characterHasTurnaroundReference : false,
         negativePrompt,
@@ -711,7 +740,35 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     markPromptRegenerating(key, true);
 
     try {
-      const artDirection = project.scriptData.artDirection;
+      let artDirection = project.scriptData.artDirection;
+      if (!artDirection?.visualStyle || artDirection.visualStyle !== visualStyle) {
+        artDirection = await generateArtDirection(
+          project.scriptData.title || '未命名剧本',
+          genre,
+          project.scriptData.logline || '',
+          project.scriptData.characters.map(c => ({
+            name: c.name,
+            gender: c.gender,
+            age: c.age,
+            personality: c.personality,
+            species: c.species,
+          })),
+          project.scriptData.scenes.map(s => ({
+            location: s.location,
+            time: s.time,
+            atmosphere: s.atmosphere,
+          })),
+          visualStyle,
+          language,
+          shotPromptModel
+        );
+        updateProject(prev => {
+          if (!prev.scriptData) return prev;
+          const newData = cloneScriptData(prev.scriptData);
+          newData.artDirection = artDirection;
+          return { ...prev, scriptData: newData };
+        });
+      }
       let prompts: { visualPrompt: string; negativePrompt: string };
 
       if (type === 'character') {
@@ -724,7 +781,9 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           shotPromptModel,
           visualStyle,
           language,
-          artDirection
+          artDirection,
+          undefined,
+          listProjectPropNames(project.scriptData.props)
         );
         updateProject(prev => {
           if (!prev.scriptData) return prev;
@@ -740,6 +799,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           );
           target.visualPrompt = prompts.visualPrompt;
           target.negativePrompt = prompts.negativePrompt;
+          newData.artDirection = artDirection;
           return { ...prev, scriptData: invalidateShotGenerationMeta(newData) };
         });
       } else if (type === 'scene') {
@@ -768,6 +828,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           );
           target.visualPrompt = prompts.visualPrompt;
           target.negativePrompt = prompts.negativePrompt;
+          newData.artDirection = artDirection;
           return { ...prev, scriptData: invalidateShotGenerationMeta(newData) };
         });
       } else {
@@ -796,6 +857,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           );
           target.visualPrompt = prompts.visualPrompt;
           target.negativePrompt = prompts.negativePrompt;
+          newData.artDirection = artDirection;
           return { ...prev, scriptData: invalidateShotGenerationMeta(newData) };
         });
       }
@@ -810,7 +872,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   /**
    * 更新角色基本信息
    */
-  const handleUpdateCharacterInfo = (charId: string, updates: { name?: string; gender?: string; age?: string; personality?: string }) => {
+  const handleUpdateCharacterInfo = (charId: string, updates: { name?: string; gender?: string; age?: string; personality?: string; species?: string }) => {
     if (!project.scriptData) return;
     const newData = cloneScriptData(project.scriptData);
     const char = newData.characters.find(c => compareIds(c.id, charId));
@@ -819,6 +881,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       if (updates.gender !== undefined) char.gender = updates.gender;
       if (updates.age !== undefined) char.age = updates.age;
       if (updates.personality !== undefined) char.personality = updates.personality;
+      if (updates.species !== undefined) char.species = updates.species;
       updateProject({ scriptData: invalidateShotGenerationMeta(newData) });
     }
   };
@@ -1353,15 +1416,22 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     try {
       const refImages = char.referenceImage ? [char.referenceImage] : [];
       const regionalPrefix = getRegionalPrefix(language, 'character');
-      // 构建变体专用提示词：强调服装变化
-      const enhancedPrompt = `${regionalPrefix}Character "${char.name}" wearing NEW OUTFIT: ${variation.visualPrompt}. This is a costume/outfit change - the character's face and identity must remain identical to the reference, but they should be wearing the described new outfit.`;
-      const negativePrompt = variation.negativePrompt || char.negativePrompt || '';
+      const enhancedPrompt = applyCharacterCastingPositivePrompt(
+        `${regionalPrefix}Character "${char.name}" wearing NEW OUTFIT: ${variation.visualPrompt}. This is an attire change only — keep the same subject and body plan as the reference, and apply the described new outfit.`,
+        listProjectPropNames(project.scriptData?.props),
+        char
+      );
+      const negativePrompt = mergeCharacterCastingNegativePrompt(
+        visualStyle,
+        variation.negativePrompt || char.negativePrompt,
+        char
+      );
       
-      // 使用选择的横竖屏比例，启用变体模式
+      // 服装变体沿用定妆竖构图
       const imageUrl = await generateImage(
         enhancedPrompt,
         refImages,
-        aspectRatio,
+        resolveCharacterCastingAspectRatio(),
         true,
         false,
         negativePrompt,
@@ -1754,7 +1824,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                       >
                         <div className="aspect-video bg-[var(--bg-elevated)] relative">
                           {preview ? (
-                            <img src={preview} alt={item.name} className="w-full h-full object-cover" />
+                            <img src={preview} alt={item.name} className={`w-full h-full object-cover${item.type === 'character' ? ' object-top' : ''}`} />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-[var(--text-muted)]">
                               {item.type === 'character' ? (
@@ -1833,9 +1903,9 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
             <Archive className="w-4 h-4" />
             资产库
           </button>
-          {/* 横竖屏选择 */}
+          {/* 横竖屏选择：场景/道具；角色定妆固定竖构图 */}
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-[var(--text-tertiary)] uppercase">比例</span>
+            <span className="text-[10px] text-[var(--text-tertiary)] uppercase">场景比例</span>
             <AspectRatioSelector
               value={aspectRatio}
               onChange={setAspectRatio}
@@ -1871,7 +1941,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 <div className="w-1.5 h-1.5 bg-[var(--accent)] rounded-full" />
                 角色定妆 (Casting)
               </h3>
-              <p className="text-xs text-[var(--text-tertiary)] mt-1 pl-3.5">为剧本中的角色生成一致的参考形象</p>
+              <p className="text-xs text-[var(--text-tertiary)] mt-1 pl-3.5">全身棚拍定妆，只锁脸、体型、服装和鞋子；背包等道具在镜头里再加</p>
             </div>
             <div className="flex gap-2">
               <button 

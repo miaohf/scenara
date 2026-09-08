@@ -13,7 +13,7 @@ import StagePrompts from "@/components/StagePrompts";
 import ModelConfigModal from "@/components/ModelConfig";
 import AssetSyncBanner from "@/components/CharacterLibrary/AssetSyncBanner";
 import { Episode, ProjectState } from "@/types";
-import { saveEpisode, saveEpisodePartial, loadEpisode } from "@/services/storageService";
+import { saveEpisodePartial, loadEpisode } from "@/services/storageService";
 import { setLogCallback, clearLogCallback } from "@/services/renderLogService";
 import { setGenerationEpisodeId } from "@/services/generationContext";
 import { listEpisodeJobs } from "@/services/aiApiAdapter";
@@ -218,25 +218,39 @@ export default function EpisodeWorkspace() {
     handleUpdateProject({ stage });
   };
 
-  const handleExit = async () => {
+  const leaveWorkspace = (href: string) => {
+    router.push(href);
+    if (!currentEpisode || saveStatus === "saved") return;
+    const changedKeys = diffEpisodeKeys(currentEpisode, lastSavedRef.current);
+    if (changedKeys.length === 0) return;
+    void saveEpisodePartial(currentEpisode, changedKeys).catch((error) => {
+      console.warn("离开后后台保存失败:", error);
+    });
+  };
+
+  const confirmLeaveIfScriptBusy = (href: string) => {
     if (isScriptBusy) {
-      showAlert("剧本正在生成或改写，退出后未完成的文本会中断。\n\n确定要退出吗？", {
+      showAlert("剧本正在生成或改写，离开后未完成的文本会中断。生图/视频任务会在后台继续。\n\n确定要离开吗？", {
         title: "剧本任务进行中",
         type: "warning",
         showCancel: true,
-        confirmText: "确定退出",
+        confirmText: "确定离开",
         cancelText: "继续等待",
-        onConfirm: async () => {
+        onConfirm: () => {
           setIsScriptBusy(false);
-          if (currentEpisode) await saveEpisode(currentEpisode);
-          router.push(`/project/${currentEpisode?.projectId || ""}`);
+          leaveWorkspace(href);
         },
       });
       return;
     }
-    if (currentEpisode) await saveEpisode(currentEpisode);
-    router.push(`/project/${currentEpisode?.projectId || ""}`);
+    leaveWorkspace(href);
   };
+
+  const projectId = currentEpisode?.projectId || project?.id;
+  const projectOverviewHref = projectId ? `/project/${projectId}` : "/";
+  const handleExit = () => confirmLeaveIfScriptBusy(projectOverviewHref);
+  const handleGoHome = () => confirmLeaveIfScriptBusy("/");
+  const handleGoToProject = () => confirmLeaveIfScriptBusy(projectOverviewHref);
 
   if (episodeLoadError) {
     return (
@@ -332,6 +346,7 @@ export default function EpisodeWorkspace() {
         currentStage={currentEpisode.stage}
         setStage={setStage}
         onExit={handleExit}
+        onGoHome={handleGoHome}
         projectName={episodeLabel}
         onShowModelConfig={() => setShowModelConfig(true)}
         isNavigationLocked={isScriptBusy}
@@ -346,7 +361,7 @@ export default function EpisodeWorkspace() {
               }
             : undefined
         }
-        onGoToProject={project ? () => router.push(`/project/${project.id}`) : undefined}
+        onGoToProject={project ? handleGoToProject : undefined}
       />
       <main className="relative ml-72 h-screen flex-1 overflow-hidden">
         {project &&

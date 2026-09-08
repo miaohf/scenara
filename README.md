@@ -97,6 +97,15 @@ cd front-end && npm run dev
 
 浏览器访问 http://localhost:3000
 
+**终端 4 — nginx 媒体入口（推荐，预览图/视频不再经 Next 代传）**
+
+```bash
+docker compose -f deploy/nginx/docker-compose.yaml up -d
+# 或 ./deploy/nginx/start.sh
+```
+
+然后打开 **http://localhost:3080**（局域网用 `http://<本机IP>:3080`）。容器 `restart: unless-stopped`，关掉终端也不会停。停止：`docker compose -f deploy/nginx/docker-compose.yaml down`。
+
 ### 3. 可选：ComfyUI CORS 代理
 
 若浏览器无法直连 ComfyUI（跨域），启动代理（默认端口 **8789**，与 `next.config.ts` 一致）：

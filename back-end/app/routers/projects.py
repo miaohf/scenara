@@ -241,8 +241,11 @@ async def update_episode(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Episode not found")
 
     updates = body.model_dump(exclude_unset=True)
+    incoming_payload = updates.pop("payload", None)
     for key, value in updates.items():
         setattr(episode, key, value)
+    if incoming_payload is not None:
+        episode.payload = merge_episode_payload(episode.payload or {}, incoming_payload)
     await retry_on_lock_async(db.commit, label=f"update_episode:{episode_id}")
     await db.refresh(episode)
     return episode

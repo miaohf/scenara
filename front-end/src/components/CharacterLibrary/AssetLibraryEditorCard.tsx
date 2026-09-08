@@ -16,7 +16,7 @@ interface AssetLibraryEditorCardProps {
 }
 
 const EDITABLE_FIELDS: Record<LibraryAssetType, string[]> = {
-  character: ['name', 'gender', 'age', 'personality', 'coreFeatures', 'visualPrompt'],
+  character: ['name', 'gender', 'age', 'species', 'personality', 'coreFeatures', 'visualPrompt'],
   scene: ['location', 'time', 'atmosphere', 'visualPrompt'],
   prop: ['name', 'category', 'description', 'visualPrompt'],
 };
@@ -30,7 +30,7 @@ const getAssetTitle = (type: LibraryAssetType, asset: LibraryAsset): string => {
 const getAssetSubtitle = (type: LibraryAssetType, asset: LibraryAsset): string => {
   if (type === 'character') {
     const character = asset as Character;
-    return `${character.gender || '-'} · ${character.age || '-'}`;
+    return `${character.species || 'human'} · ${character.gender || '-'} · ${character.age || '-'}`;
   }
   if (type === 'scene') {
     const scene = asset as Scene;
@@ -91,7 +91,7 @@ const AssetLibraryEditorCard: React.FC<AssetLibraryEditorCardProps> = ({
           <img
             src={previewImage}
             alt={getAssetTitle(type, draft)}
-            className="w-full h-full object-cover cursor-pointer"
+            className={`w-full h-full object-cover cursor-pointer${type === 'character' ? ' object-top' : ''}`}
             onClick={() => onPreviewImage(previewImage)}
           />
         ) : (
@@ -129,7 +129,7 @@ const AssetLibraryEditorCard: React.FC<AssetLibraryEditorCardProps> = ({
               placeholder="角色名称"
               className="w-full px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border-primary)] rounded text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--border-secondary)]"
             />
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               <input
                 value={getValue('gender')}
                 onChange={(e) => updateField('gender', e.target.value)}
@@ -140,6 +140,12 @@ const AssetLibraryEditorCard: React.FC<AssetLibraryEditorCardProps> = ({
                 value={getValue('age')}
                 onChange={(e) => updateField('age', e.target.value)}
                 placeholder="年龄"
+                className="w-full px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border-primary)] rounded text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--border-secondary)]"
+              />
+              <input
+                value={getValue('species')}
+                onChange={(e) => updateField('species', e.target.value)}
+                placeholder="物种"
                 className="w-full px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border-primary)] rounded text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--border-secondary)]"
               />
             </div>

@@ -48,10 +48,12 @@ COMFYUI_MAX_POLLS_VIDEO = 3600  # MiniMax H3 20 steps @1344x768 可能超过 1 �
 IMG2IMG_DENOISE_CONTINUITY = 0.65
 IMG2IMG_DENOISE_CHARACTER = 0.78
 FLUX2_EDIT_MAX_REFS = 4
+QWEN_EDIT_MAX_REFS = 5
+COMFY_EDIT_MAX_REFS = QWEN_EDIT_MAX_REFS
 
 
 def _collect_reference_images(payload: dict[str, Any]) -> list[str]:
-    """按关键帧语义收集最多 4 张参考图：角色/场景在前，连贯性图靠后。"""
+    """按关键帧语义收集参考图：主定妆在前，场景/道具随后，第二定妆与连贯性图靠后。"""
     refs: list[str] = []
     seen: set[str] = set()
 
@@ -62,15 +64,15 @@ def _collect_reference_images(payload: dict[str, Any]) -> list[str]:
         seen.add(text)
         refs.append(text)
 
+    add(payload.get("characterReferenceImage") or payload.get("character_reference_image"))
     for img in payload.get("referenceImages") or payload.get("reference_images") or []:
         add(img)
-    add(payload.get("characterReferenceImage") or payload.get("character_reference_image"))
     continuity = payload.get("continuityReferenceImage") or payload.get("continuity_reference_image")
     if continuity:
         add(continuity)
         if continuity in refs and refs[-1] != continuity:
             refs = [r for r in refs if r != continuity] + [continuity]
-    return refs[:FLUX2_EDIT_MAX_REFS]
+    return refs[:COMFY_EDIT_MAX_REFS]
 
 
 def _trim_flux2_reference_slots(
@@ -184,6 +186,41 @@ def _trim_flux2_reference_slots(
         inputs["positive"] = [pos_id, 0]
     if neg_id:
         inputs["negative"] = [neg_id, 0]
+
+
+def _is_qwen_edit_workflow(nodes: dict[str, Any]) -> bool:
+    return any(
+        "textencodeqwenimageedit" in str(node.get("class_type", "")).lower()
+        for node in nodes.values()
+    )
+
+
+def _trim_qwen_reference_slots(
+    nodes: dict[str, Any],
+    used_count: int,
+    slot_ids: dict[int, str] | None = None,
+) -> None:
+    """只把实际用到的 Reference Image 接到编码器，其余断开并删掉，避免 example.png 进模型。"""
+    used = max(0, min(QWEN_EDIT_MAX_REFS, int(used_count)))
+    drop_titles = {f"reference image {n}" for n in range(used + 1, QWEN_EDIT_MAX_REFS + 1)}
+    for nid in [
+        nid
+        for nid, node in list(nodes.items())
+        if str((node.get("_meta") or {}).get("title", "")).lower() in drop_titles
+    ]:
+        nodes.pop(nid, None)
+
+    for node in nodes.values():
+        class_type = str(node.get("class_type", "")).lower()
+        if "textencodeqwenimageedit" not in class_type:
+            continue
+        inputs = node.setdefault("inputs", {})
+        for n in range(1, QWEN_EDIT_MAX_REFS + 1):
+            nid = (slot_ids or {}).get(n)
+            if n <= used and nid and nid in nodes:
+                inputs[f"image{n}"] = [nid, 0]
+            else:
+                inputs.pop(f"image{n}", None)
 
 
 def normalize_comfy_base(base_url: str) -> str:
@@ -371,13 +408,35 @@ def _store_generated_media(
     return {"base64": b64, "url": f"data:{content_type};base64,{b64}"}
 
 
-def _resize_image_bytes(image_bytes: bytes, width: int, height: int) -> bytes:
+def _resize_image_bytes(
+    image_bytes: bytes,
+    width: int,
+    height: int,
+    *,
+    fit: str = "auto",
+) -> bytes:
     try:
         from PIL import Image
     except ImportError:
         return image_bytes
 
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    src_ratio = img.width / max(img.height, 1)
+    dst_ratio = width / max(height, 1)
+    if fit == "auto":
+        # 9:16 定妆灌进 16:9 首帧时，cover 会切掉头脚，身份锁失效
+        fit = "contain" if abs(src_ratio - dst_ratio) / dst_ratio > 0.2 else "cover"
+
+    if fit == "contain":
+        scale = min(width / img.width, height / img.height)
+        new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+        resized = img.resize(new_size, Image.Resampling.LANCZOS)
+        canvas = Image.new("RGB", (width, height), (176, 172, 166))
+        canvas.paste(resized, ((width - new_size[0]) // 2, (height - new_size[1]) // 2))
+        out = io.BytesIO()
+        canvas.save(out, format="PNG")
+        return out.getvalue()
+
     scale = max(width / img.width, height / img.height)
     new_size = (int(img.width * scale), int(img.height * scale))
     resized = img.resize(new_size, Image.Resampling.LANCZOS)
@@ -471,7 +530,8 @@ def patch_image_workflow(
             step_primitives.append((inputs, float(inputs["value"])))
 
     slot_nodes: dict[int, dict[str, Any]] = {}
-    for node in nodes.values():
+    slot_ids: dict[int, str] = {}
+    for nid, node in nodes.items():
         inputs = node.get("inputs") or {}
         class_type = str(node.get("class_type", "")).lower()
         title = str((node.get("_meta") or {}).get("title", "")).lower()
@@ -479,7 +539,9 @@ def patch_image_workflow(
             continue
         slot_match = re.search(r"reference\s*image\s*(\d+)", title)
         if slot_match:
-            slot_nodes[int(slot_match.group(1))] = inputs
+            slot = int(slot_match.group(1))
+            slot_nodes[slot] = inputs
+            slot_ids[slot] = str(nid)
 
     for slot, name in enumerate(ref_names, start=1):
         if slot in slot_nodes and isinstance(slot_nodes[slot].get("image"), str):
@@ -570,7 +632,10 @@ def patch_image_workflow(
             target[0]["value"] = steps
 
     if slot_nodes:
-        _trim_flux2_reference_slots(nodes, len(ref_names), width=width, height=height)
+        if _is_qwen_edit_workflow(nodes):
+            _trim_qwen_reference_slots(nodes, len(ref_names), slot_ids)
+        else:
+            _trim_flux2_reference_slots(nodes, len(ref_names), width=width, height=height)
 
     if not prompt_patched:
         raise AiConfigError("工作流中未找到 prompt 节点")
@@ -651,6 +716,16 @@ def patch_video_workflow(
             inputs["value"] = int(duration) if class_type == "primitiveint" else duration
         if class_type == "resolutionselector" and isinstance(inputs.get("aspect_ratio"), str):
             inputs["aspect_ratio"] = _resolution_selector_aspect(aspect_ratio)
+            if isinstance(inputs.get("megapixels"), int | float) and width > 0 and height > 0:
+                inputs["megapixels"] = round(width * height / 1_000_000, 2)
+        if class_type == "primitiveboolean" and (
+            "turbo" in title or "lightning" in title
+        ) and isinstance(inputs.get("value"), bool):
+            inputs["value"] = steps <= 8
+        if class_type == "primitiveint" and "steps full" in title and isinstance(inputs.get("value"), int | float):
+            inputs["value"] = steps if steps > 8 else 20
+        if class_type == "primitiveint" and "steps turbo" in title and isinstance(inputs.get("value"), int | float):
+            inputs["value"] = steps if steps <= 8 else 8
         if isinstance(inputs.get("seed"), int | float):
             inputs["seed"] = seed
         if isinstance(inputs.get("noise_seed"), int | float):
@@ -689,6 +764,10 @@ def patch_video_workflow(
             last_loader_id = node_id
     if minimax_id:
         minimax_inputs = nodes[minimax_id].setdefault("inputs", {})
+        if not last_loader_id:
+            existing_last = minimax_inputs.get("last_frame")
+            if isinstance(existing_last, list) and existing_last:
+                last_loader_id = str(existing_last[0])
         if end_image_name and last_loader_id:
             minimax_inputs["last_frame"] = [last_loader_id, 0]
         else:
@@ -744,6 +823,50 @@ def _comfy_ws_url(base: str, client_id: str) -> str:
 
 # 采样步数条通常 >= 4；加载权重/单节点完成常见 1/1，不能当成进度。
 _SAMPLER_PROGRESS_MIN_STEPS = 4
+# ComfyUI 会推 JPEG/未编码预览，默认 1MB 上限会直接掐掉 websocket。
+_COMFY_WS_MAX_SIZE = 32 * 1024 * 1024
+
+
+def _as_progress_int(value: Any) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _is_expected_sampler_max(maximum: int, expected_steps: int | None) -> bool:
+    """Flux / Lightning 的采样条 max 会等于 steps，偶尔差 1。"""
+    if not expected_steps or expected_steps < _SAMPLER_PROGRESS_MIN_STEPS:
+        return False
+    return abs(maximum - expected_steps) <= 1
+
+
+def _is_plausible_sampler_max(maximum: int, expected_steps: int | None) -> bool:
+    """Turbo 实际步数常小于模型配置（例如配置 20、采样条 8）。"""
+    if maximum < _SAMPLER_PROGRESS_MIN_STEPS or maximum > 40:
+        return False
+    if not expected_steps:
+        return True
+    return maximum <= max(expected_steps, 32)
+
+
+def _progress_candidate_score(
+    maximum: int,
+    *,
+    expected_steps: int | None,
+) -> int:
+    """越大越像采样 tqdm。CLIP/加载条的 max 通常远大于 steps。"""
+    if maximum < _SAMPLER_PROGRESS_MIN_STEPS:
+        return -1
+    if _is_expected_sampler_max(maximum, expected_steps):
+        return 100
+    if _is_plausible_sampler_max(maximum, expected_steps):
+        return 80
+    if expected_steps and expected_steps >= _SAMPLER_PROGRESS_MIN_STEPS:
+        return -1
+    if maximum <= 80:
+        return 10
+    return -1
 
 
 def _as_step_progress(
@@ -752,12 +875,17 @@ def _as_step_progress(
     *,
     sampling_started: bool,
     locked_max: int | None = None,
+    expected_steps: int | None = None,
 ) -> tuple[int, int, str] | None:
-    if maximum < _SAMPLER_PROGRESS_MIN_STEPS:
+    if _progress_candidate_score(maximum, expected_steps=expected_steps) < 0:
         return None
     if locked_max is not None and maximum != locked_max:
-        return None
-    if not sampling_started:
+        # 已锁到采样条后忽略 CLIP/加载；尚未锁到采样条时允许切换过来。
+        if not _is_plausible_sampler_max(maximum, expected_steps):
+            return None
+        if _is_plausible_sampler_max(locked_max, expected_steps) and locked_max != maximum:
+            return None
+    if not sampling_started and not _is_plausible_sampler_max(maximum, expected_steps):
         # 采样 tqdm 从 0/N 或 1/N 起；加载模型常直接报到接近完成。
         if value >= maximum:
             return None
@@ -774,6 +902,7 @@ def _progress_from_comfy_message(
     *,
     sampling_started: bool,
     locked_max: int | None = None,
+    expected_steps: int | None = None,
 ) -> tuple[int, int, str] | None:
     data = message.get("data") if isinstance(message.get("data"), dict) else {}
     incoming_id = data.get("prompt_id")
@@ -783,80 +912,146 @@ def _progress_from_comfy_message(
     msg_type = message.get("type")
     if msg_type == "progress":
         return _as_step_progress(
-            int(data.get("value") or 0),
-            int(data.get("max") or 0),
+            _as_progress_int(data.get("value")),
+            _as_progress_int(data.get("max")),
             sampling_started=sampling_started,
             locked_max=locked_max,
+            expected_steps=expected_steps,
         )
 
     if msg_type == "progress_state":
         nodes = data.get("nodes") if isinstance(data.get("nodes"), dict) else {}
-        best: tuple[int, int] | None = None
+        best: tuple[int, int, int] | None = None
         for node in nodes.values():
             if not isinstance(node, dict):
                 continue
             state = str(node.get("state") or "").lower()
-            if state in {"finished", "pending", "idle"}:
+            if state in {"finished", "pending", "idle", "error"}:
                 continue
-            value = int(node.get("value") or 0)
-            maximum = int(node.get("max") or 0)
+            value = _as_progress_int(node.get("value"))
+            maximum = _as_progress_int(node.get("max"))
             parsed = _as_step_progress(
                 value,
                 maximum,
                 sampling_started=sampling_started,
                 locked_max=locked_max,
+                expected_steps=expected_steps,
             )
-            if parsed and (best is None or maximum > best[1]):
-                best = (value, maximum)
+            if not parsed:
+                continue
+            score = _progress_candidate_score(maximum, expected_steps=expected_steps)
+            # 同分时取更靠后的步数：子图里可能同时有一条停在 1/20 的条。
+            if best is None or score > best[2] or (score == best[2] and value > best[0]):
+                best = (value, maximum, score)
         if not best:
             return None
         return _as_step_progress(
-            *best,
+            best[0],
+            best[1],
             sampling_started=sampling_started,
             locked_max=locked_max,
+            expected_steps=expected_steps,
         )
 
+    return None
+
+
+def _comfy_ws_text(raw: Any) -> str | None:
+    """只解析 JSON 文本；ComfyUI 的二进制预览帧直接丢掉。"""
+    if isinstance(raw, str):
+        stripped = raw.lstrip()
+        return stripped if stripped.startswith("{") or stripped.startswith("[") else None
+    if isinstance(raw, (bytes, bytearray)):
+        stripped = raw.lstrip()
+        if stripped.startswith(b"{") or stripped.startswith(b"["):
+            try:
+                return stripped.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
     return None
 
 
 async def _listen_comfy_progress(
     base: str,
     client_id: str,
-    prompt_id: str,
+    prompt_id: str | None,
     on_progress: Any | None,
+    *,
+    expected_steps: int | None = None,
+    ready: asyncio.Event | None = None,
 ) -> None:
     if on_progress is None:
+        if ready:
+            ready.set()
         return
     try:
         import websockets
     except ImportError:
+        if ready:
+            ready.set()
         return
 
     sampling_started = False
     locked_max: int | None = None
+    last_percent = -1
+    ws_url = _comfy_ws_url(base, client_id)
     try:
-        async with websockets.connect(_comfy_ws_url(base, client_id), open_timeout=5, close_timeout=2) as ws:
-            async for raw in ws:
-                try:
-                    message = json.loads(raw)
-                except Exception:
-                    continue
-                if not isinstance(message, dict):
-                    continue
-                parsed = _progress_from_comfy_message(
-                    message,
-                    prompt_id,
-                    sampling_started=sampling_started,
-                    locked_max=locked_max,
-                )
-                if parsed:
-                    percent, locked_max, text = parsed
-                    sampling_started = True
-                    on_progress(percent, text)
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.debug("ComfyUI websocket 进度订阅失败", exc_info=True)
+        while True:
+            try:
+                async with websockets.connect(
+                    ws_url,
+                    open_timeout=5,
+                    close_timeout=2,
+                    max_size=_COMFY_WS_MAX_SIZE,
+                    ping_interval=20,
+                    ping_timeout=60,
+                ) as ws:
+                    if ready and not ready.is_set():
+                        ready.set()
+                    async for raw in ws:
+                        text = _comfy_ws_text(raw)
+                        if text is None:
+                            continue
+                        try:
+                            message = json.loads(text)
+                        except Exception:
+                            continue
+                        if not isinstance(message, dict):
+                            continue
+                        try:
+                            parsed = _progress_from_comfy_message(
+                                message,
+                                prompt_id,
+                                sampling_started=sampling_started,
+                                locked_max=locked_max,
+                                expected_steps=expected_steps,
+                            )
+                        except Exception:
+                            continue
+                        if not parsed:
+                            continue
+                        percent, new_max, label = parsed
+                        if sampling_started and new_max == locked_max and percent < last_percent:
+                            continue
+                        locked_max = new_max
+                        last_percent = percent
+                        sampling_started = True
+                        try:
+                            on_progress(percent, label)
+                        except Exception as exc:
+                            if type(exc).__name__ == "JobCancelled":
+                                return
+                            logger.debug("ComfyUI 进度回调失败", exc_info=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("ComfyUI websocket 进度订阅中断，稍后重连", exc_info=True)
+            if ready and not ready.is_set():
+                ready.set()
+            await asyncio.sleep(1)
+    finally:
+        if ready and not ready.is_set():
+            ready.set()
 
 
 async def _queue_and_poll(
@@ -867,17 +1062,10 @@ async def _queue_and_poll(
     max_polls: int,
     poll_interval: float,
     on_progress: Any | None = None,
+    expected_steps: int | None = None,
 ) -> bytes:
     client_id = f"bigbanana-{uuid.uuid4().hex[:12]}"
     prompt_url = f"{base}/prompt"
-    logger.info("ComfyUI POST %s (nodes=%s)", prompt_url, len(prompt))
-    res = await client.post(prompt_url, json={"prompt": prompt, "client_id": client_id}, timeout=60)
-    if not res.is_success:
-        raise AiConfigError(f"ComfyUI 提交失败 ({prompt_url}): {res.text}")
-    prompt_id = res.json().get("prompt_id")
-    if not prompt_id:
-        raise AiConfigError(f"ComfyUI 未返回 prompt_id ({prompt_url})")
-
     if on_progress:
         on_progress(0, "ComfyUI 已入队")
 
@@ -885,7 +1073,32 @@ async def _queue_and_poll(
     httpx_logger = logging.getLogger("httpx")
     previous_httpx_level = httpx_logger.level
     httpx_logger.setLevel(logging.WARNING)
-    listener = asyncio.create_task(_listen_comfy_progress(base, client_id, prompt_id, on_progress))
+    ws_ready = asyncio.Event()
+    # 先挂上 websocket 再 POST：progress_state 只发给 client_id，晚连会丢采样条。
+    listener = asyncio.create_task(
+        _listen_comfy_progress(
+            base,
+            client_id,
+            None,
+            on_progress,
+            expected_steps=expected_steps,
+            ready=ws_ready,
+        )
+    )
+    try:
+        await asyncio.wait_for(ws_ready.wait(), timeout=3)
+    except TimeoutError:
+        logger.debug("ComfyUI websocket 未在 3s 内就绪，继续提交 prompt")
+
+    logger.info("ComfyUI POST %s (nodes=%s)", prompt_url, len(prompt))
+    res = await client.post(prompt_url, json={"prompt": prompt, "client_id": client_id}, timeout=60)
+    if not res.is_success:
+        listener.cancel()
+        raise AiConfigError(f"ComfyUI 提交失败 ({prompt_url}): {res.text}")
+    prompt_id = res.json().get("prompt_id")
+    if not prompt_id:
+        listener.cancel()
+        raise AiConfigError(f"ComfyUI 未返回 prompt_id ({prompt_url})")
     try:
         return await _poll_history(
             client,
@@ -1049,7 +1262,8 @@ async def run_comfy_image(
                 upload_list = reference_sources or ([source] if source else [])
                 for idx, img in enumerate(upload_list):
                     raw, _ = await _load_media_source(img)
-                    raw = _resize_image_bytes(raw, width, height)
+                    # 比例差大时 contain，避免 9:16 定妆被 16:9 首帧裁掉头
+                    raw = _resize_image_bytes(raw, width, height, fit="auto")
                     b64 = base64.b64encode(raw).decode("ascii")
                     logger.info("ComfyUI POST upload %s (ref %s/%s)", upload_url, idx + 1, len(upload_list))
                     name = await _upload_image(
@@ -1078,6 +1292,7 @@ async def run_comfy_image(
                     max_polls=COMFYUI_MAX_POLLS_IMAGE,
                     poll_interval=COMFYUI_POLL_INTERVAL_SEC,
                     on_progress=on_progress,
+                    expected_steps=steps,
                 )
     except AiConfigError as exc:
         logger.warning("ComfyUI image failed base=%s: %s", base, exc)
@@ -1108,7 +1323,9 @@ async def run_comfy_video(
     model = _pick_model(registry, model_id, "video")
     params = model.get("params") or {}
     workflow_name = params.get("workflowName") or model.get("apiModel") or model.get("id")
-    steps = int(params.get("steps") or 20)
+    steps = int(params.get("steps") or payload.get("steps") or 20)
+    if payload.get("steps") is not None:
+        steps = int(payload["steps"])
     aspect_ratio = payload.get("aspectRatio") or params.get("defaultAspectRatio") or "16:9"
     duration = float(payload.get("duration") or params.get("defaultDuration") or 5)
     is_minimax = "minimax" in str(workflow_name).lower()
@@ -1173,6 +1390,7 @@ async def run_comfy_video(
                 max_polls=COMFYUI_MAX_POLLS_VIDEO,
                 poll_interval=2.0,
                 on_progress=on_progress,
+                expected_steps=steps,
             )
 
     stored = _store_generated_media(

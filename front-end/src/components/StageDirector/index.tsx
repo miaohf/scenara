@@ -21,6 +21,7 @@ import {
   buildKeyframePromptWithAI,
   buildVideoPrompt,
   extractBasePrompt,
+  sanitizeKeyframeBasePrompt,
   generateId,
   convertImageToBase64,
   createKeyframe,
@@ -345,20 +346,21 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     const kfId = existingKf?.id || generateId(`kf-${shot.id}-${type}`);
     const startKf = shot.keyframes?.find(k => k.type === 'start');
     
+    const visualStyle = project.visualStyle || project.scriptData?.visualStyle || '3d-animation';
     const scriptContext = buildShotScriptContext(shot, project.scriptData, type);
-    const rawBasePrompt = existingKf?.visualPrompt 
+    const extracted = existingKf?.visualPrompt
       ? extractBasePrompt(existingKf.visualPrompt, scriptContext)
       : scriptContext;
+    const rawBasePrompt =
+      sanitizeKeyframeBasePrompt(extracted, visualStyle) || scriptContext;
 
     const continuityHint = type === 'end' && startKf?.visualPrompt
-      ? `【连贯性约束】结束帧必须与起始帧保持同一角色身份、服装主体、场景锚点与光照逻辑，并在构图和动作结果上体现明确变化。起始帧参考：${extractBasePrompt(startKf.visualPrompt, buildShotScriptContext(shot, project.scriptData, 'start')).slice(0, 200)}`
+      ? `【连贯性约束】结束帧必须与起始帧保持同一角色身份、服装主体、场景锚点与光照逻辑，并在构图和动作结果上体现明确变化。起始帧参考：${sanitizeKeyframeBasePrompt(extractBasePrompt(startKf.visualPrompt, buildShotScriptContext(shot, project.scriptData, 'start')), visualStyle).slice(0, 200)}`
       : '';
 
     const basePrompt = continuityHint && !rawBasePrompt.includes('【连贯性约束】')
       ? `${rawBasePrompt}\n\n${continuityHint}`
       : rawBasePrompt;
-    
-    const visualStyle = project.visualStyle || project.scriptData?.visualStyle || '3d-animation';
     const negativePrompt = buildShotNegativePrompt(shot, visualStyle);
 
     // 获取道具信息用于提示词注入
@@ -447,10 +449,10 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       `Generate ${type} keyframe`
     );
 
-    // 立即设置生成状态，显示loading
+    // 进入生成中，但保留已有预览图；批量入队不挂结果回写，空掉会导致灰卡片。
     updateShot(shot.id, (s) => {
       const generatingKeyframe = {
-        ...createKeyframe(kfId, type, prompt, undefined, 'generating'),
+        ...createKeyframe(kfId, type, prompt, existingKf?.imageUrl, 'generating'),
         promptVersions,
       };
       return updateKeyframeInShot(s, type, generatingKeyframe);

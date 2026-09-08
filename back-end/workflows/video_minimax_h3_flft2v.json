@@ -6,13 +6,22 @@
       "format.codec": "auto",
       "codec": "auto",
       "video": [
-        "130",
+        "105:91",
         0
       ]
     },
     "class_type": "SaveVideo",
     "_meta": {
       "title": "Save Video"
+    }
+  },
+  "114": {
+    "inputs": {
+      "image": "example.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load First Frame"
     }
   },
   "115": {
@@ -33,7 +42,16 @@
       "title": "Height"
     }
   },
-  "119": {
+  "127": {
+    "inputs": {
+      "image": "example.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Last Frame"
+    }
+  },
+  "105:11": {
     "inputs": {
       "vae_name": "minimax_h3_video_vae_fp16.safetensors"
     },
@@ -42,7 +60,7 @@
       "title": "Load Video VAE"
     }
   },
-  "120": {
+  "105:24": {
     "inputs": {
       "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
     },
@@ -51,14 +69,14 @@
       "title": "Load Audio VAE"
     }
   },
-  "121": {
+  "105:23": {
     "inputs": {
       "samples": [
-        "125",
+        "105:14",
         0
       ],
       "vae": [
-        "120",
+        "105:24",
         0
       ]
     },
@@ -67,14 +85,14 @@
       "title": "VAE Decode Audio"
     }
   },
-  "122": {
+  "105:10": {
     "inputs": {
       "samples": [
-        "125",
+        "105:14",
         0
       ],
       "vae": [
-        "119",
+        "105:11",
         0
       ]
     },
@@ -83,20 +101,20 @@
       "title": "VAE Decode"
     }
   },
-  "123": {
+  "105:17": {
     "inputs": {
-      "sampler_name": "res_multistep"
+      "sampler_name": "euler"
     },
     "class_type": "KSamplerSelect",
     "_meta": {
       "title": "KSamplerSelect"
     }
   },
-  "124": {
+  "105:9": {
     "inputs": {
       "scheduler": "simple",
       "steps": [
-        "136",
+        "105:123",
         0
       ],
       "denoise": 1,
@@ -110,26 +128,26 @@
       "title": "BasicScheduler"
     }
   },
-  "125": {
+  "105:14": {
     "inputs": {
       "noise": [
-        "129",
+        "105:15",
         0
       ],
       "guider": [
-        "126",
+        "105:16",
         0
       ],
       "sampler": [
-        "123",
+        "105:17",
         0
       ],
       "sigmas": [
-        "124",
+        "105:9",
         0
       ],
       "latent_image": [
-        "131",
+        "105:104",
         1
       ]
     },
@@ -138,14 +156,14 @@
       "title": "SamplerCustomAdvanced"
     }
   },
-  "126": {
+  "105:16": {
     "inputs": {
       "model": [
         "188",
         0
       ],
       "conditioning": [
-        "131",
+        "105:104",
         0
       ]
     },
@@ -154,7 +172,7 @@
       "title": "Basic Guider"
     }
   },
-  "127": {
+  "105:6": {
     "inputs": {
       "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
       "weight_dtype": "default"
@@ -164,7 +182,7 @@
       "title": "Load Diffusion Model"
     }
   },
-  "128": {
+  "105:13": {
     "inputs": {
       "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
       "type": "minimax",
@@ -175,7 +193,7 @@
       "title": "Load CLIP"
     }
   },
-  "129": {
+  "105:15": {
     "inputs": {
       "noise_seed": 1
     },
@@ -184,17 +202,17 @@
       "title": "RandomNoise"
     }
   },
-  "130": {
+  "105:91": {
     "inputs": {
       "fps": 24,
       "bit_depth": 8,
       "color_space": "sRGB",
       "images": [
-        "122",
+        "105:10",
         0
       ],
       "audio": [
-        "121",
+        "105:23",
         0
       ]
     },
@@ -203,12 +221,9 @@
       "title": "Create Video"
     }
   },
-  "131": {
+  "105:104": {
     "inputs": {
-      "prompt": [
-        "138",
-        0
-      ],
+      "prompt": "Cinematic look matching the provided first frame.\n\nScene overview: animate naturally from the first-frame composition. Keep subject identity, lighting, and environment consistent.\n\nTimeline (5s total):\n[0s-2.5s] Hold the opening composition from the first frame, begin smooth natural motion.\n[2.5s-5s] Continue motion with stable identity and lighting.\n\nCamera: stable framing with gentle motivated movement, no abrupt cuts.\n\nAudio: ambient environmental sound only. No narrator voiceover, no subtitles or on-screen text.",
       "width": [
         "115",
         0
@@ -218,19 +233,23 @@
         0
       ],
       "length": [
-        "132",
+        "105:107",
         1
       ],
       "clip": [
-        "128",
+        "105:13",
         0
       ],
       "vae": [
-        "119",
+        "105:11",
         0
       ],
       "first_frame": [
-        "141",
+        "114",
+        0
+      ],
+      "last_frame": [
+        "127",
         0
       ]
     },
@@ -239,11 +258,11 @@
       "title": "MiniMax H3 Image to Video"
     }
   },
-  "132": {
+  "105:107": {
     "inputs": {
       "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17",
       "values.a": [
-        "133",
+        "105:111",
         0
       ]
     },
@@ -252,7 +271,7 @@
       "title": "Math Expression"
     }
   },
-  "133": {
+  "105:111": {
     "inputs": {
       "value": 5
     },
@@ -261,12 +280,12 @@
       "title": "Float (duration)"
     }
   },
-  "134": {
+  "105:121": {
     "inputs": {
-      "lora_name": "minimax_h3_turbo_4step_ckpt500_pruned_comfyui.safetensors",
+      "lora_name": "minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
       "strength_model": 1,
       "model": [
-        "127",
+        "105:6",
         0
       ]
     },
@@ -275,18 +294,18 @@
       "title": "Load Turbo LoRA"
     }
   },
-  "135": {
+  "105:122": {
     "inputs": {
       "switch": [
-        "139",
+        "105:126",
         0
       ],
       "on_false": [
-        "127",
+        "105:6",
         0
       ],
       "on_true": [
-        "134",
+        "105:121",
         0
       ]
     },
@@ -295,18 +314,18 @@
       "title": "If/Else Switch (Model)"
     }
   },
-  "136": {
+  "105:123": {
     "inputs": {
       "switch": [
-        "139",
+        "105:126",
         0
       ],
       "on_false": [
-        "137",
+        "105:124",
         0
       ],
       "on_true": [
-        "143",
+        "105:125",
         0
       ]
     },
@@ -315,7 +334,7 @@
       "title": "If/Else Switch (Steps)"
     }
   },
-  "137": {
+  "105:124": {
     "inputs": {
       "value": 20
     },
@@ -324,43 +343,7 @@
       "title": "Int (steps full)"
     }
   },
-  "138": {
-    "inputs": {
-      "value": "Cinematic look matching the provided first frame.\n\nScene overview: animate naturally from the first-frame composition. Keep subject identity, lighting, and environment consistent.\n\nTimeline (5s total):\n[0s-2.5s] Hold the opening composition from the first frame, begin smooth natural motion.\n[2.5s-5s] Continue motion with stable identity and lighting.\n\nCamera: stable framing with gentle motivated movement, no abrupt cuts.\n\nAudio: ambient environmental sound only. No narrator voiceover, no subtitles or on-screen text."
-    },
-    "class_type": "PrimitiveStringMultiline",
-    "_meta": {
-      "title": "Prompt"
-    }
-  },
-  "139": {
-    "inputs": {
-      "value": false
-    },
-    "class_type": "PrimitiveBoolean",
-    "_meta": {
-      "title": "Boolean (Enable Turbo LoRA)"
-    }
-  },
-  "141": {
-    "inputs": {
-      "image": "example.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Load First Frame"
-    }
-  },
-  "142": {
-    "inputs": {
-      "image": "example.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Load Last Frame"
-    }
-  },
-  "143": {
+  "105:125": {
     "inputs": {
       "value": 8
     },
@@ -369,12 +352,21 @@
       "title": "Int (steps turbo)"
     }
   },
+  "105:126": {
+    "inputs": {
+      "value": true
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Boolean (Enable Turbo LoRA)"
+    }
+  },
   "187": {
     "inputs": {
-      "shift_video": 12,
-      "shift_audio": 6,
+      "shift_video": 6,
+      "shift_audio": 3,
       "model": [
-        "135",
+        "105:122",
         0
       ]
     },

@@ -144,6 +144,8 @@ export interface Character {
   gender: string;
   age: string;
   personality: string;
+  /** 物种/形态，如 human、黑背幼犬、拟人棕猫。缺省时按文本推断。 */
+  species?: string;
   visualPrompt?: string;
   promptVersions?: PromptVersion[]; // Prompt edit history with rollback support
   negativePrompt?: string;
@@ -333,6 +335,8 @@ export interface ArtDirection {
   moodKeywords: string[];
   /** 一段统一风格的文字锚点描述，所有提示词生成时注入 */
   consistencyAnchors: string;
+  /** 生成该文档时的视觉风格 id，换风格后必须重建 */
+  visualStyle?: string;
 }
 
 export interface ScriptData {

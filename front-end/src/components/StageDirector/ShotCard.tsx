@@ -1,9 +1,48 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Image as ImageIcon, Video, Trash2, Loader2, Clock3, CircleAlert } from 'lucide-react';
 import { Shot } from '../../types';
 import { getShotDisplayLabel } from '../../services/storyboardIdUtils';
 import { useGenerationQueue } from '../../contexts/GenerationQueueContext';
 import { formatJobProgressLabel, resolveShotKeyframeBadge, resolveShotVideoBadge } from '../../services/generationQueue';
+
+const ShotThumb: React.FC<{ url: string; alt: string }> = ({ url, alt }) => {
+  const [failed, setFailed] = useState(false);
+  const [retry, setRetry] = useState(0);
+
+  useEffect(() => {
+    setFailed(false);
+    setRetry(0);
+  }, [url]);
+
+  useEffect(() => {
+    if (!failed || retry >= 2) return;
+    const timer = window.setTimeout(() => {
+      setFailed(false);
+      setRetry((n) => n + 1);
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [failed, retry]);
+
+  if (failed && retry >= 2) {
+    return (
+      <div className="absolute inset-0 flex flex-col items-center justify-center text-[var(--text-muted)]">
+        <ImageIcon className="w-8 h-8 opacity-20 mb-1" />
+        <span className="text-[10px] text-[var(--error)]">无法预览</span>
+      </div>
+    );
+  }
+
+  const src = retry > 0 ? `${url}${url.includes('?') ? '&' : '?'}_r=${retry}` : url;
+  return (
+    <img
+      key={src}
+      src={src}
+      className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+      alt={alt}
+      onError={() => setFailed(true)}
+    />
+  );
+};
 
 interface ShotCardProps {
   shot: Shot;
@@ -74,11 +113,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
       {/* Thumbnail */}
       <div className="aspect-video bg-[var(--bg-elevated)] relative overflow-hidden">
         {hasImage ? (
-          <img 
-            src={sKf!.imageUrl} 
-            className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" 
-            alt={`Shot ${index + 1}`}
-          />
+          <ShotThumb url={sKf!.imageUrl!} alt={`Shot ${index + 1}`} />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-muted)]">
             <ImageIcon className="w-8 h-8 opacity-20" />

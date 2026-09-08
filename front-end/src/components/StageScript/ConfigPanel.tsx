@@ -24,6 +24,7 @@ interface Props {
   onLanguageChange: (value: string) => void;
   onModelChange: (value: string) => void;
   onVisualStyleChange: (value: string) => void;
+  onVisualStylePreview?: (value: string) => void;
   onCustomDurationChange: (value: string) => void;
   onCustomModelChange: (value: string) => void;
   onCustomStyleChange: (value: string) => void;
@@ -67,6 +68,7 @@ const ConfigPanel: React.FC<Props> = ({
   onLanguageChange,
   onModelChange,
   onVisualStyleChange,
+  onVisualStylePreview,
   onCustomDurationChange,
   onCustomModelChange,
   onCustomStyleChange,
@@ -191,6 +193,8 @@ const ConfigPanel: React.FC<Props> = ({
           options={VISUAL_STYLE_OPTIONS}
           value={visualStyle}
           onChange={onVisualStyleChange}
+          onPreviewChange={onVisualStylePreview}
+          previewOnly
           customInput={customStyleInput}
           onCustomInputChange={onCustomStyleChange}
           customPlaceholder="输入风格（如 水彩、像素、写实）"

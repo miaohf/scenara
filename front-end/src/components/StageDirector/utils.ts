@@ -234,7 +234,9 @@ export const routeVideoFrameInputs = (
  * 并通过 hasTurnaround 标记告知调用方，以便在提示词中正确描述。
  */
 export const getRefImagesForShot = (shot: Shot, scriptData: ProjectState['scriptData']): RefImagesResult => {
-  const primaryImages: string[] = [];
+  const characterImages: string[] = [];
+  const sceneImages: string[] = [];
+  const propImages: string[] = [];
   const turnaroundImages: string[] = [];
 
   if (!scriptData) {
@@ -246,51 +248,54 @@ export const getRefImagesForShot = (shot: Shot, scriptData: ProjectState['script
     };
   }
 
-  // 1. 场景参考图（环境/氛围） - 优先级最高
-  const scene = findSceneByIdCompat(scriptData.scenes, shot.sceneId);
-  if (scene?.referenceImage) {
-    primaryImages.push(scene.referenceImage);
-  }
+  const extraCharacterImages: string[] = [];
 
-  // 2. 角色参考图（外观）
+  // 1. 主角色定妆 = Image 1 身份锁。群像/配角定妆不要插在场景前面，否则 Klein Edit 会改发型、冲掉环境。
   if (shot.characters) {
     shot.characters.forEach(charId => {
       const char = scriptData.characters.find(c => String(c.id) === String(charId));
       if (!char) return;
 
-      // 检查是否为此镜头选择了特定变体
       const varId = shot.characterVariations?.[charId];
-      if (varId) {
-        const variation = char.variations?.find(v => v.id === varId);
-        if (variation?.referenceImage) {
-          primaryImages.push(variation.referenceImage);
-          return; // 使用变体图片而不是基础图片
+      const lookbook = varId
+        ? (char.variations?.find(v => v.id === varId)?.referenceImage || char.referenceImage)
+        : char.referenceImage;
+      if (lookbook) {
+        if (characterImages.length === 0) {
+          characterImages.push(lookbook);
+        } else {
+          extraCharacterImages.push(lookbook);
         }
       }
 
-      // 基础参考图
-      if (char.referenceImage) {
-        primaryImages.push(char.referenceImage);
-      }
-
-      // 九宫格造型图属于“增强参考”，只在还有余量时再补充
       if (char.turnaround?.status === 'completed' && char.turnaround.imageUrl) {
         turnaroundImages.push(char.turnaround.imageUrl);
       }
     });
   }
 
-  // 3. 道具参考图（物品一致性）
+  // 2. 场景参考图紧跟身份锁，让环境成为 Image 2
+  const scene = findSceneByIdCompat(scriptData.scenes, shot.sceneId);
+  if (scene?.referenceImage) {
+    sceneImages.push(scene.referenceImage);
+  }
+
+  // 3. 道具参考图
   if (shot.props && scriptData.props) {
     shot.props.forEach(propId => {
       const prop = scriptData.props.find(p => String(p.id) === String(propId));
       if (prop?.referenceImage) {
-        primaryImages.push(prop.referenceImage);
+        propImages.push(prop.referenceImage);
       }
     });
   }
 
-  const dedupedPrimary = dedupeImageRefs(primaryImages);
+  const dedupedPrimary = dedupeImageRefs([
+    ...characterImages,
+    ...sceneImages,
+    ...propImages,
+    ...extraCharacterImages,
+  ]);
   const primarySet = new Set(dedupedPrimary);
   const dedupedTurnaround = dedupeImageRefs(turnaroundImages).filter((img) => !primarySet.has(img));
   const remainingSlots = Math.max(0, MAX_SHOT_REFERENCE_IMAGES - dedupedPrimary.length);
@@ -395,6 +400,8 @@ export const buildShotScriptContext = (
       if (names.length > 0) {
         lines.push(`出镜角色：${names.map(c => c.name).join('、')}`);
         names.forEach(char => {
+          // 已有定妆图时不要把 visualPrompt 再写进镜头：文字发型/服装会和照片打架
+          if (char.referenceImage) return;
           const look = String(char.visualPrompt || char.coreFeatures || '').trim();
           if (look) {
             lines.push(`${char.name}外观：${look.slice(0, 280)}`);
@@ -449,8 +456,10 @@ export const buildKeyframePrompt = (
     ? startFrameGuideTemplate
     : endFrameGuideTemplate;
 
-  // 角色一致性要求
-  const characterConsistencyGuide = characterConsistencyTemplate;
+  // 角色一致性要求（定妆不含英雄道具，镜头阶段再按参考图加入）
+  const characterConsistencyGuide = `${characterConsistencyTemplate}
+
+【定妆说明】定妆图锁定主体外观和身体结构，不含英雄道具。若本镜头列出了道具，按道具参考图加入；未列出则不要发明随身道具。不要因为定妆图没有某件道具就禁止它出现，也不要另发明一件不同的道具。`;
 
   // 道具一致性要求（仅在有道具时添加）
   let propConsistencyGuide = '';
@@ -855,6 +864,34 @@ Any spoken audio must be in-scene character dialogue only; no narrator voiceover
   return appendCapabilityNotes(routedPrompt);
 };
 
+const LIVE_ACTION_STYLE_NOISE: RegExp[] = [
+  /live-action\s+cinematic\s+framing\s+translated\s+into\s+premium\s+hand-drawn\s+2d\s+animation/gi,
+  /premium\s+hand-drawn\s+2d\s+animation(?:\s+with\s+live-action\s+cinematic\s+\w+)?/gi,
+  /\bhand-drawn(?:\s+style)?\b/gi,
+  /\b2d\s+animation\b/gi,
+  /\bcel[-\s]?shad(?:ed|ing)\b/gi,
+  /\bwatercolor(?:\s+paper)?(?:\s+grain|\s+washes)?\b/gi,
+  /\b(?:pixar|dreamworks)(?:\s*\/\s*(?:pixar|dreamworks))?\b/gi,
+  /\bsix-head(?:-tall)?\b/gi,
+  /\brounded\s+(?:brown-gray\s+)?linework\b/gi,
+  /\bcartoon\b/gi,
+];
+
+/** 换风格后分镜 visualPrompt 常残留旧介质词，和当前风格、定妆照片冲突。 */
+export const sanitizeKeyframeBasePrompt = (text: string, visualStyle: string): string => {
+  let next = String(text || '');
+  if (visualStyle === 'live-action') {
+    for (const pattern of LIVE_ACTION_STYLE_NOISE) {
+      next = next.replace(pattern, '');
+    }
+  }
+  return next
+    .replace(/\s*,\s*,+/g, ',')
+    .replace(/^[,\s;，；]+|[,\s;，；]+$/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+};
+
 /**
  * 从现有提示词中提取基础部分（移除追加的样式信息）
  */
@@ -1083,8 +1120,10 @@ export const buildPromptFromNineGridPanel = (
     layout?.panelCount
   );
   
-  // 角色一致性要求
-  const characterConsistencyGuide = characterConsistencyTemplate;
+  // 角色一致性要求（定妆不含英雄道具，镜头阶段再按参考图加入）
+  const characterConsistencyGuide = `${characterConsistencyTemplate}
+
+【定妆说明】定妆图锁定主体外观和身体结构，不含英雄道具。若本镜头列出了道具，按道具参考图加入；未列出则不要发明随身道具。不要因为定妆图没有某件道具就禁止它出现，也不要另发明一件不同的道具。`;
 
   // 道具一致性要求（仅在有道具时添加）
   let propConsistencyGuide = '';

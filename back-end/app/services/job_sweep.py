@@ -38,7 +38,8 @@ def _celery_known_job_ids() -> set[str] | None:
             return set()
         ping = inspect.ping() or {}
         if not ping:
-            return set()
+            # 探测超时不等于没有 Worker。空集合会把正在跑的任务误判成孤儿。
+            return None
         known: set[str] = set()
         for bucket in (inspect.active() or {}, inspect.reserved() or {}, inspect.scheduled() or {}):
             for tasks in (bucket or {}).values():

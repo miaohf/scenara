@@ -1,5 +1,5 @@
 import React from 'react';
-import { User, Check, Shirt, Trash2, Edit2, AlertCircle, FolderPlus, Grid3x3, Link2, Upload, X } from 'lucide-react';
+import { User, Check, Shirt, Trash2, Edit2, AlertCircle, FolderPlus, Grid3x3, Link2, Upload, X, Loader2 } from 'lucide-react';
 import { Character } from '../../types';
 import PromptEditor from './PromptEditor';
 import ImageUploadButton from './ImageUploadButton';
@@ -20,7 +20,7 @@ interface CharacterCardProps {
   onOpenTurnaround: () => void;
   onImageClick: (imageUrl: string) => void;
   onDelete: () => void;
-  onUpdateInfo: (updates: { name?: string; gender?: string; age?: string; personality?: string }) => void;
+  onUpdateInfo: (updates: { name?: string; gender?: string; age?: string; personality?: string; species?: string }) => void;
   onAddToLibrary: () => void;
   onReplaceFromLibrary: () => void;
 }
@@ -62,17 +62,30 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
       )}
       <div className="flex gap-4 p-4 pb-0">
         {/* Character Image */}
-        <div className="w-[19.6rem] flex-shrink-0">
+        <div className="w-[13.5rem] flex-shrink-0">
           <div 
-            className="aspect-video bg-[var(--bg-elevated)] relative rounded-lg overflow-hidden cursor-pointer"
+            className="aspect-[9/16] bg-[var(--bg-elevated)] relative rounded-lg overflow-hidden cursor-pointer"
             onClick={() => character.referenceImage && onImageClick(character.referenceImage)}
           >
             {character.referenceImage ? (
               <>
-                <img src={character.referenceImage} alt={character.name} className="w-full h-full object-cover" />
-                <div className="absolute top-1.5 right-1.5 p-1 bg-[var(--accent)] text-[var(--text-primary)] rounded shadow-lg">
-                  <Check className="w-3 h-3" />
-                </div>
+                <img
+                  key={character.referenceImage}
+                  src={character.referenceImage}
+                  alt={character.name}
+                  className="w-full h-full object-contain"
+                />
+                {isGenerating && (
+                  <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center gap-1">
+                    <Loader2 className="w-6 h-6 animate-spin text-white" />
+                    <span className="text-[10px] text-white font-bold tracking-wider">重新出图中</span>
+                  </div>
+                )}
+                {!isGenerating && (
+                  <div className="absolute top-1.5 right-1.5 p-1 bg-[var(--accent)] text-[var(--text-primary)] rounded shadow-lg">
+                    <Check className="w-3 h-3" />
+                  </div>
+                )}
               </>
             ) : (
               <div className="w-full h-full flex flex-col items-center justify-center text-[var(--text-muted)] p-2 text-center">
@@ -153,6 +166,20 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
                     className="text-[10px] text-[var(--text-tertiary)] cursor-pointer hover:text-[var(--text-secondary)] transition-colors"
                   >
                     {value}
+                  </span>
+                )}
+              />
+              <InlineEditableText
+                value={character.species || ''}
+                onSave={(next) => onUpdateInfo({ species: next })}
+                inputClassName="text-[10px] text-[var(--text-primary)] font-mono bg-[var(--bg-hover)] border border-[var(--border-secondary)] px-2 py-0.5 rounded focus:outline-none focus:border-[var(--accent)] w-24"
+                renderDisplay={(value, startEdit) => (
+                  <span
+                    onClick={startEdit}
+                    className="text-[10px] text-[var(--text-tertiary)] font-mono bg-[var(--bg-elevated)] px-2 py-0.5 rounded cursor-pointer hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)] transition-colors"
+                    title="物种，如 human / 黑背幼犬 / 拟人棕猫"
+                  >
+                    {value || '物种'}
                   </span>
                 )}
               />
@@ -263,7 +290,7 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
               onClick={() => onImageClick(shapeReferenceImage)}
               className="mt-2 w-full flex items-center gap-2 p-2 rounded border border-[var(--border-primary)] hover:border-[var(--border-secondary)] transition-colors text-left"
             >
-              <img src={shapeReferenceImage} alt="角色参考图" className="w-10 h-10 rounded object-cover" />
+              <img src={shapeReferenceImage} alt="角色参考图" className="w-10 h-10 rounded object-cover object-top" />
               <span className="text-[10px] text-[var(--text-secondary)]">已设置角色参考图，下次生成将生效</span>
             </button>
           )}

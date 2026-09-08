@@ -21,7 +21,8 @@ const nextConfig: NextConfig = {
     root: path.join(__dirname),
   },
   typescript: {
-    // Legacy studio 组件逐步收紧类型，迁移期间跳过
+    // 现有 legacy studio 代码仍有存量类型错误；通过 `npm run typecheck`
+    // 显式检查，待清理完成后再切换为构建阻断，避免当前开发构建立即失效。
     ignoreBuildErrors: true,
   },
   // /api → 后端 rewrite 默认仅 30s；MiniMax H3 等本地视频可能超过 1 小时

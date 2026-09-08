@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
 
 from app.core.config import get_settings
@@ -16,6 +16,7 @@ from app.services.storage import (
     generate_presigned_upload_url,
     local_media_path,
     media_content_type,
+    parse_signed_media_uri,
     read_media_bytes,
     verify_media_signature,
 )
@@ -25,6 +26,22 @@ router = APIRouter(prefix="/v1/media", tags=["media"])
 # 生成图/视频以签名 URL 存进 episode payload，浏览器 <img src> 无法携带 Authorization，
 # 因此这条路由用 HMAC 签名校验代替 Bearer 鉴权。必须声明在 catch-all 之前。
 _IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
+
+
+@router.api_route("/verify", methods=["GET", "HEAD"])
+async def verify_media_access(
+    uri: Annotated[str | None, Query(description="原始媒体 URI（含 query）")] = None,
+    x_original_uri: Annotated[str | None, Header()] = None,
+) -> Response:
+    """签名校验（不读文件）。网关或调试可用；2xx 放行，403 拒绝。"""
+    original = uri or x_original_uri or ""
+    parsed = parse_signed_media_uri(original)
+    if parsed is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid media URI")
+    media_key, exp, sig = parsed
+    if not verify_media_signature(media_key, exp, sig):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid media signature")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/raw/{media_key:path}")

@@ -32,6 +32,7 @@ interface SidebarProps {
   currentStage: string;
   setStage: (stage: 'script' | 'assets' | 'director' | 'export' | 'prompts') => void;
   onExit: () => void;
+  onGoHome?: () => void;
   projectName?: string;
   onShowModelConfig?: () => void;
   isNavigationLocked?: boolean;
@@ -67,7 +68,7 @@ const JOB_KIND_LABEL: Record<JobKind, string> = {
   other: '任务',
 };
 
-const Sidebar: React.FC<SidebarProps> = ({ currentStage, setStage, onExit, projectName, onShowModelConfig, isNavigationLocked, isBackgroundBusy, episode, episodeInfo, onGoToProject }) => {
+const Sidebar: React.FC<SidebarProps> = ({ currentStage, setStage, onExit, onGoHome, projectName, onShowModelConfig, isNavigationLocked, isBackgroundBusy, episode, episodeInfo, onGoToProject }) => {
   const { theme, toggleTheme } = useTheme();
   const { jobs, runningCount, queuedCount, upsertJob } = useGenerationQueue();
   const [cancellingIds, setCancellingIds] = useState<string[]>([]);
@@ -152,16 +153,22 @@ const Sidebar: React.FC<SidebarProps> = ({ currentStage, setStage, onExit, proje
   return (
     <aside className="w-72 bg-[var(--bg-base)] border-r border-[var(--border-primary)] h-screen fixed left-0 top-0 flex flex-col z-50 select-none">
       <div className="p-6 border-b border-[var(--border-subtle)]">
-        <div className="flex items-center gap-3 mb-6">
+        <button
+          type="button"
+          onClick={onGoHome || onExit}
+          className="mb-6 flex items-center gap-3 text-left transition-opacity hover:opacity-80"
+          title="返回项目列表"
+        >
           <img src="/logo.png" alt="Logo" className="w-8 h-8 flex-shrink-0" />
           <div className="overflow-hidden">
             <h1 className="text-sm font-bold text-[var(--text-primary)] tracking-wider">SCENARA</h1>
           </div>
-        </div>
+        </button>
         <button
+          type="button"
           onClick={onExit}
-          className={`flex items-center gap-2 transition-colors text-xs font-mono uppercase tracking-wide group ${isNavigationLocked ? 'text-[var(--text-muted)] opacity-50 cursor-not-allowed' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}`}
-          title={isNavigationLocked ? '剧本任务进行中，离开会中断未完成的文本' : undefined}
+          className="flex items-center gap-2 text-xs font-mono uppercase tracking-wide text-[var(--text-tertiary)] transition-colors group hover:text-[var(--text-primary)]"
+          title={isNavigationLocked ? '离开会中断未完成的剧本文本；生图/视频会在后台继续' : undefined}
         >
           <ChevronLeft className="w-3 h-3 group-hover:-translate-x-1 transition-transform" />
           {episodeInfo ? '返回项目概览' : '返回项目列表'}
@@ -190,7 +197,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentStage, setStage, onExit, proje
         <div className="mx-4 mt-4 px-3 py-2.5 rounded-lg bg-[var(--warning)]/10 border border-[var(--warning)]/30">
           <div className="flex items-center gap-2">
             <Loader2 className="w-3.5 h-3.5 text-[var(--warning)] animate-spin flex-shrink-0" />
-            <span className="text-[10px] font-medium text-[var(--warning)] uppercase tracking-wide">剧本任务进行中</span>
+            <span className="text-[10px] font-medium text-[var(--warning)] uppercase tracking-wide">剧本任务进行中，仍可返回项目列表</span>
           </div>
         </div>
       )}

@@ -98,3 +98,5 @@ API 文档：http://localhost:8000/docs
 | `POST /v1/jobs` | 异步任务（可选；需 Redis + Celery Worker） |
 | `GET /v1/jobs/{id}` | 任务状态 |
 | `GET /v1/jobs/{id}/stream` | SSE 进度 |
+| `GET /v1/media/raw/{key}` | 本地媒体（HMAC 签名 URL；生产请走 nginx 直出） |
+| `GET /v1/media/verify` | 校验媒体 HMAC 签名，不读文件 |

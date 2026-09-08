@@ -49,6 +49,7 @@ const KeyframeImage: React.FC<{ url: string; alt: string; onClick: () => void }>
   return (
     <>
       <img
+        key={url}
         src={url}
         className="w-full h-full object-cover cursor-pointer transition-transform duration-300 group-hover:scale-105"
         onClick={onClick}

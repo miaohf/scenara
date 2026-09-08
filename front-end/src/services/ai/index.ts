@@ -41,10 +41,21 @@ export {
   VISUAL_STYLE_PROMPTS_CN,
   NEGATIVE_PROMPTS,
   SCENE_NEGATIVE_PROMPTS,
+  CHARACTER_CASTING_POSITIVE_LOCK,
+  CHARACTER_CASTING_NEGATIVE,
+  CHARACTER_IDENTITY_LOCK,
   getStylePrompt,
   getStylePromptCN,
   getNegativePrompt,
   getSceneNegativePrompt,
+  getCharacterCastingNegativePrompt,
+  listProjectPropNames,
+  stripProjectPropsFromPrompt,
+  buildCharacterLookbookPromptRules,
+  applyCharacterCastingPositivePrompt,
+  buildLookbookRegenerateVariation,
+  mergeCharacterCastingNegativePrompt,
+  resolveCharacterSpecies,
 } from './promptConstants';
 
 // 剧本处理服务
@@ -72,6 +83,7 @@ export {
   CHARACTER_TURNAROUND_LAYOUT,
   generateCharacterTurnaroundPanels,
   generateCharacterTurnaroundImage,
+  resolveCharacterCastingAspectRatio,
 } from './visualService';
 
 // 视频生成服务

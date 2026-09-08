@@ -111,19 +111,19 @@
       "vae": ["170:146", 0],
       "image1": ["41", 0]
     },
-    "class_type": "TextEncodeQwenImageEditPlus",
+    "class_type": "TextEncodeQwenImageEditPlus_lrzjason",
     "_meta": {
       "title": "Negative Conditioning"
     }
   },
   "170:151": {
     "inputs": {
-      "prompt": "Generate a cinematic keyframe matching the shot description. Picture 1–3 are optional reference images (scene / characters / props). Preserve identity, outfit, materials, and environment from the provided references while following the prompt for pose, camera, and action.",
+      "prompt": "Generate a cinematic keyframe matching the shot description. Picture 1 is the primary character lookbook. Later pictures are scene, props, or additional character lookbooks. Preserve identity, outfit, materials, and environment from the provided references while following the prompt for pose, camera, and action.",
       "clip": ["170:162", 0],
       "vae": ["170:146", 0],
       "image1": ["41", 0]
     },
-    "class_type": "TextEncodeQwenImageEditPlus",
+    "class_type": "TextEncodeQwenImageEditPlus_lrzjason",
     "_meta": {
       "title": "Positive Prompt"
     }

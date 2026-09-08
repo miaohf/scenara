@@ -41,7 +41,7 @@ def _update_job(job_id: str, **fields) -> None:
                 return
             if job.status == "completed" and incoming_status not in {None, "completed"}:
                 return
-            if job.status == "failed" and incoming_status not in {None, "completed", "failed"}:
+            if job.status == "failed" and incoming_status not in {None, "completed", "failed", "running"}:
                 return
             for key, value in fields.items():
                 setattr(job, key, value)
@@ -98,13 +98,25 @@ def run_ai_job(job_id: str, user_id: int, job_type: str, payload: dict) -> None:
     registry = _load_registry(user_id)
 
     def on_progress(progress: int, message: str) -> None:
-        if _job_status(job_id) in {"cancelled", "failed"}:
+        # 只有用户取消才停。sweep 可能把仍在跑的任务误标 failed，
+        # 这时拉回 running 并继续跑完。
+        current = _job_status(job_id)
+        if current == "cancelled":
             raise JobCancelled()
+        fields: dict = {"progress": progress, "message": message}
+        event: dict = {"progress": progress, "message": message}
+        if current == "failed":
+            fields["status"] = "running"
+            fields["error"] = None
+            event["status"] = "running"
         try:
-            _update_job(job_id, progress=progress, message=message)
+            _update_job(job_id, **fields)
         except Exception:
             logger.warning("任务 %s 进度写入失败，忽略", job_id, exc_info=True)
-        publish_job_event(job_id, {"progress": progress, "message": message})
+        try:
+            publish_job_event(job_id, event)
+        except Exception:
+            logger.warning("任务 %s 进度推送失败，忽略", job_id, exc_info=True)
 
     try:
         if job_type == "video":

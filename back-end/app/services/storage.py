@@ -13,6 +13,7 @@ import uuid
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
 import boto3
 from botocore.client import Config
@@ -183,7 +184,10 @@ def verify_media_signature(media_key: str, expires_at: int, signature: str) -> b
 
 
 def build_media_url(media_key: str, ttl_seconds: int | None = None) -> str:
-    """浏览器可直接渲染的 URL（经 Next `/api` rewrite 转发到本服务）。"""
+    """浏览器可直接渲染的 URL。
+
+    相对路径 ``/api/v1/media/raw/...``：经 nginx 直出磁盘，或回退到 Next rewrite → FastAPI。
+    """
     expires_at, signature = sign_media_key(media_key, ttl_seconds)
     prefix = get_settings().media_url_prefix.rstrip("/")
     return f"{prefix}/v1/media/raw/{media_key}?exp={expires_at}&sig={signature}"
@@ -201,3 +205,24 @@ def parse_media_url(value: str) -> str | None:
         return None
     media_key = path[index + len(marker) :]
     return media_key if is_safe_media_key(media_key) else None
+
+
+def parse_signed_media_uri(value: str) -> tuple[str, int, str] | None:
+    """从完整 URI（含 query）解析 media_key / exp / sig。供 nginx auth_request 使用。"""
+    text = (value or "").strip()
+    if not text:
+        return None
+    dummy = text if "://" in text.split("?", 1)[0] else f"http://local{text if text.startswith('/') else f'/{text}'}"
+    parsed = urlparse(dummy)
+    media_key = parse_media_url(unquote(parsed.path))
+    if not media_key:
+        return None
+    qs = parse_qs(parsed.query)
+    try:
+        exp = int((qs.get("exp") or ["0"])[0])
+    except ValueError:
+        return None
+    sig = (qs.get("sig") or [""])[0]
+    if not sig:
+        return None
+    return media_key, exp, sig

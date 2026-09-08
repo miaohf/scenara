@@ -1,0 +1,11 @@
+name: scenara
+
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: scenara-nginx
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../../back-end/data/media:/var/scenara/media:ro

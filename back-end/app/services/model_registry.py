@@ -122,7 +122,7 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
             "name": "ComfyUI MiniMax H3 FLF2V (本地)",
             "type": "video",
             "providerId": "comfyui-local",
-            "description": "本地 MiniMax H3 首尾帧图生视频，原生立体声音频",
+            "description": "本地 MiniMax H3 首尾帧图生视频，8-step 768p Turbo",
             "isBuiltIn": True,
             "isEnabled": True,
             "params": {
@@ -131,8 +131,8 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
                 "supportedAspectRatios": ["16:9", "9:16"],
                 "defaultDuration": 5,
                 "supportedDurations": [5, 10, 15],
-                "workflowName": "video_minimax_h3_flft2v",
-                "steps": 20,
+                "workflowName": "video_minimax_h3_i2v_new",
+                "steps": 8,
                 "supportsEndFrame": True,
                 "supportsAudio": False,
             },
@@ -317,6 +317,7 @@ def sanitize_registry(
     merged["providers"] = providers
 
     removed_model_ids: set[str] = set()
+    default_models = {m.get("id"): m for m in defaults.get("models") or [] if m.get("id")}
     models: list[dict[str, Any]] = []
     for model in merged.get("models") or []:
         mid = model.get("id") or ""
@@ -330,61 +331,44 @@ def sanitize_registry(
             changed = True
             continue
 
-        # 默认图片模型定妆：旧 Flux1 / Qwen T2I → FLUX.2 Klein 9B
-        if mid == "comfyui-flux-dev-fp8" and model.get("type") == "image":
+        # 只补齐空工作流，按该模型卡片自己的默认值；不把用户已选的 Qwen/Flux 改写到 Klein
+        if model.get("type") == "image":
+            fallback = dict((default_models.get(mid) or {}).get("params") or {})
             params = dict(model.get("params") or {})
-            casting = params.get("workflowName") or "flux-dev-fp8"
-            if casting in {
-                "flux-dev-fp8",
-                "flux_dev1_fp8_text_to_image",
-                "image_qwen_image_2512_with_2steps_lora",
-                "image_qwen_Image_2512",
-            }:
-                params.update(
-                    {
-                        "apiFormat": "comfyui",
-                        "workflowName": "image_flux2_text_to_image_9b",
-                        "steps": 20,
-                    }
-                )
-                model = {
-                    **model,
-                    "apiModel": "flux2-klein-9b",
-                    "name": "ComfyUI FLUX.2 Klein 9B (本地)",
-                    "params": params,
-                }
-                changed = True
-            # 补齐九宫格 / 关键帧专用工作流配置
-            params = dict(model.get("params") or {})
-            if not params.get("turnaroundWorkflowName"):
-                params["turnaroundWorkflowName"] = "qwen_image_edit_2511_fp8_character_turnaround"
-                params["turnaroundSteps"] = params.get("turnaroundSteps") or 4
-                model = {**model, "params": params}
-                changed = True
-            params = dict(model.get("params") or {})
-            kf = params.get("keyframeWorkflowName")
-            if not kf or kf in {
-                "image_qwen_image_edit_2511_flf",
-                "image_qwen_image_edit_2511",
-            }:
-                params["keyframeWorkflowName"] = "image_flux2_klein_image_edit_9b_base"
-                steps = params.get("keyframeSteps")
-                params["keyframeSteps"] = 20 if not steps or steps == 40 else steps
+            filled = False
+            if (not params.get("workflowName") or params.get("workflowName") == "flux-dev-fp8") and fallback.get(
+                "workflowName"
+            ):
+                params["workflowName"] = fallback["workflowName"]
+                if not params.get("steps") and fallback.get("steps"):
+                    params["steps"] = fallback["steps"]
+                filled = True
+            if not params.get("turnaroundWorkflowName") and fallback.get("turnaroundWorkflowName"):
+                params["turnaroundWorkflowName"] = fallback["turnaroundWorkflowName"]
+                params["turnaroundSteps"] = params.get("turnaroundSteps") or fallback.get("turnaroundSteps") or 4
+                filled = True
+            if not params.get("keyframeWorkflowName") and fallback.get("keyframeWorkflowName"):
+                params["keyframeWorkflowName"] = fallback["keyframeWorkflowName"]
+                if params.get("keyframeSteps") is None:
+                    params["keyframeSteps"] = fallback.get("keyframeSteps")
+                filled = True
+            if filled:
                 model = {**model, "params": params}
                 changed = True
 
-        if mid == "comfyui-flux-dev-fp8-legacy" and model.get("type") == "image":
+        if mid == "comfyui-minimax-h3-flft2v" and model.get("type") == "video":
             params = dict(model.get("params") or {})
-            if not params.get("keyframeWorkflowName"):
-                params["keyframeWorkflowName"] = "image_qwen_image_edit_2511_flf"
-                params["keyframeSteps"] = params.get("keyframeSteps") or 40
-                model = {**model, "params": params}
-                changed = True
-            if not params.get("turnaroundWorkflowName"):
-                params = dict(model.get("params") or {})
-                params["turnaroundWorkflowName"] = "qwen_image_edit_2511_fp8_character_turnaround"
-                params["turnaroundSteps"] = params.get("turnaroundSteps") or 4
-                model = {**model, "params": params}
+            old_workflow = params.get("workflowName") or ""
+            if old_workflow in {"", "video_minimax_h3_flft2v"}:
+                params["workflowName"] = "video_minimax_h3_i2v_new"
+                if params.get("steps") in {None, 20}:
+                    params["steps"] = 8
+                params["supportsEndFrame"] = True
+                model = {
+                    **model,
+                    "description": "本地 MiniMax H3 首尾帧图生视频，8-step 768p Turbo",
+                    "params": params,
+                }
                 changed = True
 
         models.append(model)

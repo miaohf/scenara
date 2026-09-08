@@ -17,6 +17,8 @@ import {
   ALL_BUILTIN_MODELS,
   DEFAULT_ACTIVE_MODELS,
   DEFAULT_CHAT_PARAMS,
+  DEFAULT_IMAGE_PARAMS_COMFYUI,
+  ImageModelParams,
   AspectRatio,
   VideoDuration,
   LOCAL_PROVIDER_IDS,
@@ -129,68 +131,46 @@ export const loadRegistry = (): ModelRegistryState => {
         chatModelAliasMigrated = true;
       }
 
-      // 定妆默认：旧 Flux1 / Qwen T2I → FLUX.2 Klein 9B；关键帧 / 九宫格仍走 Qwen Edit
+      // 只补齐空的 Comfy 工作流；已填写的定妆/关键帧以卡片展示为准，不再改写到 Klein
       parsed.models = parsed.models.map((model) => {
         if (model.type !== 'image') return model;
         const imageModel = model as ImageModelDefinition;
         const params = imageModel.params;
-        if (params?.apiFormat !== 'comfyui' && model.id !== 'comfyui-flux-dev-fp8' && model.id !== 'comfyui-flux-dev-fp8-legacy') {
+        if (
+          params?.apiFormat !== 'comfyui' &&
+          model.id !== 'comfyui-flux-dev-fp8' &&
+          model.id !== 'comfyui-flux-dev-fp8-legacy'
+        ) {
           return model;
         }
 
-        let next = imageModel;
+        const builtin = ALL_BUILTIN_MODELS.find((item) => item.id === model.id) as
+          | ImageModelDefinition
+          | undefined;
+        const fallback = (builtin?.params || DEFAULT_IMAGE_PARAMS_COMFYUI) as ImageModelParams;
+        const nextParams = { ...params };
         let changed = false;
 
-        if (model.id === 'comfyui-flux-dev-fp8') {
-          const castingWorkflow = params?.workflowName;
-          const shouldMigrateCasting =
-            !castingWorkflow ||
-            castingWorkflow === 'flux-dev-fp8' ||
-            castingWorkflow === 'flux_dev1_fp8_text_to_image' ||
-            castingWorkflow === 'image_qwen_image_2512_with_2steps_lora' ||
-            castingWorkflow === 'image_qwen_Image_2512';
-          if (shouldMigrateCasting) {
-            changed = true;
-            next = {
-              ...next,
-              apiModel: 'flux2-klein-9b',
-              name: 'ComfyUI FLUX.2 Klein 9B (本地)',
-              params: {
-                ...params,
-                apiFormat: 'comfyui',
-                workflowName: 'image_flux2_text_to_image_9b',
-                steps: 20,
-                turnaroundWorkflowName:
-                  params?.turnaroundWorkflowName || 'qwen_image_edit_2511_fp8_character_turnaround',
-                turnaroundSteps: params?.turnaroundSteps || 4,
-              },
-            };
-          }
-        }
-
-        const nextParams = { ...next.params };
-        if (!nextParams.turnaroundWorkflowName) {
-          nextParams.turnaroundWorkflowName = 'qwen_image_edit_2511_fp8_character_turnaround';
-          nextParams.turnaroundSteps = nextParams.turnaroundSteps || 4;
+        if ((!nextParams.workflowName || nextParams.workflowName === 'flux-dev-fp8') && fallback.workflowName) {
+          nextParams.workflowName = fallback.workflowName;
+          if (!nextParams.steps && fallback.steps) nextParams.steps = fallback.steps;
           changed = true;
         }
-        if (
-          !nextParams.keyframeWorkflowName ||
-          nextParams.keyframeWorkflowName === 'image_qwen_image_edit_2511_flf' ||
-          nextParams.keyframeWorkflowName === 'image_qwen_image_edit_2511'
-        ) {
-          nextParams.keyframeWorkflowName = 'image_flux2_klein_image_edit_9b_base';
-          nextParams.keyframeSteps =
-            !nextParams.keyframeSteps || nextParams.keyframeSteps === 40
-              ? 20
-              : nextParams.keyframeSteps;
+        if (!nextParams.turnaroundWorkflowName && fallback.turnaroundWorkflowName) {
+          nextParams.turnaroundWorkflowName = fallback.turnaroundWorkflowName;
+          nextParams.turnaroundSteps = nextParams.turnaroundSteps || fallback.turnaroundSteps || 4;
+          changed = true;
+        }
+        if (!nextParams.keyframeWorkflowName && fallback.keyframeWorkflowName) {
+          nextParams.keyframeWorkflowName = fallback.keyframeWorkflowName;
+          nextParams.keyframeSteps = nextParams.keyframeSteps || fallback.keyframeSteps;
           changed = true;
         }
         if (changed) {
           chatModelAliasMigrated = true;
-          return { ...next, params: nextParams };
+          return { ...imageModel, params: nextParams };
         }
-        return next;
+        return model;
       });
 
       // 移除误配为 ComfyUI 提供商的对话模型（ComfyUI 仅用于 image/video）

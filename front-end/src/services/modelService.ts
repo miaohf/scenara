@@ -221,7 +221,8 @@ ${rawText}
 Requirements:
 - Language: ${language}
 - Visual Style: ${visualStyle}
-- Extract: title, genre, logline, characters (with name, gender, age, personality), scenes (with location, time, atmosphere)
+- Extract: title, genre, logline, characters (with name, gender, age, personality, species), scenes (with location, time, atmosphere)
+- species is "human" only for actual humans; animals/creatures must use a specific species (e.g. "黑背幼犬")
 - Generate story paragraphs with scene references
 
 Return a valid JSON object with the structure:
@@ -229,7 +230,7 @@ Return a valid JSON object with the structure:
   "title": "string",
   "genre": "string", 
   "logline": "string",
-  "characters": [{"id": "string", "name": "string", "gender": "string", "age": "string", "personality": "string", "variations": []}],
+  "characters": [{"id": "string", "name": "string", "gender": "string", "age": "string", "personality": "string", "species": "string", "variations": []}],
   "scenes": [{"id": "string", "location": "string", "time": "string", "atmosphere": "string"}],
   "storyParagraphs": [{"id": number, "text": "string", "sceneRefId": "string"}]
 }`;

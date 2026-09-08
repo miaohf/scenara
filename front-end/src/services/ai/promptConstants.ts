@@ -82,3 +82,196 @@ export const getNegativePrompt = (visualStyle: string): string => {
 export const getSceneNegativePrompt = (visualStyle: string): string => {
   return SCENE_NEGATIVE_PROMPTS[visualStyle] || SCENE_NEGATIVE_PROMPTS['live-action'];
 };
+
+/** 定妆生图正向构图锁：全身棚拍、不含随身道具。不写入已存储的 visualPrompt。不预设人形或动物。 */
+export const CHARACTER_CASTING_POSITIVE_LOCK =
+  'full-body character lookbook, entire figure in frame, all extremities visible, typical stance for this subject, small margin around the figure, follow the covering and garments already described, no carried items, neutral seamless studio backdrop, no environment, no location scenery';
+
+/** 仅人形定妆追加：剧本没写衣服时补日常穿搭，避免裸模。 */
+export const CHARACTER_CASTING_HUMAN_ATTIRE_LOCK =
+  'fully clothed with shoes, complete everyday outfit if garments are not already specified, no nude, no bare mannequin, no underwear-only';
+
+/** 定妆生图专用负面词：只在定妆/变体请求里追加，禁止写入 character.negativePrompt（会被首尾帧继承）。 */
+export const CHARACTER_CASTING_NEGATIVE =
+  'cropped, close-up, medium shot, bust shot, cut-off, incomplete body, busy background, scenic environment, location scenery, hybridized subject, mixed identity';
+
+/** 仅人形定妆追加的衣着负面词。不要用于动物，避免反向催生服装。 */
+export const CHARACTER_CASTING_HUMAN_ATTIRE_NEGATIVE =
+  'nude, naked, unclothed, bare body, bare mannequin, underwear only';
+
+/** 角色定妆衣着：只约束会穿衣服的人形；其他角色沿用 Surface 的天然被覆即可。 */
+export const CHARACTER_ATTIRE_INSTRUCTION =
+  'If this character is human or humanoid, describe a complete outfit with shoes. Use garments from the character data when present; otherwise invent a simple everyday outfit that fits the role, personality, age, and visual style (top + bottom or equivalent set, plus shoes). Never leave a human lookbook nude or as a featureless unclothed mannequin. If this character is not a clothed human or humanoid, omit attire and keep the Surface covering already described.';
+
+/** 参考图身份锁：只复制参考主体，不改身体结构、不加参考里没有的衣着。 */
+export const CHARACTER_IDENTITY_LOCK =
+  'IDENTITY LOCK: Match the provided reference subject exactly — appearance, body plan, and any attire already shown. Do not redesign. Do not add attire that is not in the reference. Do not add carried hero props.';
+
+export const getCharacterCastingNegativePrompt = (visualStyle: string): string => {
+  return `${getNegativePrompt(visualStyle)}, ${CHARACTER_CASTING_NEGATIVE}`;
+};
+
+export const listProjectPropNames = (
+  props?: Array<{ name?: string } | string> | null
+): string[] => {
+  if (!props || props.length === 0) return [];
+  const names = props
+    .map((item) => (typeof item === 'string' ? item : item.name || ''))
+    .map((name) => name.trim())
+    .filter(Boolean);
+  return Array.from(new Set(names));
+};
+
+export const stripProjectPropsFromPrompt = (prompt: string, propNames: string[]): string => {
+  if (!prompt || propNames.length === 0) return prompt;
+
+  let next = prompt;
+  const uniqueNames = listProjectPropNames(propNames).sort((a, b) => b.length - a.length);
+  for (const name of uniqueNames) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const isAsciiWord = /^[A-Za-z0-9][A-Za-z0-9 '\-]*$/.test(name);
+    const pattern = isAsciiWord ? new RegExp(`\\b${escaped}\\b`, 'gi') : new RegExp(escaped, 'g');
+    next = next.replace(pattern, '');
+  }
+
+  return next
+    .replace(/\s+,/g, ',')
+    .replace(/,\s*,+/g, ',')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^[,;，；\s]+|[,;，；\s]+$/g, '')
+    .trim();
+};
+
+export const buildCharacterLookbookPromptRules = (excludePropNames?: string[]): string => {
+  const names = listProjectPropNames(excludePropNames);
+  const namedExclusion = names.length > 0
+    ? `- Do NOT mention, describe, or imply these project props in the visual prompt: ${names.join(', ')}.`
+    : '';
+
+  return `CASTING LOOKBOOK RULES (MANDATORY):
+- This is a character lookbook, NOT a story still.
+- Describe the subject as given in the character data. Do not invent a different kind of being.
+- Attire: ${CHARACTER_ATTIRE_INSTRUCTION}
+- Do NOT include backpacks, bags, weapons, letters, handheld objects, or other hero props.
+- Do NOT write project prop names into the visual prompt.
+${namedExclusion}
+- If the story implies a carried item, omit it; props are generated separately and added in shots.
+- Framing: full figure, typical stance for this subject, all extremities visible, small margin around the figure.
+- Background: neutral seamless studio backdrop only. Ignore environment/location cues in style keywords.`;
+};
+
+const shouldLockHumanAttire = (character?: CharacterSpeciesSource): boolean => {
+  if (!character) return true;
+  return resolveCharacterSpecies(character).kind !== 'animal';
+};
+
+/** 重新生图时只注入请求、不写入 visualPrompt。Qwen 等模型对锁死提示词几乎无种子多样性。 */
+const LOOKBOOK_REGENERATE_POSES = [
+  'weight on the back foot, slight contrapposto, arms relaxed, chin level',
+  'small step toward camera, shoulders square, hands loosely at sides',
+  'three-quarter body turn, face toward camera, relaxed knees',
+  'feet planted, one knee soft, gaze slightly off-camera',
+  'square stance, shoulders dropped, looking just past the lens',
+];
+
+export const buildLookbookRegenerateVariation = (): string => {
+  const pose = LOOKBOOK_REGENERATE_POSES[Math.floor(Math.random() * LOOKBOOK_REGENERATE_POSES.length)];
+  const take = Math.floor(Math.random() * 9000) + 1000;
+  return `NEW LOOKBOOK TAKE ${take}: ${pose}. Keep identity and described attire. This must be a visibly different photograph from previous takes: change pose, gaze, and micro-expression. Do not reproduce a previous frame.`;
+};
+
+export const applyCharacterCastingPositivePrompt = (
+  prompt: string,
+  propNames: string[] = [],
+  character?: CharacterSpeciesSource
+): string => {
+  const stripped = stripProjectPropsFromPrompt(prompt, propNames);
+  const lockHumanAttire = shouldLockHumanAttire(character);
+  const lock = lockHumanAttire
+    ? `${CHARACTER_CASTING_POSITIVE_LOCK}, ${CHARACTER_CASTING_HUMAN_ATTIRE_LOCK}`
+    : CHARACTER_CASTING_POSITIVE_LOCK;
+  if (!stripped) return lock;
+  if (stripped.includes('full-body character lookbook')) {
+    if (lockHumanAttire && !/fully clothed/i.test(stripped)) {
+      return `${stripped}\n\n${CHARACTER_CASTING_HUMAN_ATTIRE_LOCK}`;
+    }
+    return stripped;
+  }
+  return `${stripped}\n\n${lock}`;
+};
+
+export const mergeCharacterCastingNegativePrompt = (
+  visualStyle: string,
+  storedNegative?: string,
+  character?: CharacterSpeciesSource
+): string => {
+  const base = storedNegative?.trim() || getNegativePrompt(visualStyle);
+  if (base.includes('incomplete body') || base.includes('missing feet')) return base;
+  const attireNegative = shouldLockHumanAttire(character)
+    ? `${CHARACTER_CASTING_HUMAN_ATTIRE_NEGATIVE}, `
+    : '';
+  return `${base}, ${attireNegative}${CHARACTER_CASTING_NEGATIVE}`;
+};
+
+export type CharacterSpeciesKind = 'human' | 'animal' | 'creature';
+
+export interface CharacterSpeciesInfo {
+  kind: CharacterSpeciesKind;
+  label: string;
+}
+
+export interface CharacterSpeciesSource {
+  name?: string;
+  gender?: string;
+  age?: string;
+  personality?: string;
+  visualPrompt?: string;
+  coreFeatures?: string;
+  species?: string;
+}
+
+const HUMAN_SPECIES_LABEL = /^(human|person|humans|人类|人)$/i;
+
+const ANTHRO_SPECIES_RE =
+  /anthropomorphic|anthro\b|furry\b|humanoid animal|animal-headed|拟人|兽人|动物人形/i;
+
+const ANIMAL_SPECIES_RE =
+  /\b(dog|cat|puppy|kitten|wolf|fox|bear|rabbit|bunny|bird|horse|lion|tiger|leopard|panda|monkey|mouse|pig|cow|sheep|goat|deer|elephant|duck|chicken|owl|eagle|snake|fish|dragon|dinosaur|canine|feline|hound|retriever|shepherd|corgi|husky|labrador|animal|creature|beast|pet|quadruped)\b|狗|猫|犬|狼|狐|熊|兔|鸟|马|狮|虎|豹|熊猫|猴|鼠|猪|牛|羊|鹿|象|鸭|鸡|猫头鹰|鹰|蛇|鱼|龙|恐龙|宠物|动物|野兽|幼犬|幼猫|牧羊犬|柴犬|柯基|金毛|拉布拉多|哈士奇/;
+
+const extractSpeciesMatch = (text: string): string => {
+  const match = text.match(ANIMAL_SPECIES_RE);
+  return match?.[0]?.trim() || '';
+};
+
+/** 从角色字段推断物种，避免把动物定妆写成人类。 */
+export const resolveCharacterSpecies = (
+  character: CharacterSpeciesSource
+): CharacterSpeciesInfo => {
+  const explicit = (character.species || '').trim();
+  const blob = [
+    explicit,
+    character.name,
+    character.gender,
+    character.age,
+    character.personality,
+    character.coreFeatures,
+    character.visualPrompt,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  if (explicit && !HUMAN_SPECIES_LABEL.test(explicit)) {
+    const kind: CharacterSpeciesKind = ANTHRO_SPECIES_RE.test(explicit) || ANTHRO_SPECIES_RE.test(blob)
+      ? 'creature'
+      : 'animal';
+    return { kind, label: explicit };
+  }
+
+  if (ANTHRO_SPECIES_RE.test(blob)) {
+    return { kind: 'creature', label: explicit || extractSpeciesMatch(blob) || 'non-human creature' };
+  }
+  if (ANIMAL_SPECIES_RE.test(blob)) {
+    return { kind: 'animal', label: explicit || extractSpeciesMatch(blob) || 'animal' };
+  }
+  return { kind: 'human', label: explicit || 'human' };
+};

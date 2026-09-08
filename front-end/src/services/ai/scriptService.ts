@@ -448,6 +448,7 @@ export const parseScriptStructure = async (
           gender: String(c?.gender || ''),
           age: String(c?.age || ''),
           personality: String(c?.personality || ''),
+          species: c?.species ? String(c.species) : undefined,
           visualPrompt: c?.visualPrompt ? String(c.visualPrompt) : undefined,
           negativePrompt: c?.negativePrompt ? String(c.negativePrompt) : undefined,
           variations: []
@@ -525,7 +526,11 @@ export const parseScriptStructure = async (
     
     Tasks:
     1. Extract title, genre, logline (in ${language}).
-    2. Extract characters (id, name, gender, age, personality).
+    2. Extract characters (id, name, gender, age, personality, species).
+       - species is REQUIRED for every character.
+       - Use "human" only for actual humans.
+       - For animals, pets, or non-human creatures, write the specific species in ${language} (e.g. "黑背幼犬", "拟人棕猫", "German Shepherd puppy").
+       - Never treat an animal as a human just because it has a name, gender, age, or clothing.
     3. Extract scenes (id, location, time, atmosphere).
     4. Extract recurring props/items that appear in multiple scenes (id, name, category, description).
     5. Break down the story into paragraphs linked to scenes.
@@ -538,7 +543,7 @@ export const parseScriptStructure = async (
       "title": "string",
       "genre": "string",
       "logline": "string",
-      "characters": [{"id": "string", "name": "string", "gender": "string", "age": "string", "personality": "string"}],
+      "characters": [{"id": "string", "name": "string", "gender": "string", "age": "string", "personality": "string", "species": "string"}],
       "scenes": [{"id": "string", "location": "string", "time": "string", "atmosphere": "string"}],
       "props": [{"id":"string","name":"string","category":"string","description":"string"}],
       "storyParagraphs": [{"id": number, "text": "string", "sceneRefId": "string"}]
@@ -646,15 +651,19 @@ export const enrichScriptDataVisuals = async (
 
   ensureNotAborted();
   let artDirection: ArtDirection | undefined = nextData.artDirection;
-  if (!artDirection) {
+  const targetStyle = nextData.visualStyle || '3d-animation';
+  const artDirectionStale =
+    !artDirection ||
+    artDirection.visualStyle !== targetStyle;
+  if (artDirectionStale) {
     try {
       artDirection = await generateArtDirection(
         nextData.title || '未命名剧本',
         genre,
         nextData.logline || '',
-        characters.map(c => ({ name: c.name, gender: c.gender, age: c.age, personality: c.personality })),
+        characters.map(c => ({ name: c.name, gender: c.gender, age: c.age, personality: c.personality, species: c.species })),
         scenes.map(s => ({ location: s.location, time: s.time, atmosphere: s.atmosphere })),
-        nextData.visualStyle || '3d-animation',
+        targetStyle,
         nextData.language || language,
         model,
         abortSignal
@@ -663,6 +672,10 @@ export const enrichScriptDataVisuals = async (
       console.log("✅ 全局美术指导文档生成完成，风格关键词:", artDirection.moodKeywords.join(', '));
     } catch (e) {
       console.error("⚠️ 全局美术指导文档生成失败，将使用默认风格:", e);
+      if (!onlyMissing) {
+        nextData.artDirection = undefined;
+        artDirection = undefined;
+      }
     }
   }
 
@@ -687,7 +700,8 @@ export const enrichScriptDataVisuals = async (
         nextData.visualStyle || '3d-animation',
         nextData.language || language,
         model,
-        abortSignal
+        abortSignal,
+        props.map(p => p.name)
       );
 
       for (let i = 0; i < characters.length; i++) {
@@ -733,7 +747,8 @@ export const enrichScriptDataVisuals = async (
           nextData.visualStyle || '3d-animation',
           nextData.language || language,
           artDirection,
-          abortSignal
+          abortSignal,
+          props.map(p => p.name)
         ),
       apply: (prompts) => {
         characters[idx].visualPrompt = prompts.visualPrompt;

@@ -63,7 +63,10 @@ class Settings(BaseSettings):
     default_video_model_id: str = "comfyui-minimax-h3-flft2v"
     default_audio_model_id: str = "indextts-local"
 
-    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000,http://192.168.1.178:3000"
+    cors_origins: str = (
+        "http://localhost:3000,http://127.0.0.1:3000,http://192.168.1.178:3000,"
+        "http://localhost:3080,http://127.0.0.1:3080,http://192.168.1.178:3080"
+    )
 
     @property
     def cors_origin_list(self) -> list[str]:

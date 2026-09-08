@@ -107,7 +107,7 @@ const SceneContext: React.FC<SceneContextProps> = ({
                   <HoverImagePreview src={charImage} alt={char.name}>
                     <div className={`w-6 h-6 rounded-full bg-[var(--border-secondary)] overflow-hidden flex-shrink-0 ${charImage ? 'cursor-zoom-in' : ''}`}>
                       {charImage && (
-                        <img src={charImage} className="w-full h-full object-cover" alt={char.name} />
+                        <img src={charImage} className="w-full h-full object-cover object-top" alt={char.name} />
                       )}
                     </div>
                   </HoverImagePreview>

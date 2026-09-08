@@ -42,7 +42,7 @@ const WardrobeModal: React.FC<WardrobeModalProps> = ({
           <div className="flex items-center gap-4">
             <div className="w-10 h-10 rounded-full bg-[var(--bg-hover)] overflow-hidden border border-[var(--border-secondary)]">
               {character.referenceImage && (
-                <img src={character.referenceImage} className="w-full h-full object-cover" alt={character.name} />
+                <img src={character.referenceImage} className="w-full h-full object-cover object-top" alt={character.name} />
               )}
             </div>
             <div>
@@ -65,11 +65,11 @@ const WardrobeModal: React.FC<WardrobeModalProps> = ({
               </h4>
               <div className="bg-[var(--bg-primary)] p-4 rounded-xl border border-[var(--border-primary)]">
                 <div 
-                  className="aspect-video bg-[var(--bg-elevated)] rounded-lg overflow-hidden mb-4 relative cursor-pointer"
+                  className="aspect-[9/16] max-h-64 mx-auto bg-[var(--bg-elevated)] rounded-lg overflow-hidden mb-4 relative cursor-pointer"
                   onClick={() => character.referenceImage && onImageClick(character.referenceImage)}
                 >
                   {character.referenceImage ? (
-                    <img src={character.referenceImage} className="w-full h-full object-cover" alt="Base" />
+                    <img src={character.referenceImage} className="w-full h-full object-contain" alt="Base" />
                   ) : (
                     <div className="flex items-center justify-center h-full text-[var(--text-muted)]">No Image</div>
                   )}
@@ -96,11 +96,11 @@ const WardrobeModal: React.FC<WardrobeModalProps> = ({
                     key={variation.id} 
                     className="flex gap-4 p-4 bg-[var(--bg-primary)] border border-[var(--border-primary)] rounded-xl group hover:border-[var(--border-secondary)] transition-colors"
                   >
-                    <div className="w-20 h-24 bg-[var(--bg-elevated)] rounded-lg flex-shrink-0 overflow-hidden relative border border-[var(--border-primary)]">
+                    <div className="w-20 h-32 bg-[var(--bg-elevated)] rounded-lg flex-shrink-0 overflow-hidden relative border border-[var(--border-primary)]">
                       {variation.referenceImage ? (
                         <img 
                           src={variation.referenceImage} 
-                          className="w-full h-full object-cover cursor-pointer" 
+                          className="w-full h-full object-contain cursor-pointer"
                           alt={variation.name}
                           onClick={() => onImageClick(variation.referenceImage!)}
                         />

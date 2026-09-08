@@ -82,7 +82,7 @@ const TurnaroundModal: React.FC<TurnaroundModalProps> = ({
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-full bg-[var(--bg-hover)] overflow-hidden border border-[var(--border-secondary)]">
               {character.referenceImage && (
-                <img src={character.referenceImage} className="w-full h-full object-cover" alt={character.name} />
+                <img src={character.referenceImage} className="w-full h-full object-cover object-top" alt={character.name} />
               )}
             </div>
             <div className="flex items-center gap-2">

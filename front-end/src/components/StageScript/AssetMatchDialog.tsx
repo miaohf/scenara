@@ -14,8 +14,9 @@ const MatchRow: React.FC<{
   getAiLabel: (a: any) => string;
   getLibLabel: (a: any) => string;
   getLibImage: (a: any) => string | undefined;
+  imageFocusTop?: boolean;
   onToggle: () => void;
-}> = ({ item, getAiLabel, getLibLabel, getLibImage, onToggle }) => {
+}> = ({ item, getAiLabel, getLibLabel, getLibImage, imageFocusTop, onToggle }) => {
   const hasMatch = !!item.libraryAsset;
   const hasImage = hasMatch && !!getLibImage(item.libraryAsset!);
 
@@ -40,7 +41,7 @@ const MatchRow: React.FC<{
           <div className="flex items-center gap-2 flex-shrink-0">
             {hasImage && (
               <div className="w-8 h-8 rounded overflow-hidden bg-[var(--bg-elevated)] flex-shrink-0">
-                <img src={getLibImage(item.libraryAsset!)} alt="" className="w-full h-full object-cover" />
+                <img src={getLibImage(item.libraryAsset!)} alt="" className={`w-full h-full object-cover${imageFocusTop ? ' object-top' : ''}`} />
               </div>
             )}
             <div className="min-w-0">
@@ -165,6 +166,7 @@ const AssetMatchDialog: React.FC<Props> = ({ matches, onConfirm, onCancel }) => 
                     getAiLabel={(c: Character) => c.name}
                     getLibLabel={(c: Character) => `${c.name} (v${c.version || 1})`}
                     getLibImage={(c: Character) => c.referenceImage}
+                    imageFocusTop
                     onToggle={() => toggleChar(i)}
                   />
                 ))}

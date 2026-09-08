@@ -7,6 +7,22 @@ const sameId = (left: unknown, right: unknown): boolean => String(left) === Stri
 const isActive = (status?: string): boolean =>
   status === "pending" || status === "running";
 
+/** 签名 URL 的 exp/sig 会变，用 media_key 判断是不是同一张图。 */
+const mediaIdentity = (url: string): string => {
+  const marker = "/media/raw/";
+  const index = url.indexOf(marker);
+  if (index >= 0) {
+    return decodeURIComponent(url.slice(index + marker.length).split("?")[0] || "");
+  }
+  return url;
+};
+
+const isNewerMedia = (current: string | undefined, incoming: string | undefined): boolean => {
+  if (!incoming) return false;
+  if (!current) return true;
+  return mediaIdentity(current) !== mediaIdentity(incoming);
+};
+
 const isImageJob = (jobType?: string): boolean =>
   !jobType || jobType === "comfyui_image";
 
@@ -35,7 +51,7 @@ export const episodeHasGeneratingWork = (episode: Episode | null | undefined): b
 
 /**
  * 按服务端任务对账剧集：
- * - 已完成（或失败但带了媒体）且目标还在 generating / 没有图 → 写回媒体
+ * - 已完成（或失败但带了媒体）且目标还在 generating / 没有图 / 仍是旧 media_key → 写回媒体
  * - 失败且没有媒体、目标还在 generating → 标 failed
  * - 排队/执行中 → 保持 generating
  * - markOrphans 时：仍标 generating 但没有任何对应任务 → 视为中断
@@ -99,7 +115,7 @@ export function reconcileEpisodeWithJobs(
             : next.scriptData?.props;
       const item = list?.find((row) => sameId(row.id, target.id));
       if (!item) continue;
-      if (url && (item.status === "generating" || !item.referenceImage)) {
+      if (url && isNewerMedia(item.referenceImage, url)) {
         item.referenceImage = url;
         item.status = "completed";
         changed = true;
@@ -119,7 +135,7 @@ export function reconcileEpisodeWithJobs(
       const character = next.scriptData?.characters.find((row) => sameId(row.id, target.characterId));
       const variation = character?.variations?.find((row) => sameId(row.id, target.id));
       if (!variation) continue;
-      if (url && (variation.status === "generating" || !variation.referenceImage)) {
+      if (url && isNewerMedia(variation.referenceImage, url)) {
         variation.referenceImage = url;
         variation.status = "completed";
         changed = true;
@@ -139,7 +155,7 @@ export function reconcileEpisodeWithJobs(
       const character = next.scriptData?.characters.find((row) => sameId(row.id, target.characterId));
       if (!character) continue;
       const turnaround = character.turnaround ? { ...character.turnaround } : { panels: [], status: "generating_image" as const };
-      if (url && (turnaround.status === "generating_image" || !turnaround.imageUrl)) {
+      if (url && isNewerMedia(turnaround.imageUrl, url)) {
         turnaround.imageUrl = url;
         turnaround.status = "completed";
         changed = true;
@@ -175,7 +191,7 @@ export function reconcileEpisodeWithJobs(
         changed = true;
       }
       if (!frame) continue;
-      if (url && (frame.status === "generating" || !frame.imageUrl)) {
+      if (url && isNewerMedia(frame.imageUrl, url)) {
         frame.imageUrl = url;
         frame.status = "completed";
         changed = true;
@@ -193,7 +209,7 @@ export function reconcileEpisodeWithJobs(
       const key = `video:${shot.id}`;
       markClaimed(key);
       if (!shot.interval) continue;
-      if (url && (shot.interval.status === "generating" || !shot.interval.videoUrl)) {
+      if (url && isNewerMedia(shot.interval.videoUrl, url)) {
         shot.interval.videoUrl = url;
         shot.interval.status = "completed";
         changed = true;
@@ -211,7 +227,7 @@ export function reconcileEpisodeWithJobs(
       const key = `nineGrid:${shot.id}`;
       markClaimed(key);
       if (!shot.nineGrid) continue;
-      if (url && (shot.nineGrid.status === "generating_image" || !shot.nineGrid.imageUrl)) {
+      if (url && isNewerMedia(shot.nineGrid.imageUrl, url)) {
         shot.nineGrid.imageUrl = url;
         shot.nineGrid.status = "completed";
         changed = true;
@@ -339,13 +355,13 @@ function takeServerMedia<T extends { status?: string }>(
   if (!server) return local;
   const serverUrl = server[urlKey];
   const localUrl = local[urlKey];
-  if (hasMediaUrl(serverUrl) && !hasMediaUrl(localUrl)) {
+  if (hasMediaUrl(serverUrl) && isNewerMedia(hasMediaUrl(localUrl) ? String(localUrl) : undefined, String(serverUrl))) {
     return { ...local, [urlKey]: serverUrl, status: doneStatus };
   }
   return local;
 }
 
-/** Worker 已把媒体写进剧集时，用服务端快照补上本地还空着的图/视频。 */
+/** Worker 已把媒体写进剧集时，用服务端快照补上本地还空着或仍是旧 media_key 的图/视频。 */
 export function mergeEpisodeMediaFromServer(
   local: Episode,
   server: Episode,

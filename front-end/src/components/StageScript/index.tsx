@@ -16,6 +16,7 @@ import {
   logScriptProgress,
   inferVisualStyleFromImage,
   generateVisualPrompts,
+  generateArtDirection,
 } from '../../services/aiService';
 import { getFinalValue, validateConfig } from './utils';
 import { resolveShotGenerationModel } from '../../services/modelRegistry';
@@ -314,6 +315,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     resolveShotGenerationModel(project.shotGenerationModel)
   );
   const [localVisualStyle, setLocalVisualStyle] = useState(project.visualStyle || DEFAULTS.visualStyle);
+  const [previewVisualStyle, setPreviewVisualStyle] = useState(project.visualStyle || DEFAULTS.visualStyle);
   const [enableQualityCheck, setEnableQualityCheck] = useState(true);
   const [customDurationInput, setCustomDurationInput] = useState('');
   const [customModelInput, setCustomModelInput] = useState('');
@@ -357,6 +359,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     setLocalLanguage(project.language || DEFAULTS.language);
     setLocalModel(resolveShotGenerationModel(project.shotGenerationModel));
     setLocalVisualStyle(project.visualStyle || DEFAULTS.visualStyle);
+    setPreviewVisualStyle(project.visualStyle || DEFAULTS.visualStyle);
     setEnableQualityCheck(true);
     setRewriteInstruction('');
     setSelectionRange(null);
@@ -483,7 +486,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     const styleForPrompt = resolveStyleForPrompt(styleValue, customInput);
     const model = getConfiguredModelForRequest();
     const genre = project.scriptData.genre || 'drama';
-    const artDirection = project.scriptData.artDirection;
+    let artDirection = project.scriptData.artDirection;
 
     setIsProcessing(true);
     setProcessingMessage('正在按新风格重新生成资产提示词...');
@@ -491,6 +494,29 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
 
     try {
       const newData = cloneScriptData(project.scriptData);
+      if (!artDirection?.visualStyle || artDirection.visualStyle !== styleForPrompt) {
+        artDirection = await generateArtDirection(
+          newData.title || '未命名剧本',
+          genre,
+          newData.logline || '',
+          (newData.characters || []).map(c => ({
+            name: c.name,
+            gender: c.gender,
+            age: c.age,
+            personality: c.personality,
+            species: c.species,
+          })),
+          (newData.scenes || []).map(s => ({
+            location: s.location,
+            time: s.time,
+            atmosphere: s.atmosphere,
+          })),
+          styleForPrompt,
+          localLanguage,
+          model
+        );
+        newData.artDirection = artDirection;
+      }
       let updatedCount = 0;
 
       for (const char of newData.characters || []) {
@@ -502,7 +528,9 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           model,
           styleForPrompt,
           localLanguage,
-          artDirection
+          artDirection,
+          undefined,
+          (newData.props || []).map(p => p.name)
         );
         char.promptVersions = updatePromptWithVersion(
           char.visualPrompt,
@@ -615,6 +643,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     const prevStyle = localVisualStyle;
     if (nextStyle === prevStyle) return;
     setLocalVisualStyle(nextStyle);
+    setPreviewVisualStyle(nextStyle);
     offerPromptRegenerateAfterStyleChange(nextStyle, prevStyle);
   };
 
@@ -656,6 +685,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
         throw new Error('empty style prompt returned');
       }
       setLocalVisualStyle('custom');
+      setPreviewVisualStyle('custom');
       setCustomStyleInput(inferredPrompt);
 
       const confidenceText = typeof result.confidence === 'number'
@@ -680,7 +710,11 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   const handleAnalyze = async () => {
     const finalDuration = getFinalValue(localDuration, customDurationInput);
     const finalModel = getConfiguredModelForRequest();
-    const finalVisualStyle = getFinalValue(localVisualStyle, customStyleInput);
+    const pendingVisualStyle = previewVisualStyle || localVisualStyle;
+    const finalVisualStyle = getFinalValue(pendingVisualStyle, customStyleInput);
+    if (pendingVisualStyle !== localVisualStyle) {
+      setLocalVisualStyle(pendingVisualStyle);
+    }
 
     const validation = validateConfig({
       script: localScript,
@@ -1313,7 +1347,11 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       customModelInput,
       resolveShotGenerationModel(project.shotGenerationModel)
     ),
-    visualStyle: getDraftValue(localVisualStyle, customStyleInput, project.visualStyle || DEFAULTS.visualStyle),
+    visualStyle: getDraftValue(
+      previewVisualStyle || localVisualStyle,
+      customStyleInput,
+      project.visualStyle || DEFAULTS.visualStyle
+    ),
     enableQualityCheck
   });
   const analyzeCheckpoint = project.scriptGenerationCheckpoint;
@@ -1648,6 +1686,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
             onLanguageChange={setLocalLanguage}
             onModelChange={handleModelChange}
             onVisualStyleChange={handleVisualStyleChange}
+            onVisualStylePreview={setPreviewVisualStyle}
             onCustomDurationChange={setCustomDurationInput}
             onCustomModelChange={setCustomModelInput}
             onCustomStyleChange={setCustomStyleInput}

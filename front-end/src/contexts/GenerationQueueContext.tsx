@@ -33,6 +33,8 @@ export const GenerationQueueProvider: React.FC<{
   const previousIdsRef = useRef<string[]>([]);
   const hydratedRef = useRef(false);
   const inFlightRef = useRef(false);
+  const mediaSyncTickRef = useRef(0);
+  const idleCatchupRef = useRef(0);
   const episodeRef = useRef(episode);
   const reconcileRef = useRef(onEpisodeReconcile);
   episodeRef.current = episode;
@@ -91,19 +93,36 @@ export const GenerationQueueProvider: React.FC<{
           applyJobs(recent, true);
           await syncFromServer();
           hydratedRef.current = true;
+          idleCatchupRef.current = 0;
           return;
         }
 
-        if (finishedIds.length === 0) return;
+        if (finishedIds.length > 0) {
+          const finishedJobs = (
+            await Promise.all(finishedIds.map((id) => fetchJob(id).catch(() => null)))
+          ).filter((job): job is JobStatus => Boolean(job));
+          if (cancelled) return;
+          applyJobs([...active, ...finishedJobs], false);
+          if (finishedJobs.some((job) => job.status === "completed" || job.status === "failed")) {
+            void syncFromServer();
+            return;
+          }
+        }
 
-        const finishedJobs = (
-          await Promise.all(finishedIds.map((id) => fetchJob(id).catch(() => null)))
-        ).filter((job): job is JobStatus => Boolean(job));
-        if (cancelled) return;
-        applyJobs([...active, ...finishedJobs], false);
-
-        if (finishedJobs.some((job) => job.status === "completed" || job.status === "failed")) {
+        // 批量入队不挂 SSE：Worker 已写回剧集时，定期把本地空镜头补上图。
+        if (active.length > 0) {
+          mediaSyncTickRef.current += 1;
+          idleCatchupRef.current = 0;
+          if (mediaSyncTickRef.current % 4 === 0) {
+            // 剧集 payload 很大时不要卡住队列轮询，否则进度会停在第一拍。
+            void syncFromServer();
+          }
+        } else if (idleCatchupRef.current < 3) {
+          idleCatchupRef.current += 1;
+          mediaSyncTickRef.current = 0;
           await syncFromServer();
+        } else {
+          mediaSyncTickRef.current = 0;
         }
       } catch (error) {
         console.warn("刷新生成队列失败:", error);
@@ -116,9 +135,28 @@ export const GenerationQueueProvider: React.FC<{
     const timer = window.setInterval(() => {
       void tick();
     }, POLL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        void loadEpisode(episodeId)
+          .then((server) => {
+            if (cancelled) return;
+            const reconcile = reconcileRef.current;
+            if (!reconcile) return;
+            reconcile((prev) => {
+              const { episode: next, changed } = mergeEpisodeMediaFromServer(prev, server);
+              return changed ? next : prev;
+            });
+          })
+          .catch(() => undefined);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
     };
   }, [applyJobs, episodeId]);
 

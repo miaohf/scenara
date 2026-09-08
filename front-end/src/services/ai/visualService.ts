@@ -22,6 +22,9 @@ import {
   getStylePrompt,
   getNegativePrompt,
   getSceneNegativePrompt,
+  buildCharacterLookbookPromptRules,
+  stripProjectPropsFromPrompt,
+  CHARACTER_ATTIRE_INSTRUCTION,
 } from './promptConstants';
 import { compressPromptWithLLM } from './promptCompressionService';
 import {
@@ -45,7 +48,7 @@ export const generateArtDirection = async (
   title: string,
   genre: string,
   logline: string,
-  characters: { name: string; gender: string; age: string; personality: string }[],
+  characters: { name: string; gender: string; age: string; personality: string; species?: string }[],
   scenes: { location: string; time: string; atmosphere: string }[],
   visualStyle: string,
   language: string = '中文',
@@ -68,7 +71,7 @@ Your job is to create a unified Art Direction Brief that will guide ALL visual p
 - Language: ${language}
 
 ## Characters
-${characters.map((c, i) => `${i + 1}. ${c.name} (${c.gender}, ${c.age}, ${c.personality})`).join('\n')}
+${characters.map((c, i) => `${i + 1}. ${c.name} (${c.species || 'species unspecified'}, ${c.gender}, ${c.age}, ${c.personality})`).join('\n')}
 
 ## Scenes
 ${scenes.map((s, i) => `${i + 1}. ${s.location} - ${s.time} - ${s.atmosphere}`).join('\n')}
@@ -81,6 +84,7 @@ CRITICAL RULES:
 - The brief must define a COHESIVE visual world - characters and scenes must look like they belong to the SAME production
 - Color palette must be harmonious and genre-appropriate
 - Character design rules must ensure all characters share the same art style while being visually distinct from each other
+- Describe each character as given. Do not invent a different kind of being.
 - Output all descriptive text in ${language}
 
 Output ONLY valid JSON with this exact structure:
@@ -89,7 +93,7 @@ Output ONLY valid JSON with this exact structure:
     "primary": "primary color tone description (e.g., 'deep navy blue with slight purple undertones')",
     "secondary": "secondary color description",
     "accent": "accent/highlight color",
-    "skinTones": "skin tone range for characters in this style (e.g., 'warm ivory to golden tan, with soft peach undertones')",
+    "skinTones": "surface tone range for characters in this style (skin, fur, or other covering as applicable)",
     "saturation": "overall saturation tendency (e.g., 'medium-high, slightly desaturated for cinematic feel')",
     "temperature": "overall color temperature (e.g., 'cool-leaning with warm accent lighting')"
   },
@@ -133,6 +137,7 @@ Output ONLY valid JSON with this exact structure:
       textureStyle: parsed.textureStyle || '',
       moodKeywords: Array.isArray(parsed.moodKeywords) ? parsed.moodKeywords : [],
       consistencyAnchors: parsed.consistencyAnchors || '',
+      visualStyle,
     };
 
     console.log('✅ 全局美术指导文档生成完成:', artDirection.moodKeywords.join(', '));
@@ -148,6 +153,7 @@ Output ONLY valid JSON with this exact structure:
       textureStyle: '',
       moodKeywords: [],
       consistencyAnchors: stylePrompt,
+      visualStyle,
     };
   }
 };
@@ -166,7 +172,8 @@ export const generateAllCharacterPrompts = async (
   visualStyle: string,
   language: string = '中文',
   model: string = getActiveChatModelName(),
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  excludePropNames?: string[]
 ): Promise<{ visualPrompt: string; negativePrompt: string }[]> => {
   console.log(`🎭 generateAllCharacterPrompts 调用 - 批量生成 ${characters.length} 个角色的视觉提示词`);
   logScriptProgress(`正在批量生成 ${characters.length} 个角色的视觉提示词（风格统一模式）...`);
@@ -179,6 +186,7 @@ export const generateAllCharacterPrompts = async (
   const characterList = characters.map((c, i) =>
     `Character ${i + 1} (ID: ${c.id}):
   - Name: ${c.name}
+  - Form: ${c.species || 'follow name and personality'}
   - Gender: ${c.gender}
   - Age: ${c.age}
   - Personality: ${c.personality}`
@@ -216,12 +224,16 @@ ${artDirection.consistencyAnchors}
 ${characterList}
 
 ## REQUIRED PROMPT STRUCTURE (for EACH character, output in ${language}):
-1. Core Identity: [ethnicity, age, gender, body type - MUST follow proportions rule above]
-2. Facial Features: [specific distinguishing features - eyes MUST follow eye style rule, nose, face shape, skin tone MUST use palette skin tones]
-3. Hairstyle: [detailed hair description - color, length, style]
-4. Clothing: [detailed outfit appropriate for ${genre} genre, colors MUST harmonize with palette]
-5. Pose & Expression: [body language and facial expression matching personality]
-6. Technical Quality: ${stylePrompt}
+Describe the subject as given in the character data. Do not invent a different kind of being.
+1. Core Identity: [what this subject is, age/sex if relevant, body plan and body type - MUST follow proportions rule above]
+2. Head: [distinguishing features of the head — eyes MUST follow eye style rule]
+3. Surface: [hair, fur, feathers, skin, or other covering as applicable]
+4. Attire: [${CHARACTER_ATTIRE_INSTRUCTION}]
+5. Pose & Framing: [full-body lookbook, entire figure visible, typical stance for this subject, all extremities visible, small margin, expression matching personality]
+6. Background: [neutral seamless studio backdrop only, no environment, no location]
+7. Technical Quality: ${stylePrompt} — rendering style only, ignore environment cues in style keywords
+
+${buildCharacterLookbookPromptRules(excludePropNames)}
 
 ## CRITICAL CONSISTENCY RULES:
 1. ALL characters MUST share the SAME art style as defined by the Art Direction above.
@@ -229,10 +241,13 @@ ${characterList}
 3. ALL characters MUST use the SAME proportions: ${artDirection.characterDesignRules.proportions}
 4. ALL characters MUST use the SAME line/edge style: ${artDirection.characterDesignRules.lineWeight}
 5. ALL characters MUST have the SAME detail density: ${artDirection.characterDesignRules.detailLevel}
-6. Each character should be VISUALLY DISTINCT from others through clothing, hair color, accessories, and body language
+6. Each character should be VISUALLY DISTINCT from others through form, markings, covering, and body language
    - but STYLISTICALLY UNIFIED in rendering quality, detail density, color harmony, and art style.
-7. Skin tone descriptions must be from the same tonal family: ${artDirection.colorPalette.skinTones}
-8. Sections 1-3 (Core Identity, Facial Features, Hairstyle) are FIXED features for each character for consistency across all variations.
+7. Surface tones must stay in the same family: ${artDirection.colorPalette.skinTones}
+8. Sections 1-3 (identity, head, surface) are FIXED features for each character for consistency across all variations.
+9. NEVER put project prop names or carried items into the visual prompt text.
+10. Do not convert the subject into a different body plan. Do not leave human/humanoid subjects unclothed.
+11. Follow Visual Style ${visualStyle} only. Do not mix incompatible style families (do not combine photoreal live-action with cel shading, six-head cartoon proportions, or Pixar/DreamWorks CGI).
 
 ## OUTPUT FORMAT
 Output ONLY valid JSON with this structure:
@@ -240,7 +255,7 @@ Output ONLY valid JSON with this structure:
   "characters": [
     {
       "id": "character_id",
-      "visualPrompt": "single paragraph, comma-separated, 60-90 words, MUST include ${visualStyle} style keywords"
+      "visualPrompt": "single paragraph, comma-separated, 70-110 words, MUST include ${visualStyle} style keywords"
     }
   ]
 }
@@ -264,7 +279,7 @@ Output ONLY the JSON, no explanations.`;
       const charResult = charResults[i];
       if (charResult && charResult.visualPrompt) {
         results.push({
-          visualPrompt: charResult.visualPrompt.trim(),
+          visualPrompt: stripProjectPropsFromPrompt(charResult.visualPrompt.trim(), excludePropNames || []),
           negativePrompt: negativePrompt,
         });
         console.log(`  ✅ 角色 ${characters[i].name} 提示词生成成功`);
@@ -302,7 +317,8 @@ export const generateVisualPrompts = async (
   visualStyle: string = 'live-action',
   language: string = '中文',
   artDirection?: ArtDirection,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  excludePropNames?: string[]
 ): Promise<{ visualPrompt: string; negativePrompt: string }> => {
   const stylePrompt = getStylePrompt(visualStyle);
   const negativePrompt = type === 'scene'
@@ -331,27 +347,35 @@ Create a detailed visual prompt for a character with the following structure:
 
 Character Data:
 - Name: ${char.name}
+- Form: ${char.species || 'follow name and personality'}
 - Gender: ${char.gender}
 - Age: ${char.age}
 - Personality: ${char.personality}
 
 REQUIRED STRUCTURE (output in ${language}):
-1. Core Identity: [ethnicity, age, gender, body type${artDirection ? ` - MUST follow proportions: ${artDirection.characterDesignRules.proportions}` : ''}]
-2. Facial Features: [specific distinguishing features - eyes${artDirection ? ` (MUST follow eye style: ${artDirection.characterDesignRules.eyeStyle})` : ''}, nose, face shape, skin tone${artDirection ? ` (MUST use skin tones from: ${artDirection.colorPalette.skinTones})` : ''}]
-3. Hairstyle: [detailed hair description - color, length, style]
-4. Clothing: [detailed outfit appropriate for ${genre} genre${artDirection ? `, colors MUST harmonize with palette: ${artDirection.colorPalette.primary}, ${artDirection.colorPalette.secondary}` : ''}]
-5. Pose & Expression: [body language and facial expression matching personality]
-6. Technical Quality: ${stylePrompt}
+Describe the subject as given in the character data. Do not invent a different kind of being.
+1. Core Identity: [what this subject is, age/sex if relevant, body plan and body type${artDirection ? ` - MUST follow proportions: ${artDirection.characterDesignRules.proportions}` : ''}]
+2. Head: [distinguishing features of the head${artDirection ? ` — eyes MUST follow eye style: ${artDirection.characterDesignRules.eyeStyle}` : ''}]
+3. Surface: [hair, fur, feathers, skin, or other covering as applicable${artDirection ? `; surface tones from: ${artDirection.colorPalette.skinTones}` : ''}]
+4. Attire: [${CHARACTER_ATTIRE_INSTRUCTION}${artDirection ? `; colors MUST harmonize with palette: ${artDirection.colorPalette.primary}, ${artDirection.colorPalette.secondary}` : ''}]
+5. Pose & Framing: [full-body lookbook, entire figure visible, typical stance for this subject, all extremities visible, small margin, expression matching personality]
+6. Background: [neutral seamless studio backdrop only, no environment, no location]
+7. Technical Quality: ${stylePrompt} — rendering style only, ignore environment cues in style keywords
+
+${buildCharacterLookbookPromptRules(excludePropNames)}
 
 CRITICAL RULES:
 - Sections 1-3 are FIXED features for consistency across all variations${artDirection ? `
 - MUST follow the Global Art Direction above for style consistency
 - Line/edge style: ${artDirection.characterDesignRules.lineWeight}
 - Detail density: ${artDirection.characterDesignRules.detailLevel}` : ''}
+- NEVER put project prop names or carried items into the visual prompt text
+- Do not convert the subject into a different body plan. Do not leave human/humanoid subjects unclothed.
+- Follow Visual Style ${visualStyle} only. Do not mix incompatible style families (do not combine photoreal live-action with cel shading, six-head cartoon proportions, or Pixar/DreamWorks CGI).
 - Use specific, concrete visual details
 - Output as single paragraph, comma-separated
 - MUST include style keywords: ${visualStyle}
-- Length: 60-90 words
+- Length: 70-110 words
 - Focus on visual details that can be rendered in images
 
 Output ONLY the visual prompt text, no explanations.`;
@@ -429,7 +453,9 @@ Output ONLY the visual prompt text, no explanations.`;
   );
 
   return {
-    visualPrompt: visualPrompt.trim(),
+    visualPrompt: type === 'character'
+      ? stripProjectPropsFromPrompt(visualPrompt.trim(), excludePropNames || [])
+      : visualPrompt.trim(),
     negativePrompt: negativePrompt
   };
 };
@@ -534,10 +560,10 @@ const IMAGE_PROMPT_SOFT_TARGET_CHARS = 4700;
 const MAX_NEGATIVE_PROMPT_TERMS = 64;
 const MAX_REFERENCE_IMAGES_PER_REQUEST = 5;
 /**
- * ComfyUI Flux2 Edit 工作流只有 4 个参考图槽位（后端 `FLUX2_EDIT_MAX_REFS`）。
+ * ComfyUI 参考图上限：Qwen Edit Utils 5 张，Klein Edit 4 张。前端按 5 收集，多出的槽由后端裁掉。
  * 前端按 5 截断会让日志说“保留 5 张”，实际后端又静默丢掉第 5 张。
  */
-const MAX_COMFY_REFERENCE_IMAGES = 4;
+const MAX_COMFY_REFERENCE_IMAGES = 5;
 const OPENAI_IMAGE_QUALITY = 'medium';
 const OPENAI_IMAGE_OUTPUT_FORMAT = 'png';
 const OPENAI_IMAGE_OUTPUT_COMPRESSION = 100;
@@ -559,7 +585,8 @@ const translatePromptForComfyUi = async (prompt: string): Promise<string> => {
   if (!needsComfyEnglishPrompt(prompt)) return prompt;
 
   const instruction = `Translate the following text-to-image prompt into English for Flux diffusion models.
-Preserve ALL visual details: age, gender, ethnicity, body type, face, hair, clothing, pose, expression, lighting, camera, and art-style keywords.
+Preserve ALL visual details: what the subject is, age, body plan, head, covering, attire if present, pose, expression, lighting, camera, and art-style keywords.
+Do not change the subject into a different kind of being. Do not add attire that is not in the source.
 Output ONLY one English paragraph using comma-separated phrases. No markdown, no explanation.
 
 Prompt:
@@ -934,9 +961,15 @@ export const generateImage = async (
 
       let comfyPrompt = normalizedUserPrompt;
       if (continuityReferenceImage) {
-        comfyPrompt += '\n\n[ComfyUI end frame] Keep the same character identity, outfit, and scene from the reference image, but show a clearly different pose, camera angle, and action moment for the END frame.';
+        comfyPrompt += '\n\n[ComfyUI end frame] Keep the same subject identity, body plan, attire, and scene from the reference image, but show a clearly different pose, camera angle, and action moment for the END frame. Shot-listed props may be added from prop reference images; do not invent a different item.';
       } else if (characterRef) {
-        comfyPrompt += '\n\n[ComfyUI character anchor] Match the reference image character face, hairstyle, age, body proportions and outfit. Apply the shot description for pose, camera and environment.';
+        if (referencePackType === 'shot') {
+          comfyPrompt += '\n\n[ComfyUI character anchor] Image 1 is the character lookbook and the identity lock. Copy that exact subject appearance and body plan into this shot. Later images are scene or prop references only. Shot-listed props may be added from prop reference images; do not invent a different item. A missing carried item in the lookbook does not forbid it in this shot. Apply the shot description for pose, camera and environment.';
+        } else if (String(options?.workflowName || '').toLowerCase().includes('turnaround')) {
+          comfyPrompt += '\n\n[ComfyUI turnaround] Image 1 is the identity lock. Copy appearance, body plan, and any attire already on the subject. Only change camera angle and shot size per panel. Do not add attire that is not in image 1. Do not change the body plan. Do not invent a different subject.';
+        } else {
+          comfyPrompt += '\n\n[ComfyUI character anchor] Match the reference subject exactly: appearance, body plan, and any attire shown. This is a lookbook: no carried items. Do not add attire that is not in the reference. Apply the prompt for pose and studio framing.';
+        }
       }
 
       comfyPrompt = await translatePromptForComfyUi(comfyPrompt);
@@ -992,7 +1025,7 @@ Requested variation:
 ${compactVariationPrompt}
 
 Reference constraints (strict):
-- Keep face identity, hair, skin tone, and body proportions identical to references.
+- Keep the subject identical to references: appearance, body plan, and proportions. Do not add attire that is not requested.
 - Outfit/clothing must follow the requested variation and should be visibly different from reference outfit.
 - Keep style, lighting, and rendering quality coherent.
 - Do not add unrelated characters, objects, or text overlays.
@@ -1006,7 +1039,8 @@ Output one cinematic still image.`;
           if (referencePackType === 'character') {
             const lines = [
               '- All provided images are the SAME character identity references.',
-              '- Prioritize face, hair, body proportions, outfit material, and signature accessories.',
+              '- Prioritize the same subject: appearance, body plan, and any attire already shown.',
+              '- This is a lookbook: do not add backpacks or handheld hero props. Do not add attire that is not in the reference.',
             ];
             if (hasTurnaround) {
               lines.push('- Some references are 3x3 turnaround sheets for angle-specific consistency.');
@@ -1031,8 +1065,8 @@ Output one cinematic still image.`;
           }
 
           const lines = [
-            '- First image: scene/environment reference.',
-            '- Next images: character references (base look or variation).',
+            '- First images: character lookbook / identity lock.',
+            '- Next image: scene/environment reference.',
             '- Remaining images: prop/item references.',
           ];
           if (hasTurnaround) {
@@ -1057,15 +1091,15 @@ Output one cinematic still image.`;
               ? 'Use references only for silhouette and spatial geometry; style and lighting must follow textual prompt.'
             : 'Keep visual style and lighting coherent with prompt and references.';
         const characterConsistencyRule = referencePackType === 'character'
-          ? 'Generated character must remain identical to references (face, hair, proportions, outfit details).'
+          ? 'Generated subject must remain identical to references (appearance, body plan, proportions, any attire shown). Do not add attire that is not in the reference. Do not add carried hero props.'
           : referencePackType === 'shape'
             ? 'If characters appear, keep overall silhouette/proportions aligned with references but rely on prompt for style and materials.'
-          : 'If characters appear, match referenced identity exactly (face, hair, proportions, signature details).';
+          : 'If characters appear, match the referenced subject (appearance, body plan, proportions, any attire shown). Shot-listed props may be added from prop references; a missing carried item in the lookbook does not forbid it.';
         const propConsistencyRule = referencePackType === 'prop'
           ? 'Props/items must match references exactly (shape, material, color, details).'
           : referencePackType === 'shape'
             ? 'If props/items appear, preserve major shape cues from references while following prompt-defined style/material treatment.'
-          : 'Referenced props/items in shot must match shape, material, color, and details.';
+          : 'Referenced props/items in shot must match shape, material, color, and details. If the character lookbook has no such item, still add it from the prop reference rather than inventing a different one.';
         const continuityGuide = continuityReferenceImage
           ? '- Last image is continuity reference; preserve transition continuity for identity, lighting, and spatial placement.'
           : null;
@@ -1339,8 +1373,10 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
  * 角色九宫格造型设计 - 默认视角布局
  * 覆盖常用的拍摄角度，确保角色从各方向都有参考
  */
-const resolveTurnaroundAspectRatio = (): AspectRatio => {
-  const preferredOrder: AspectRatio[] = ['1:1', '16:9', '9:16'];
+const resolveSupportedAspectRatio = (
+  preferredOrder: AspectRatio[],
+  fallback: AspectRatio
+): AspectRatio => {
   const activeImageModel = getActiveModel('image');
   const supportedRatios =
     activeImageModel?.type === 'image'
@@ -1356,7 +1392,18 @@ const resolveTurnaroundAspectRatio = (): AspectRatio => {
     return supportedRatios[0];
   }
 
-  return '1:1';
+  return fallback;
+};
+
+/**
+ * 角色定妆/服装变体使用竖构图，与场景 16:9 脱钩，避免横图切脚。
+ */
+export const resolveCharacterCastingAspectRatio = (): AspectRatio => {
+  return resolveSupportedAspectRatio(['9:16', '1:1', '16:9'], '9:16');
+};
+
+const resolveTurnaroundAspectRatio = (): AspectRatio => {
+  return resolveSupportedAspectRatio(['1:1', '9:16', '16:9'], '1:1');
 };
 
 export const CHARACTER_TURNAROUND_LAYOUT = {
@@ -1413,6 +1460,7 @@ Create a 3x3 CHARACTER TURNAROUND plan (9 panels) for the SAME character.
 ${artDirectionBlock}
 Character:
 - Name: ${character.name}
+- Form: ${character.species || 'follow the visual description'}
 - Gender: ${character.gender}
 - Age: ${character.age}
 - Personality: ${character.personality}
@@ -1440,8 +1488,11 @@ Output JSON only:
 
 Rules:
 - Exactly 9 panels, index 0-8 in order
-- Keep face/hair/body/clothing/accessories consistent across all panels
-- description must be one concise English sentence (10-30 words) with key visible details for that angle`;
+- description is CAMERA/POSE only (angle, shot size, body orientation). Do NOT restate identity, covering, or attire — those come from the lookbook photo
+- Do NOT introduce backpacks, bags, weapons, letters, or handheld hero props
+- Full-body panels must show the complete figure with all extremities visible
+- Neutral studio backdrop in every panel; no location scenery
+- description must be one concise English sentence (10-30 words)`;
 
   try {
     const buildPanels = (parsed: any): CharacterTurnaroundPanel[] => {
@@ -1541,44 +1592,30 @@ export const generateCharacterTurnaroundImage = async (
   const activeImageModel = getActiveModel('image');
   const imageApiFormat = getImageApiFormat(activeImageModel as any);
   const isComfyUi = imageApiFormat === 'comfyui';
-  const stylePrompt = getStylePrompt(visualStyle);
   const masterReference = referenceImage || character.referenceImage;
 
   if (isComfyUi && !masterReference) {
     throw new Error('造型九宫格需要先有角色定妆参考图，请先生成或上传定妆图后再试。');
   }
 
-  const characterSummary =
-    character.visualPrompt || `${character.gender}, ${character.age}, ${character.personality}`;
-  // generateImage 内会对最终 prompt 再做一次 Comfy 英文化；此处不做重复翻译
-
   const panelDescriptions = panels.map((p, idx) => {
     const position = CHARACTER_TURNAROUND_LAYOUT.positionLabels[idx];
-    return `Panel ${idx + 1} (${position}): [${p.viewAngle} / ${p.shotSize}] - ${p.description}`;
+    return `Panel ${idx + 1} (${position}): ${p.viewAngle} / ${p.shotSize} of the SAME subject from image 1.`;
   }).join('\n');
 
-  const artDirectionSuffix = artDirection
-    ? `\nArt Direction: ${artDirection.consistencyAnchors}\nLighting: ${artDirection.lightingStyle}\nTexture: ${artDirection.textureStyle}`
-    : '';
+  const prompt = `Create ONE professional 3x3 character turnaround sheet of exactly the same subject shown in image 1.
+Image 1 is the identity lock. Copy that exact appearance: body plan, head, markings, covering, and any attire already on the subject. Do not redesign. Do not invent a different subject. Do not add attire that is not in image 1. Do not change the body plan.
 
-  const prompt = `Create a professional 3x3 character turnaround sheet of exactly the same character shown in image 1.
-Preserve identity, facial features, apparent age, hairstyle, hair color, body proportions, costume design, costume colors, accessories, and distinctive details consistently across all nine panels. Do not redesign the character or change the outfit.
-
-Visual Style: ${visualStyle} (${stylePrompt})
-Character: ${character.name} - ${characterSummary}
-
-Arrange nine clearly separated panels in a clean 3x3 grid with consistent neutral studio background, consistent soft lighting, and consistent visual style.
-
-Panels (left to right, top to bottom):
+Arrange nine clearly separated panels in a clean 3x3 grid, left to right, top to bottom:
 ${panelDescriptions}
 
 Constraints:
-- Output one single 3x3 grid image only
-- Same person and same costume in every panel
-- No extra people, no duplicated limbs, no text labels, no captions, no watermark
-- Character design sheet, cinematic production reference, high detail${artDirectionSuffix}
-
-Top priority: the character must look like the same person in the same outfit in all 9 panels.`;
+- Output one single 3x3 grid image only, all 9 panels visible
+- Same subject in every panel
+- Close-up panels show this subject's actual head as in image 1
+- Full-body panels must show the complete figure with all extremities visible
+- Neutral studio background, no location scenery, no backpacks or handheld props
+- No extra subjects, no hybridized identity, no duplicated limbs, no text labels, no captions, no watermark`;
 
   const imageParams = (activeImageModel as any)?.params || {};
   const turnaroundWorkflow =
@@ -1586,11 +1623,8 @@ Top priority: the character must look like the same person in the same outfit in
     'qwen_image_edit_2511_fp8_character_turnaround';
   const turnaroundSteps = imageParams.turnaroundSteps ?? 4;
 
-  // 云端多模态可附带定妆图；ComfyUI Edit 工作流通过 characterReferenceImage 注入 LoadImage
-  const referenceImages: string[] = [];
-  if (!isComfyUi && masterReference) {
-    referenceImages.push(masterReference);
-  }
+  // 定妆图必须进入参考槽；九宫格按 image 1 锁身份，不再靠文字重画角色
+  const referenceImages = masterReference ? [masterReference] : [];
 
   try {
     const turnaroundAspectRatio = resolveTurnaroundAspectRatio();
@@ -1605,7 +1639,7 @@ Top priority: the character must look like the same person in the same outfit in
         referencePackType: 'character',
         // ComfyUI：不要 skip 参考图；走专用 turnaround 工作流
         skipComfyImg2Img: false,
-        characterReferenceImage: isComfyUi ? masterReference : undefined,
+        characterReferenceImage: masterReference,
         workflowName: isComfyUi ? turnaroundWorkflow : undefined,
         steps: isComfyUi ? turnaroundSteps : undefined,
         target: options?.target,

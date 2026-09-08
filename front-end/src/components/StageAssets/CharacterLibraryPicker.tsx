@@ -52,7 +52,7 @@ const CharacterLibraryPicker: React.FC<Props> = ({ isOpen, onClose, project, exi
                     className={`text-left bg-[var(--bg-surface)] border rounded-lg overflow-hidden transition-all ${linked ? 'border-[var(--success-border)] opacity-60 cursor-not-allowed' : 'border-[var(--border-primary)] hover:border-[var(--accent-border)] cursor-pointer'}`}>
                     <div className="aspect-video bg-[var(--bg-elevated)] relative">
                       {char.referenceImage ? (
-                        <img src={char.referenceImage} alt={char.name} className="w-full h-full object-cover" />
+                        <img src={char.referenceImage} alt={char.name} className="w-full h-full object-cover object-top" />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center"><Users className="w-6 h-6 text-[var(--text-muted)] opacity-30" /></div>
                       )}
