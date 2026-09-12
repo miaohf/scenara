@@ -221,8 +221,10 @@ ${rawText}
 Requirements:
 - Language: ${language}
 - Visual Style: ${visualStyle}
-- Extract: title, genre, logline, characters (with name, gender, age, personality, species), scenes (with location, time, atmosphere)
+- Extract: title, genre, logline, characters (with name, gender, age, personality, species, exact base wardrobe, explicit costume variations), scenes (with location, time, atmosphere)
 - species is "human" only for actual humans; animals/creatures must use a specific species (e.g. "黑背幼犬")
+- Preserve wardrobe garment names, colors, materials, and style literally. Do not harmonize them with the visual palette.
+- Only create a costume variation when the script explicitly changes the character's outfit; include the applicable sceneIds.
 - Generate story paragraphs with scene references
 
 Return a valid JSON object with the structure:
@@ -230,7 +232,7 @@ Return a valid JSON object with the structure:
   "title": "string",
   "genre": "string", 
   "logline": "string",
-  "characters": [{"id": "string", "name": "string", "gender": "string", "age": "string", "personality": "string", "species": "string", "variations": []}],
+  "characters": [{"id": "string", "name": "string", "gender": "string", "age": "string", "personality": "string", "species": "string", "wardrobe": "exact base wardrobe", "variations": [{"id":"string","name":"string","wardrobe":"exact changed wardrobe","sceneIds":["scene-id"]}]}],
   "scenes": [{"id": "string", "location": "string", "time": "string", "atmosphere": "string"}],
   "storyParagraphs": [{"id": number, "text": "string", "sceneRefId": "string"}]
 }`;
@@ -249,6 +251,7 @@ Generate detailed shots with:
 - cameraMovement: camera direction
 - shotSize: shot type (wide, medium, close-up, etc.)
 - characters: array of character IDs in the shot
+- characterVariations: map a visible character ID to a valid costume variation ID, or {} for the base wardrobe
 
 Return a valid JSON object:
 {
@@ -261,6 +264,7 @@ Return a valid JSON object:
       "cameraMovement": "string",
       "shotSize": "string",
       "characters": ["string"],
+      "characterVariations": {},
       "keyframes": []
     }
   ]
@@ -282,6 +286,7 @@ Name: ${data.name}
 Gender: ${data.gender}
 Age: ${data.age}
 Personality: ${data.personality}
+Base Wardrobe (preserve exactly): ${data.wardrobe || '[not specified]'}
 
 Genre: ${genre}
 Visual Style: ${visualStyle}
@@ -289,7 +294,7 @@ Language: ${language}
 
 Return JSON:
 {
-  "visualPrompt": "detailed description for image generation",
+  "visualPrompt": "detailed description for image generation; preserve every specified wardrobe color, material, garment, and silhouette exactly",
   "negativePrompt": "elements to avoid"
 }`;
   } else {

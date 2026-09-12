@@ -24,6 +24,7 @@ import {
   getSceneNegativePrompt,
   buildCharacterLookbookPromptRules,
   stripProjectPropsFromPrompt,
+  normalizeCharacterWardrobeInPrompt,
   CHARACTER_ATTIRE_INSTRUCTION,
 } from './promptConstants';
 import { compressPromptWithLLM } from './promptCompressionService';
@@ -183,14 +184,19 @@ export const generateAllCharacterPrompts = async (
 
   if (characters.length === 0) return [];
 
-  const characterList = characters.map((c, i) =>
-    `Character ${i + 1} (ID: ${c.id}):
+  const characterList = characters.map((c, i) => {
+    const costumeVariants = (c.variations || [])
+      .map((variation) => `${variation.id}: ${variation.wardrobe || variation.visualPrompt}`)
+      .join(' | ');
+    return `Character ${i + 1} (ID: ${c.id}):
   - Name: ${c.name}
   - Form: ${c.species || 'follow name and personality'}
   - Gender: ${c.gender}
   - Age: ${c.age}
-  - Personality: ${c.personality}`
-  ).join('\n\n');
+  - Personality: ${c.personality}
+  - Base Wardrobe (EXACT SCRIPT WORDING; MUST NOT be changed): ${c.wardrobe || '[not specified]'}
+  - Later Costume Variants (context only; do not apply to base look): ${costumeVariants || '[none]'}`;
+  }).join('\n\n');
 
   const prompt = `You are an expert Art Director and AI prompt engineer for ${visualStyle} style image generation.
 You must generate visual prompts for ALL ${characters.length} characters in a SINGLE response, ensuring they share a UNIFIED visual style while being visually distinct from each other.
@@ -228,7 +234,7 @@ Describe the subject as given in the character data. Do not invent a different k
 1. Core Identity: [what this subject is, age/sex if relevant, body plan and body type - MUST follow proportions rule above]
 2. Head: [distinguishing features of the head — eyes MUST follow eye style rule]
 3. Surface: [hair, fur, feathers, skin, or other covering as applicable]
-4. Attire: [${CHARACTER_ATTIRE_INSTRUCTION}]
+4. Attire: [${CHARACTER_ATTIRE_INSTRUCTION}] Use the exact wardrobe wording supplied for this character. Preserve every garment, color, material, and fit; never substitute palette colors or redesign the outfit.
 5. Pose & Framing: [full-body lookbook, entire figure visible, typical stance for this subject, all extremities visible, small margin, expression matching personality]
 6. Background: [neutral seamless studio backdrop only, no environment, no location]
 7. Technical Quality: ${stylePrompt} — rendering style only, ignore environment cues in style keywords
@@ -279,7 +285,10 @@ Output ONLY the JSON, no explanations.`;
       const charResult = charResults[i];
       if (charResult && charResult.visualPrompt) {
         results.push({
-          visualPrompt: stripProjectPropsFromPrompt(charResult.visualPrompt.trim(), excludePropNames || []),
+          visualPrompt: normalizeCharacterWardrobeInPrompt(
+            stripProjectPropsFromPrompt(charResult.visualPrompt.trim(), excludePropNames || []),
+            characters[i]
+          ),
           negativePrompt: negativePrompt,
         });
         console.log(`  ✅ 角色 ${characters[i].name} 提示词生成成功`);
@@ -357,7 +366,7 @@ Describe the subject as given in the character data. Do not invent a different k
 1. Core Identity: [what this subject is, age/sex if relevant, body plan and body type${artDirection ? ` - MUST follow proportions: ${artDirection.characterDesignRules.proportions}` : ''}]
 2. Head: [distinguishing features of the head${artDirection ? ` — eyes MUST follow eye style: ${artDirection.characterDesignRules.eyeStyle}` : ''}]
 3. Surface: [hair, fur, feathers, skin, or other covering as applicable${artDirection ? `; surface tones from: ${artDirection.colorPalette.skinTones}` : ''}]
-4. Attire: [${CHARACTER_ATTIRE_INSTRUCTION}${artDirection ? `; colors MUST harmonize with palette: ${artDirection.colorPalette.primary}, ${artDirection.colorPalette.secondary}` : ''}]
+4. Attire: [${CHARACTER_ATTIRE_INSTRUCTION}] Exact wardrobe from Character Data: ${char.wardrobe || '[not specified]'}. Preserve its colors, materials, garment names, and silhouette literally; the global palette may guide lighting only and must never replace wardrobe colors.
 5. Pose & Framing: [full-body lookbook, entire figure visible, typical stance for this subject, all extremities visible, small margin, expression matching personality]
 6. Background: [neutral seamless studio backdrop only, no environment, no location]
 7. Technical Quality: ${stylePrompt} — rendering style only, ignore environment cues in style keywords
@@ -454,7 +463,10 @@ Output ONLY the visual prompt text, no explanations.`;
 
   return {
     visualPrompt: type === 'character'
-      ? stripProjectPropsFromPrompt(visualPrompt.trim(), excludePropNames || [])
+      ? normalizeCharacterWardrobeInPrompt(
+          stripProjectPropsFromPrompt(visualPrompt.trim(), excludePropNames || []),
+          data as Character
+        )
       : visualPrompt.trim(),
     negativePrompt: negativePrompt
   };
@@ -911,6 +923,8 @@ export const generateImage = async (
     workflowName?: string;
     /** 覆盖模型默认 steps */
     steps?: number;
+    /** 与 referenceImages 下标对齐的业务说明，用于避免全景图中的角色/道具相互混淆。 */
+    referenceAnnotations?: string[];
     target?: GenerationTarget;
     onJobCreated?: (job: GenerationJobStatus) => void;
     waitForResult?: boolean;
@@ -950,6 +964,12 @@ export const generateImage = async (
 
   try {
     const normalizedUserPrompt = normalizePromptWhitespace(prompt);
+    const referenceMapping = (options?.referenceAnnotations || [])
+      .map((annotation, index) => String(annotation || '').trim()
+        ? `- Reference ${index + 1}: ${String(annotation).trim()}`
+        : '')
+      .filter(Boolean)
+      .join('\n');
 
     // ComfyUI：直接使用角色/场景提示词，不走 Gemini 多模态参考图文案与 LLM 压缩
     if (imageApiFormat === 'comfyui') {
@@ -974,15 +994,19 @@ export const generateImage = async (
       if (continuityReferenceImage) {
         comfyPrompt += '\n\n[ComfyUI end frame] Keep the same subject identity, body plan, attire, and scene from the reference image, but show a clearly different pose, camera angle, and action moment for the END frame. Shot-listed props may be added from prop reference images; do not invent a different item.';
       } else if (qwenEditShot) {
-        comfyPrompt += '\n\n[ComfyUI qwen-edit] Image 1 is the SCENE/location. Build this shot in that environment and lighting. Image 2 is the lead character lookbook: copy face, hair, body, and outfit only — discard the studio backdrop, posing block, and extra lookbook people. Later images are props or background extras standing in that location, not a second studio portrait.';
+        comfyPrompt += `\n\n[ComfyUI qwen-edit] Image 1 is the SCENE/location. Build this shot in that environment and lighting. Image 2 is the lead character identity reference${hasTurnaround ? ' and may be a turnaround or three-view sheet; select the panel matching the requested camera angle' : ''}: copy face, hair, body, and outfit only — discard the reference-sheet layout, studio backdrop, posing block, and duplicate views. Later images are props or background extras standing in that location, not another studio portrait.`;
       } else if (characterRef) {
         if (referencePackType === 'shot') {
-          comfyPrompt += '\n\n[ComfyUI character anchor] Image 1 is the character lookbook and the identity lock. Copy that exact subject appearance and body plan into this shot. Later images are scene or prop references only. Shot-listed props may be added from prop reference images; do not invent a different item. A missing carried item in the lookbook does not forbid it in this shot. Apply the shot description for pose, camera and environment.';
+          comfyPrompt += `\n\n[ComfyUI character anchor] Image 1 is the character identity lock${hasTurnaround ? ' and may be a turnaround or three-view sheet; use the panel matching the requested camera angle' : ''}. Copy that exact subject appearance, body plan, and outfit into this shot; never reproduce the sheet layout or duplicate views. Later images are scene or prop references only. Shot-listed props may be added from prop reference images; do not invent a different item. A missing carried item in the character reference does not forbid it in this shot. Apply the shot description for pose, camera and environment.`;
         } else if (String(options?.workflowName || '').toLowerCase().includes('turnaround')) {
           comfyPrompt += '\n\n[ComfyUI turnaround] Image 1 is the identity lock. Copy appearance, body plan, and any attire already on the subject. Only change camera angle and shot size per panel. Do not add attire that is not in image 1. Do not change the body plan. Do not invent a different subject.';
         } else {
           comfyPrompt += '\n\n[ComfyUI character anchor] Match the reference subject exactly: appearance, body plan, and any attire shown. This is a lookbook: no carried items. Do not add attire that is not in the reference. Apply the prompt for pose and studio framing.';
         }
+      }
+
+      if (referenceMapping) {
+        comfyPrompt += `\n\n[Reference mapping]\n${referenceMapping}`;
       }
 
       comfyPrompt = await translatePromptForComfyUi(comfyPrompt);
@@ -1056,7 +1080,7 @@ Output one cinematic still image.`;
               '- This is a lookbook: do not add backpacks or handheld hero props. Do not add attire that is not in the reference.',
             ];
             if (hasTurnaround) {
-              lines.push('- Some references are 3x3 turnaround sheets for angle-specific consistency.');
+              lines.push('- A selected character reference may be a turnaround or three-view sheet; use the panel matching the requested camera angle.');
             }
             return lines;
           }
@@ -1078,12 +1102,12 @@ Output one cinematic still image.`;
           }
 
           const lines = [
-            '- First images: character lookbook / identity lock.',
+            '- First images: selected character identity references.',
             '- Next image: scene/environment reference.',
             '- Remaining images: prop/item references.',
           ];
           if (hasTurnaround) {
-            lines.push('- Some character references are 3x3 turnaround sheets.');
+            lines.push('- A selected character reference may be a turnaround or three-view sheet.');
           }
           return lines;
         })();
@@ -1117,7 +1141,7 @@ Output one cinematic still image.`;
           ? '- Last image is continuity reference; preserve transition continuity for identity, lighting, and spatial placement.'
           : null;
         const turnaroundGuide = hasTurnaround
-          ? '- If a 3x3 turnaround sheet is present, prioritize panel matching current camera angle.'
+          ? '- If a turnaround or three-view sheet is present, prioritize the panel matching the current camera angle and treat the sheet as one character identity reference.'
           : null;
         const compactPrimaryPrompt = compactTextByWordsAndChars(normalizedUserPrompt, 520, 2800);
         const referenceGuides = [
@@ -1143,6 +1167,10 @@ ${referenceGuides.join('\n')}
 Consistency priorities:
 ${consistencyRules.join('\n')}`;
       }
+    }
+
+    if (referenceMapping) {
+      finalPrompt += `\n\nReference mapping:\n${referenceMapping}`;
     }
 
     const modelRoutingPrefix = buildImageRoutingPrefix(imageRoutingFamily, {
@@ -1666,4 +1694,59 @@ Constraints:
     logScriptProgress(`角色「${character.name}」九宫格造型图片生成失败`);
     throw error;
   }
+};
+
+/** Generate a production three-view sheet: front, side and back full-body views plus a portrait. */
+export const generateCharacterThreeViewImage = async (
+  character: Character,
+  visualStyle: string,
+  referenceImage?: string,
+  options?: { target?: GenerationTarget }
+): Promise<string> => {
+  const activeImageModel = getActiveModel('image');
+  const imageApiFormat = getImageApiFormat(activeImageModel as any);
+  const isComfyUi = imageApiFormat === 'comfyui';
+  const masterReference = referenceImage || character.referenceImage;
+
+  if (isComfyUi && !masterReference) {
+    throw new Error('三视图需要先有角色定妆参考图，请先生成或上传定妆图后再试。');
+  }
+
+  const prompt = `Create ONE professional character three-view reference sheet of exactly the same subject shown in image 1.
+Image 1 is the identity lock. Preserve the exact face, apparent age, hairstyle, body proportions, clothing, colors, accessories, markings, and species. Do not redesign the subject.
+
+Layout:
+- Left area: three evenly spaced full-body views — front, clean side profile, and back.
+- Right area: one large head-and-shoulders portrait matching the same identity.
+- Every full-body view shows the complete figure and all extremities.
+- Neutral seamless studio background and consistent soft production lighting.
+
+Constraints:
+- One single reference-sheet image, not separate files
+- Same subject and same wardrobe in every view
+- No action pose, no location scenery, no extra people or subjects
+- No text labels, captions, logos, watermark, duplicated limbs, or cropped feet
+- ${visualStyle} production-design quality, clean readable silhouette, high detail`;
+
+  const imageParams = (activeImageModel as any)?.params || {};
+  const workflowName = imageParams.turnaroundWorkflowName || 'qwen_image_edit_2511_fp8_character_turnaround';
+  const steps = imageParams.turnaroundSteps ?? 4;
+  const referenceImages = masterReference ? [masterReference] : [];
+
+  return generateImage(
+    prompt,
+    referenceImages,
+    resolveSupportedAspectRatio(['16:9', '1:1', '9:16'], '16:9'),
+    false,
+    false,
+    getNegativePrompt(visualStyle),
+    {
+      referencePackType: 'character',
+      skipComfyImg2Img: false,
+      characterReferenceImage: masterReference,
+      workflowName: isComfyUi ? workflowName : undefined,
+      steps: isComfyUi ? steps : undefined,
+      target: options?.target,
+    }
+  );
 };

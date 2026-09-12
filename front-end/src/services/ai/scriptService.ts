@@ -40,6 +40,7 @@ import {
 } from '../promptTemplateService';
 import { normalizeSceneId } from '../storyboardIdUtils';
 import { resolveEndpointUrl } from '../urlUtils';
+import { formatProductionBibleForPrompt } from '../productionBibleService';
 
 // Re-export 日志回调函数（保持外部 API 兼容）
 export { setScriptLogCallback, clearScriptLogCallback, logScriptProgress } from './apiCore';
@@ -440,6 +441,13 @@ export const parseScriptStructure = async (
     return '其他';
   };
 
+  const normalizePropPresentationMode = (value: unknown): Prop['presentationMode'] => {
+    const mode = String(value || '').trim().toLowerCase();
+    return ['handheld', 'worn', 'placed', 'mounted', 'background', 'used', 'unknown'].includes(mode)
+      ? mode as Prop['presentationMode']
+      : undefined;
+  };
+
   const normalizeStructure = (parsed: any): ScriptData => {
     const characters: Character[] = Array.isArray(parsed.characters)
       ? parsed.characters.map((c: any, idx: number) => ({
@@ -449,9 +457,23 @@ export const parseScriptStructure = async (
           age: String(c?.age || ''),
           personality: String(c?.personality || ''),
           species: c?.species ? String(c.species) : undefined,
+          wardrobe: c?.wardrobe ? String(c.wardrobe) : undefined,
           visualPrompt: c?.visualPrompt ? String(c.visualPrompt) : undefined,
           negativePrompt: c?.negativePrompt ? String(c.negativePrompt) : undefined,
-          variations: []
+          variations: Array.isArray(c?.variations)
+            ? c.variations.map((variation: any, variationIndex: number) => {
+                const wardrobe = String(variation?.wardrobe || variation?.visualPrompt || '').trim();
+                return {
+                  id: String(variation?.id || `${String(c?.id || `char-${idx + 1}`)}-costume-${variationIndex + 1}`),
+                  name: String(variation?.name || `Costume ${variationIndex + 1}`),
+                  wardrobe,
+                  sceneIds: Array.isArray(variation?.sceneIds)
+                    ? variation.sceneIds.map((sceneId: any) => String(sceneId))
+                    : undefined,
+                  visualPrompt: wardrobe,
+                };
+              }).filter((variation: Character['variations'][number]) => !!variation.visualPrompt)
+            : []
         }))
       : [];
 
@@ -472,6 +494,12 @@ export const parseScriptStructure = async (
           name: String(p?.name || `道具${idx + 1}`),
           category: normalizePropCategory(String(p?.category || '其他')),
           description: String(p?.description || ''),
+          isWearable: Boolean(p?.isWearable),
+          presentationMode: normalizePropPresentationMode(p?.presentationMode) || 'unknown',
+          presentationNote: p?.presentationNote ? String(p.presentationNote) : undefined,
+          forbiddenPresentationModes: Array.isArray(p?.forbiddenPresentationModes)
+            ? p.forbiddenPresentationModes.map((mode: unknown) => String(mode).trim()).filter(Boolean)
+            : undefined,
           visualPrompt: p?.visualPrompt ? String(p.visualPrompt) : undefined,
           negativePrompt: p?.negativePrompt ? String(p.negativePrompt) : undefined,
           status: 'pending'
@@ -526,13 +554,19 @@ export const parseScriptStructure = async (
     
     Tasks:
     1. Extract title, genre, logline (in ${language}).
-    2. Extract characters (id, name, gender, age, personality, species).
+    2. Extract characters (id, name, gender, age, personality, species, wardrobe, variations).
        - species is REQUIRED for every character.
        - Use "human" only for actual humans.
        - For animals, pets, or non-human creatures, write the specific species in ${language} (e.g. "黑背幼犬", "拟人棕猫", "German Shepherd puppy").
        - Never treat an animal as a human just because it has a name, gender, age, or clothing.
+       - wardrobe is the exact clothing/appearance wording from the script. Preserve garment names, colors, materials, and style literally; do not harmonize, translate, simplify, or replace them.
+       - wardrobe is the base/first costume. If the script explicitly changes costume, add each later costume to variations with a stable id, short name, exact wardrobe wording, and applicable sceneIds.
+       - Do not invent costume changes that are not present in the script.
     3. Extract scenes (id, location, time, atmosphere).
-    4. Extract recurring props/items that appear in multiple scenes (id, name, category, description).
+    4. Extract recurring props/items that appear in multiple scenes (id, name, category, description, isWearable, presentationMode, presentationNote, forbiddenPresentationModes).
+       - Do not classify clothing already worn by a character as a shot prop; set isWearable=true only for wearable items that must be tracked separately.
+       - presentationMode is a conservative default: handheld, worn, placed, mounted, background, used, or unknown. Use unknown when the script does not explicitly establish how the prop is presented.
+       - presentationNote records only concise spatial/handling facts that are explicit in the script (for example, "held by the short top handle"). Do not invent handling details.
     5. Break down the story into paragraphs linked to scenes.
     
     Input:
@@ -543,9 +577,9 @@ export const parseScriptStructure = async (
       "title": "string",
       "genre": "string",
       "logline": "string",
-      "characters": [{"id": "string", "name": "string", "gender": "string", "age": "string", "personality": "string", "species": "string"}],
+      "characters": [{"id": "string", "name": "string", "gender": "string", "age": "string", "personality": "string", "species": "string", "wardrobe": "exact base clothing description from script", "variations": [{"id":"string","name":"string","wardrobe":"exact changed clothing description","sceneIds":["scene-id"]}]}],
       "scenes": [{"id": "string", "location": "string", "time": "string", "atmosphere": "string"}],
-      "props": [{"id":"string","name":"string","category":"string","description":"string"}],
+      "props": [{"id":"string","name":"string","category":"string","description":"string","isWearable":false,"presentationMode":"handheld|worn|placed|mounted|background|used|unknown","presentationNote":"string","forbiddenPresentationModes":["string"]}],
       "storyParagraphs": [{"id": number, "text": "string", "sceneRefId": "string"}]
     }
   `;
@@ -1188,6 +1222,35 @@ const assessScriptStageShotQuality = (input: {
   };
 };
 
+const normalizeShotCharacterVariations = (
+  raw: unknown,
+  sceneId: string,
+  visibleCharacterIds: string[],
+  characters: Character[]
+): Record<string, string> | undefined => {
+  const requested = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  const result: Record<string, string> = {};
+
+  for (const characterId of visibleCharacterIds) {
+    const character = characters.find(entry => String(entry.id) === characterId);
+    if (!character) continue;
+    const variations = character.variations || [];
+    const requestedId = String(requested[characterId] || '').trim();
+    const requestedVariation = requestedId
+      ? variations.find(variation => String(variation.id) === requestedId)
+      : undefined;
+    const sceneVariation = variations.find(variation =>
+      (variation.sceneIds || []).some(id => String(id) === String(sceneId))
+    );
+    const selected = requestedVariation || sceneVariation;
+    if (selected) result[characterId] = selected.id;
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
+};
+
 const repairShotForScriptStage = (input: {
   shot: Shot;
   shotIndex: number;
@@ -1710,17 +1773,35 @@ export const generateShotList = async (
 
     const sceneAction = paragraphs.slice(0, 5000);
     const charactersJson = JSON.stringify(
-      scriptData.characters.map(c => ({ id: c.id, name: c.name, desc: c.visualPrompt || c.personality }))
+      scriptData.characters.map(c => ({
+        id: c.id,
+        name: c.name,
+        wardrobe: c.wardrobe || '',
+        variations: (c.variations || []).map(variation => ({
+          id: variation.id,
+          name: variation.name,
+          wardrobe: variation.wardrobe || variation.visualPrompt,
+          sceneIds: variation.sceneIds || [],
+        })),
+        desc: c.visualPrompt || c.personality,
+      }))
     );
     const propsJson = JSON.stringify(
-      (scriptData.props || []).map(p => ({ id: p.id, name: p.name, category: p.category, desc: p.description }))
+      (scriptData.props || []).map(p => ({
+        id: p.id,
+        name: p.name,
+        category: p.category,
+        isWearable: !!p.isWearable,
+        desc: p.description,
+      }))
     );
 
     const shotGenerationTemplate = withTemplateFallback(
       promptTemplates.storyboard.shotGeneration,
       DEFAULT_PROMPT_TEMPLATE_CONFIG.storyboard.shotGeneration
     );
-    const prompt = renderPromptTemplate(shotGenerationTemplate, {
+    const productionBibleBlock = formatProductionBibleForPrompt(scriptData);
+    const renderedShotPrompt = renderPromptTemplate(shotGenerationTemplate, {
       sceneIndex: index + 1,
       lang,
       stylePrompt,
@@ -1746,7 +1827,11 @@ export const generateShotList = async (
         ? ' MUST follow the Global Art Direction color palette, lighting, and mood.'
         : '',
       keyframeVisualPromptConstraint: artDir ? ' and follow Art Direction' : '',
+      productionBibleBlock,
     });
+    const prompt = shotGenerationTemplate.includes('{productionBibleBlock}')
+      ? renderedShotPrompt
+      : `${productionBibleBlock}\n\n${renderedShotPrompt}`;
 
     let responseText = '';
     try {
@@ -1784,6 +1869,9 @@ export const generateShotList = async (
           sceneAtmosphere: scene.atmosphere,
           sceneAction,
           shotDurationSeconds,
+          productionBibleBlock,
+          charactersJson,
+          propsJson,
         });
 
         try {
@@ -1908,25 +1996,34 @@ export const generateShotList = async (
     throw new Error('分镜生成失败：AI返回为空（可能是 JSON 结构不匹配或场景内容未被识别）。请打开控制台查看分镜生成日志。');
   }
 
-  const normalizedShots = allShots.map((s, idx) => ({
-    ...s,
-    id: `shot-${idx + 1}`,
-    characters: Array.from(
+  const normalizedShots = allShots.map((s, idx) => {
+    const characters = Array.from(
       new Set(
         (Array.isArray(s.characters) ? s.characters : [])
           .map(id => String(id))
           .filter(id => validCharacterIds.has(id))
       )
-    ),
-    props: Array.from(
-      new Set(
-        (Array.isArray(s.props) ? s.props : [])
-          .map(id => String(id))
-          .filter(id => validPropIds.has(id))
-      )
-    ),
-    keyframes: normalizeShotKeyframes(s, idx, visualStyle)
-  }));
+    );
+    return {
+      ...s,
+      id: `shot-${idx + 1}`,
+      characters,
+      characterVariations: normalizeShotCharacterVariations(
+        s.characterVariations,
+        String(s.sceneId || ''),
+        characters,
+        scriptData.characters
+      ),
+      props: Array.from(
+        new Set(
+          (Array.isArray(s.props) ? s.props : [])
+            .map(id => String(id))
+            .filter(id => validPropIds.has(id))
+        )
+      ),
+      keyframes: normalizeShotKeyframes(s, idx, visualStyle)
+    };
+  });
 
   const qualityCheckedShots = enableQualityCheck
     ? applyScriptStageQualityPipeline(

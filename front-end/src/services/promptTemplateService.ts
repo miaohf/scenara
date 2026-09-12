@@ -38,6 +38,8 @@ export const DEFAULT_PROMPT_TEMPLATE_CONFIG: PromptTemplateConfig = {
     shotGeneration: `Act as a professional cinematographer. Generate a detailed shot list (Camera blocking) for Scene {sceneIndex}.
 Language for Text Output: {lang}.
 
+{productionBibleBlock}
+
 IMPORTANT VISUAL STYLE: {stylePrompt}
 All 'visualPrompt' fields MUST describe shots in this "{visualStyle}" style.
 {artDirectionBlock}
@@ -75,11 +77,12 @@ Instructions:
 5. 'shotSize': Specify the field of view (e.g., Extreme Close-up, Medium Shot, Wide Shot).
 6. 'actionSummary': Detailed description of what happens in the shot (in {lang}).
 7. 'characters': Return ONLY IDs from provided Characters list.
-8. 'props': Return ONLY IDs from provided Props list when a prop is visibly involved. Use [] if none.
-9. 'visualPrompt': Detailed description for image generation in {visualStyle} style (OUTPUT IN {lang}). Include style-specific keywords.{artDirectionVisualPromptConstraint} Keep it under 50 words.
-10. Every shot MUST include all required keys. Do not omit keys; use "" or [] when a value is empty.
-11. keyframes MUST contain BOTH a start frame and an end frame.
-12. Keys and string values MUST use standard JSON double quotes only.
+8. 'characterVariations': For each visible character using a non-base costume, map its character ID to one valid variation ID from that character. Use {} for base wardrobes. Respect variation sceneIds and never invent IDs.
+9. 'props': Return ONLY IDs from provided Props list when a prop is visibly involved. Never return a prop marked 'isWearable: true' when that item is worn by a character; worn clothing belongs to the character wardrobe. Use [] if none.
+10. 'visualPrompt': Detailed description for image generation in {visualStyle} style (OUTPUT IN {lang}). Include style-specific keywords.{artDirectionVisualPromptConstraint} Keep it under 50 words. Do not contradict the selected character wardrobe or costume variation.
+11. Every shot MUST include all required keys. Do not omit keys; use "", [], or {} when a value is empty.
+12. keyframes MUST contain BOTH a start frame and an end frame.
+13. Keys and string values MUST use standard JSON double quotes only.
 
 Output ONLY a valid JSON OBJECT with this exact structure (no markdown, no extra text):
 {
@@ -92,6 +95,7 @@ Output ONLY a valid JSON OBJECT with this exact structure (no markdown, no extra
       "cameraMovement": "string",
       "shotSize": "string",
       "characters": ["string"],
+      "characterVariations": {"character_id": "variation_id"},
       "props": ["string"],
       "keyframes": [
         {"id": "string", "type": "start|end", "visualPrompt": "string (MUST include {visualStyle} style keywords{keyframeVisualPromptConstraint})"}
@@ -111,6 +115,7 @@ JSON Example (shape reference only — replace the content, but keep the schema 
       "cameraMovement": "Slow Push In",
       "shotSize": "Medium Shot",
       "characters": ["char_1"],
+      "characterVariations": {},
       "props": [],
       "keyframes": [
         {"id": "scene-{sceneIndex}-shot-1-start", "type": "start", "visualPrompt": "{visualStyle} style, the character pauses at the doorway, cautious posture, interior shadows, cinematic framing"},
@@ -120,6 +125,13 @@ JSON Example (shape reference only — replace the content, but keep the schema 
   ]
 }`,
     shotRepair: `You previously returned {actualShots} shots for Scene {sceneIndex}, but EXACTLY {shotsPerScene} shots are required.
+
+{productionBibleBlock}
+
+Characters:
+{charactersJson}
+Props:
+{propsJson}
 
 Scene Details:
 Location: {sceneLocation}
@@ -133,8 +145,8 @@ Requirements:
 1. Return EXACTLY {shotsPerScene} shots in JSON object format: {"shots":[...]}.
 2. Keep story continuity and preserve the original cinematic intent.
 3. Each shot represents about {shotDurationSeconds} seconds.
-4. Include fields: id, sceneId, actionSummary, dialogue, cameraMovement, shotSize, characters, props, keyframes.
-5. characters/props must be arrays of valid IDs from provided context.
+4. Include fields: id, sceneId, actionSummary, dialogue, cameraMovement, shotSize, characters, characterVariations, props, keyframes.
+5. characters/props must be arrays of valid IDs from provided context; characterVariations must be {} or a valid character-to-variation mapping.
 6. keyframes must include type=start/end and visualPrompt.
 7. Do not omit keys; use "" or [] when a value is empty.
 8. Keys and string values MUST use standard JSON double quotes only.
@@ -151,6 +163,7 @@ JSON Example (shape reference only):
       "cameraMovement": "Static",
       "shotSize": "Wide Shot",
       "characters": [],
+      "characterVariations": {},
       "props": [],
       "keyframes": [
         {"id": "scene-{sceneIndex}-shot-1-start", "type": "start", "visualPrompt": "{visualStyle} style, starting frame"},
@@ -779,6 +792,7 @@ export const PROMPT_TEMPLATE_FIELD_DEFINITIONS: PromptTemplateFieldDefinition[] 
     placeholders: [
       'sceneIndex',
       'lang',
+      'productionBibleBlock',
       'visualStyle',
       'sceneLocation',
       'sceneAction',
@@ -790,7 +804,7 @@ export const PROMPT_TEMPLATE_FIELD_DEFINITIONS: PromptTemplateFieldDefinition[] 
     category: 'storyboard',
     title: '分镜纠偏提示词',
     description: '当分镜数量不符时触发的自动纠偏模板。',
-    placeholders: ['actualShots', 'sceneIndex', 'shotsPerScene', 'sceneAction'],
+    placeholders: ['actualShots', 'sceneIndex', 'shotsPerScene', 'sceneAction', 'productionBibleBlock', 'charactersJson', 'propsJson'],
   },
   {
     path: 'storyboard.actionSuggestion',

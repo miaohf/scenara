@@ -32,6 +32,41 @@ def _find_shot(shots: list[dict[str, Any]], shot_id: Any) -> dict[str, Any] | No
     return next((shot for shot in shots if _same(shot.get("id"), shot_id)), None)
 
 
+def _image_identity(url: Any) -> str:
+    return str(url or "").split("?", 1)[0]
+
+
+def _append_character_history(
+    character: dict[str, Any],
+    image_url: str | None,
+    source: str = "generated",
+) -> None:
+    if not image_url:
+        return
+    history = character.get("imageHistory")
+    if not isinstance(history, list):
+        history = []
+    key = _image_identity(image_url)
+    existing = next(
+        (entry for entry in history if isinstance(entry, dict) and _image_identity(entry.get("imageUrl")) == key),
+        None,
+    )
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    entry = {
+        "id": existing.get("id") if existing else f"character-image-{now_ms}",
+        "imageUrl": image_url,
+        "createdAt": existing.get("createdAt") if existing else now_ms,
+        "source": existing.get("source", source) if existing else source,
+    }
+    if character.get("visualPrompt"):
+        entry["prompt"] = character["visualPrompt"]
+    character["imageHistory"] = [entry] + [
+        row
+        for row in history
+        if not isinstance(row, dict) or _image_identity(row.get("imageUrl")) != key
+    ][:11]
+
+
 def _idle_status(has_media: bool, job_status: str) -> str:
     if job_status == "cancelled":
         return "completed" if has_media else "pending"
@@ -97,7 +132,27 @@ def _merge_named_assets(old_items: list[Any], new_items: list[Any]) -> list[Any]
             merged.append(item)
             continue
         old = old_by_id.get(str(item.get("id")), {})
-        merged.append(_preserve_completed_media(old, item, "referenceImage"))
+        next_item = _preserve_completed_media(old, item, "referenceImage")
+        for view_key in ("turnaround", "threeView"):
+            if isinstance(old.get(view_key), dict) and isinstance(next_item.get(view_key), dict):
+                next_item[view_key] = _preserve_completed_media(old[view_key], next_item[view_key], "imageUrl")
+        history: list[Any] = []
+        seen: set[str] = set()
+        for entry in [*(next_item.get("imageHistory") or []), *(old.get("imageHistory") or [])]:
+            if not isinstance(entry, dict):
+                continue
+            identity = _image_identity(entry.get("imageUrl"))
+            if not identity or identity in seen:
+                continue
+            seen.add(identity)
+            history.append(entry)
+        if history:
+            next_item["imageHistory"] = sorted(
+                history,
+                key=lambda entry: int(entry.get("createdAt") or 0),
+                reverse=True,
+            )[:12]
+        merged.append(next_item)
     return merged
 
 
@@ -150,8 +205,13 @@ def apply_target_to_payload(
         if not item:
             return None
         if url:
+            if kind == "character":
+                _append_character_history(item, item.get("referenceImage"))
             item["referenceImage"] = url
             item["status"] = "completed"
+            if kind == "character":
+                item["activeImageView"] = "casting"
+                _append_character_history(item, url)
         elif item.get("status") == "generating":
             item["status"] = _idle_status(bool(item.get("referenceImage")), job_status)
         return next_payload
@@ -194,9 +254,34 @@ def apply_target_to_payload(
         if url:
             turnaround["imageUrl"] = url
             turnaround["status"] = "completed"
+            character["activeImageView"] = "turnaround"
         elif turnaround.get("status") == "generating_image":
             turnaround["status"] = (
                 "completed" if job_status == "cancelled" and turnaround.get("imageUrl") else "failed"
+            )
+        return next_payload
+
+    if kind == "threeView":
+        characters = script.get("characters")
+        if not isinstance(characters, list):
+            return None
+        character = next(
+            (row for row in characters if _same(row.get("id"), target.get("characterId"))),
+            None,
+        )
+        if not character:
+            return None
+        three_view = character.get("threeView")
+        if not isinstance(three_view, dict):
+            three_view = {}
+            character["threeView"] = three_view
+        if url:
+            three_view["imageUrl"] = url
+            three_view["status"] = "completed"
+            character["activeImageView"] = "threeView"
+        elif three_view.get("status") == "generating":
+            three_view["status"] = (
+                "completed" if job_status == "cancelled" and three_view.get("imageUrl") else "failed"
             )
         return next_payload
 
@@ -222,8 +307,18 @@ def apply_target_to_payload(
                 "status": "pending",
             }
             frames.append(frame)
+        # 关键帧被手动复制/上传或重新生成后会获得新的 generationId。
+        # 旧任务即使稍后完成，也不能把旧图片写回当前关键帧。
+        target_generation = target.get("generationId")
+        current_generation = frame.get("generationId")
+        if target_generation and current_generation and not _same(target_generation, current_generation):
+            return None
+        if not target_generation and current_generation:
+            return None
         if url:
             frame["imageUrl"] = url
+            if target_generation:
+                frame["generationId"] = target_generation
             frame["status"] = "completed"
         elif frame.get("status") == "generating":
             frame["status"] = _idle_status(bool(frame.get("imageUrl")), job_status)

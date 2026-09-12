@@ -4,6 +4,7 @@ import { Character, PromptVersion } from '../../types';
 import { EditingPrompt, STYLES } from './constants';
 import CollapsibleSection from './CollapsibleSection';
 import PromptEditor from './PromptEditor';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface Props {
   characters: Character[];
@@ -30,11 +31,12 @@ const CharacterSection: React.FC<Props> = ({
   onPromptChange,
   onRollbackVersion
 }) => {
+  const { text } = useInterfaceLanguage();
   if (characters.length === 0) return null;
 
   return (
     <CollapsibleSection
-      title="角色"
+      title={text('角色', 'Characters')}
       icon={<User className="w-5 h-5" />}
       count={characters.length}
       isExpanded={isExpanded}
@@ -53,7 +55,7 @@ const CharacterSection: React.FC<Props> = ({
               onClick={() => onStartEdit('character', char.id, char.visualPrompt || '')}
               className={STYLES.button.edit}
             >
-              编辑
+              {text('编辑', 'Edit')}
             </button>
           </div>
 
@@ -69,14 +71,14 @@ const CharacterSection: React.FC<Props> = ({
             />
           ) : (
             <p className={STYLES.display.base}>
-              {char.visualPrompt || '未设置提示词'}
+              {char.visualPrompt || text('未设置提示词', 'No prompt set')}
             </p>
           )}
 
           {/* Character Variations */}
           {char.variations && char.variations.length > 0 && (
             <div className="mt-4 pl-4 border-l-2 border-[var(--border-primary)] space-y-3">
-              <h4 className="text-xs text-[var(--text-tertiary)] uppercase tracking-wider font-bold">角色变体</h4>
+              <h4 className="text-xs text-[var(--text-tertiary)] uppercase tracking-wider font-bold">{text('角色变体', 'Character Variants')}</h4>
               {char.variations.map(variation => (
                 <div key={variation.id} className={STYLES.card.nested}>
                   <div className="flex items-center justify-between mb-2">
@@ -85,7 +87,7 @@ const CharacterSection: React.FC<Props> = ({
                       onClick={() => onStartEdit('character-variation', char.id, variation.visualPrompt, variation.id)}
                       className={STYLES.button.editSmall}
                     >
-                      编辑
+                      {text('编辑', 'Edit')}
                     </button>
                   </div>
 

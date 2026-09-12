@@ -28,6 +28,8 @@ import {
   EPISODE_BACKUP_TRANSFER_MESSAGES,
   episodeBackupFileName,
 } from '../../hooks/useBackupTransfer';
+import BilingualLabel from '../BilingualLabel';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface Props {
   project: ProjectState;
@@ -35,6 +37,7 @@ interface Props {
 
 const StageExport: React.FC<Props> = ({ project }) => {
   const { showAlert } = useAlert();
+  const { text } = useInterfaceLanguage();
   const completedShots = getCompletedShots(project);
   const progress = calculateProgress(project);
   const estimatedDuration = calculateEstimatedDuration(project);
@@ -205,12 +208,12 @@ const StageExport: React.FC<Props> = ({ project }) => {
         <div className="flex items-center gap-4">
           <h2 className={STYLES.header.title}>
             <Film className="w-5 h-5 text-[var(--accent)]" />
-            成片与导出 <span className={STYLES.header.subtitle}>渲染与导出</span>
+            <BilingualLabel primary="剪辑交付" secondary="DELIVERY" mode="badge" />
           </h2>
         </div>
         <div className="flex items-center gap-2">
           <span className={STYLES.header.status}>
-            状态：{progress === 100 ? '已就绪' : '进行中'}
+            {text('状态', 'STATUS')}：{progress === 100 ? text('已就绪', 'READY') : text('进行中', 'IN PROGRESS')}
           </span>
         </div>
       </div>
@@ -305,4 +308,3 @@ const StageExport: React.FC<Props> = ({ project }) => {
 };
 
 export default StageExport;
-

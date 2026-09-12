@@ -69,7 +69,7 @@ cp -n .env.example .env
 
 ```bash
 # Redis（Celery 必需）
-docker run -d --name scenara-redis -p 6379:6379 redis:7-alpine
+docker run -d --name scenara-redis --restart unless-stopped -p 6379:6379 redis:7-alpine
 
 # ComfyUI 默认 http://127.0.0.1:8188
 # vLLM 默认 http://100.64.0.32:8000/v1（见 back-end/.env）

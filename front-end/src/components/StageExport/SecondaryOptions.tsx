@@ -1,6 +1,8 @@
 import React from 'react';
 import { Layers, Database, Clock, Loader2 } from 'lucide-react';
 import { STYLES, DownloadState } from './constants';
+import BilingualLabel from '../BilingualLabel';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface Props {
   assetsDownloadState: DownloadState;
@@ -22,6 +24,7 @@ const SecondaryOptions: React.FC<Props> = ({
   isDataImporting
 }) => {
   const { isDownloading, phase, progress } = assetsDownloadState;
+  const { text } = useInterfaceLanguage();
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -43,8 +46,10 @@ const SecondaryOptions: React.FC<Props> = ({
           isDownloading ? 'text-[var(--accent-text)]' : 'text-[var(--text-muted)] group-hover:text-[var(--accent-text)]'
         }`} />
         <div>
-          <h4 className="text-sm font-bold text-[var(--text-primary)] mb-1">源素材</h4>
-          <p className="text-[10px] text-[var(--text-tertiary)]">下载全部已生成图片和原始视频片段。</p>
+          <h4 className="text-sm font-bold text-[var(--text-primary)] mb-1">
+            <BilingualLabel primary="源素材" secondary="SOURCE ASSETS" />
+          </h4>
+          <p className="text-[10px] text-[var(--text-tertiary)]">{text('下载全部已生成图片和原始视频片段', 'Download generated media')}</p>
         </div>
       </div>
 
@@ -52,8 +57,10 @@ const SecondaryOptions: React.FC<Props> = ({
       <div className={STYLES.card.base}>
         <Database className="w-5 h-5 text-[var(--text-muted)] group-hover:text-[var(--accent-text)] mb-4 transition-colors" />
         <div>
-          <h4 className="text-sm font-bold text-[var(--text-primary)] mb-1">数据备份</h4>
-          <p className="text-[10px] text-[var(--text-tertiary)]">导出当前剧集数据，或导入其他设备备份。</p>
+          <h4 className="text-sm font-bold text-[var(--text-primary)] mb-1">
+            <BilingualLabel primary="数据备份" secondary="DATA BACKUP" />
+          </h4>
+          <p className="text-[10px] text-[var(--text-tertiary)]">{text('导出或恢复当前分集的制作数据', 'Transfer episode data')}</p>
           <div className="mt-3 flex gap-2">
             <button
               type="button"
@@ -68,7 +75,7 @@ const SecondaryOptions: React.FC<Props> = ({
                   : 'px-3 py-2 text-[10px] rounded-md bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:bg-[var(--border-secondary)]'
               }
             >
-              {isDataExporting ? '导出中...' : '导出当前集'}
+              {isDataExporting ? text('导出中…', 'EXPORTING…') : text('导出分集', 'EXPORT')}
             </button>
             <button
               type="button"
@@ -83,7 +90,7 @@ const SecondaryOptions: React.FC<Props> = ({
                   : 'px-3 py-2 text-[10px] rounded-md bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:bg-[var(--border-secondary)]'
               }
             >
-              {isDataImporting ? '导入中...' : '导入'}
+              {isDataImporting ? text('导入中…', 'IMPORTING…') : text('导入', 'IMPORT')}
             </button>
           </div>
         </div>
@@ -96,8 +103,10 @@ const SecondaryOptions: React.FC<Props> = ({
       >
         <Clock className="w-5 h-5 text-[var(--text-muted)] group-hover:text-[var(--accent-text)] mb-4 transition-colors" />
         <div>
-          <h4 className="text-sm font-bold text-[var(--text-primary)] mb-1">渲染日志</h4>
-          <p className="text-[10px] text-[var(--text-tertiary)]">查看生成历史与状态。</p>
+          <h4 className="text-sm font-bold text-[var(--text-primary)] mb-1">
+            <BilingualLabel primary="生成日志" secondary="GENERATION LOGS" />
+          </h4>
+          <p className="text-[10px] text-[var(--text-tertiary)]">{text('查看生成历史、进度与失败原因', 'Inspect job history')}</p>
         </div>
       </div>
     </div>

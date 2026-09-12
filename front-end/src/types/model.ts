@@ -87,7 +87,15 @@ export interface VideoModelParams {
   workflowName?: string;
   steps?: number;
   supportsEndFrame?: boolean;             // 是否支持尾帧（首尾帧模式）
-  supportsAudio?: boolean;                // 是否支持注入配音音频
+  supportsAudio?: boolean;                // 是否支持外部配音音频注入
+  /** 是否由模型根据 prompt 原生生成音频（例如 MiniMax H3 FL2VA）。 */
+  supportsNativeAudio?: boolean;
+  /** 是否使用 MiniMax H3 Ref2VA 多参考图工作流。 */
+  supportsReferenceImages?: boolean;
+  /** Ref2VA 最多可接收的图片参考数量。 */
+  maxReferenceImages?: number;
+  /** Optional prompt policy override for custom models; built-ins infer it from model id. */
+  promptPolicy?: 'sora' | 'veo' | 'comfyui' | 'generic';
 }
 
 /**
@@ -234,6 +242,10 @@ export interface ImageGenerateOptions {
   /** ComfyUI 负面提示词，写入工作流 negative 节点而非拼进 positive */
   negativePrompt?: string;
   referenceImages?: string[];
+  /** Ref2VA 可选的运动参考视频。 */
+  referenceVideos?: string[];
+  /** Ref2VA 可选的独立音频参考。 */
+  referenceAudios?: string[];
   aspectRatio?: AspectRatio;
   /** 连贯性参考图（如首帧），ComfyUI img2img 时优先作为底图 */
   continuityReferenceImage?: string;
@@ -259,11 +271,15 @@ export interface ImageGenerateOptions {
 
 /** 生成结果写回剧集的目标定位 */
 export type GenerationTarget =
-  | { kind: "character" | "scene" | "prop"; id: string }
+  | { kind: "character"; id: string }
+  | { kind: "scene"; id: string }
+  | { kind: "prop"; id: string }
   | { kind: "variation"; characterId: string; id: string }
   | { kind: "turnaround"; characterId: string }
-  | { kind: "keyframe"; shotId: string; type: "start" | "end" }
-  | { kind: "video" | "nineGrid"; shotId: string };
+  | { kind: "threeView"; characterId: string }
+  | { kind: "keyframe"; shotId: string; type: "start" | "end"; generationId?: string }
+  | { kind: "video"; shotId: string }
+  | { kind: "nineGrid"; shotId: string };
 
 /** 生成任务状态（服务端 `/v1/jobs` 形态的最小子集） */
 export interface GenerationJobStatus {
@@ -282,9 +298,13 @@ export interface VideoGenerateOptions {
   prompt: string;
   startImage?: string;
   endImage?: string;
+  /** Ref2VA 多参考图；首帧/尾帧仍通过 startImage/endImage 单独传入。 */
+  referenceImages?: string[];
   audioUrl?: string;
   aspectRatio?: AspectRatio;
   duration?: VideoDuration;
+  /** 覆盖工作流采样步数，例如 Ref2VA 标准 20 / Turbo 4。 */
+  steps?: number;
   /** 覆盖模型默认 workflowName；未填则回退模型配置或代码默认 */
   workflowName?: string;
   /** 异步任务归属剧集 */
@@ -697,7 +717,7 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
     name: 'ComfyUI MiniMax H3 FLF2V (本地)',
     type: 'video',
     providerId: 'comfyui-local',
-    description: '本地 MiniMax H3 首尾帧图生视频，8-step 768p Turbo；24fps，prompt 内描述对话/音效',
+    description: '本地 MiniMax H3 首尾帧原生音视频，8-step 768p Turbo；24fps，prompt 内描述对白/旁白/音效',
     isBuiltIn: true,
     isEnabled: true,
     params: {
@@ -709,7 +729,32 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
       defaultAspectRatio: '16:9',
       supportsEndFrame: true,
       supportsAudio: false,
+      supportsNativeAudio: true,
       steps: 8,
+    },
+  },
+  {
+    id: 'comfyui-minimax-h3-r2v',
+    apiModel: 'video_minimax_h3_r2v',
+    name: 'ComfyUI MiniMax H3 Ref2VA（本地）',
+    type: 'video',
+    providerId: 'comfyui-local',
+    description: '本地 MiniMax H3 多参考图视频，最多 9 张参考图，支持原生音视频；不替代首尾帧硬约束工作流',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      ...DEFAULT_VIDEO_PARAMS_COMFYUI,
+      workflowName: 'video_minimax_h3_r2v',
+      defaultDuration: 5,
+      supportedDurations: [5, 10, 15],
+      supportedAspectRatios: ['16:9', '9:16', '1:1'],
+      defaultAspectRatio: '16:9',
+      supportsEndFrame: false,
+      supportsAudio: false,
+      supportsNativeAudio: true,
+      supportsReferenceImages: true,
+      maxReferenceImages: 9,
+      steps: 4,
     },
   },
   {

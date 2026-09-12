@@ -22,7 +22,7 @@ cp -n .env.example .env
 **1. Redis**（Celery 与 ComfyUI GPU 串行锁依赖）
 
 ```bash
-docker run -d --name scenara-redis -p 6379:6379 redis:7-alpine
+docker run -d --name scenara-redis --restart unless-stopped -p 6379:6379 redis:7-alpine
 ```
 
 **2. PostgreSQL**（独立库 `scenara`，不要复用其它项目的业务库）

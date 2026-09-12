@@ -7,6 +7,7 @@ import CollapsibleSection from './CollapsibleSection';
 import PromptEditor from './PromptEditor';
 import StatusBadge from './StatusBadge';
 import { findSceneByIdCompat } from '../../services/storyboardIdUtils';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface Props {
   shots: Shot[];
@@ -35,11 +36,12 @@ const KeyframeSection: React.FC<Props> = ({
   onPromptChange,
   onRollbackVersion
 }) => {
+  const { text } = useInterfaceLanguage();
   if (shots.length === 0) return null;
 
   return (
     <CollapsibleSection
-      title="分镜关键帧"
+      title={text('分镜关键帧', 'Shot Keyframes')}
       icon={<Film className="w-5 h-5" />}
       count={shots.length}
       isExpanded={isExpanded}
@@ -52,7 +54,7 @@ const KeyframeSection: React.FC<Props> = ({
             <div className="mb-3">
               <div className="flex items-center gap-2 mb-1">
                 <span className={STYLES.badge.shotNumber}>
-                  镜头 {shotIndex + 1}
+                  {text('镜头', 'SHOT')} {shotIndex + 1}
                 </span>
                 {scene && (
                   <span className="text-xs text-[var(--text-tertiary)]">
@@ -62,7 +64,7 @@ const KeyframeSection: React.FC<Props> = ({
               </div>
               <p className="text-sm text-[var(--text-tertiary)]">{shot.actionSummary}</p>
               <p className="text-xs text-[var(--text-muted)] mt-1">
-                {shot.cameraMovement} · {shot.shotSize || '标准镜头'}
+                {shot.cameraMovement} · {shot.shotSize || text('标准镜头', 'Standard Shot')}
               </p>
             </div>
 
@@ -76,7 +78,7 @@ const KeyframeSection: React.FC<Props> = ({
                           ? STYLES.badge.keyframeStart 
                           : STYLES.badge.keyframeEnd
                       }>
-                        {keyframe.type === 'start' ? '起始帧' : '结束帧'}
+                        {keyframe.type === 'start' ? text('起始帧', 'START FRAME') : text('结束帧', 'END FRAME')}
                       </span>
                       <StatusBadge status={keyframe.status || 'idle'} />
                     </div>
@@ -84,7 +86,7 @@ const KeyframeSection: React.FC<Props> = ({
                       onClick={() => onStartEdit('keyframe', keyframe.id, keyframe.visualPrompt, undefined, shot.id)}
                       className={STYLES.button.editSmall}
                     >
-                      编辑
+                      {text('编辑', 'Edit')}
                     </button>
                   </div>
 
@@ -110,7 +112,7 @@ const KeyframeSection: React.FC<Props> = ({
                     <div className="mt-2 rounded overflow-hidden border border-[var(--border-primary)]">
                       <img 
                         src={keyframe.imageUrl} 
-                        alt={`关键帧 ${keyframe.type}`}
+                        alt={text(`关键帧 ${keyframe.type}`, `${keyframe.type} keyframe`)}
                         className="w-full h-auto"
                       />
                     </div>
@@ -125,7 +127,7 @@ const KeyframeSection: React.FC<Props> = ({
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
                         <span className={STYLES.badge.videoPrompt}>
-                          视频生成提示词
+                          {text('视频生成提示词', 'VIDEO PROMPT')}
                         </span>
                         <StatusBadge status={shot.interval.status || 'idle'} />
                       </div>
@@ -136,7 +138,7 @@ const KeyframeSection: React.FC<Props> = ({
                         }}
                         className={STYLES.button.editVideo}
                       >
-                        编辑
+                        {text('编辑', 'Edit')}
                       </button>
                     </div>
 
@@ -158,7 +160,7 @@ const KeyframeSection: React.FC<Props> = ({
                             <span className="text-[var(--text-tertiary)]">
                               {getDefaultVideoPrompt(shot)}
                               <span className="block mt-1 text-[var(--warning)]">
-                                ⚠ 此视频生成时未保存提示词，以上为推测内容
+                                {text('⚠ 此视频生成时未保存提示词，以上为推测内容', '⚠ No prompt was saved for this video; the text above is inferred.')}
                               </span>
                             </span>
                           )}

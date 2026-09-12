@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Users, Sparkles, RefreshCw, Loader2, MapPin, Archive, X, Search, Trash2, Package, Link2 } from 'lucide-react';
-import { ProjectState, CharacterVariation, Character, Scene, Prop, AspectRatio, AssetLibraryItem, CharacterTurnaroundPanel } from '../../types';
-import { generateImage, generateVisualPrompts, generateArtDirection, generateCharacterTurnaroundPanels, generateCharacterTurnaroundImage, resolveCharacterCastingAspectRatio, applyCharacterCastingPositivePrompt, buildLookbookRegenerateVariation, listProjectPropNames, mergeCharacterCastingNegativePrompt, CHARACTER_IDENTITY_LOCK } from '../../services/aiService';
+import { ProjectState, CharacterVariation, Character, Scene, Prop, AspectRatio, AssetLibraryItem, CharacterTurnaroundPanel, PropPresentationMode } from '../../types';
+import { generateImage, generateVisualPrompts, generateArtDirection, generateCharacterTurnaroundPanels, generateCharacterTurnaroundImage, generateCharacterThreeViewImage, resolveCharacterCastingAspectRatio, applyCharacterCastingPositivePrompt, buildLookbookRegenerateVariation, listProjectPropNames, inferCharacterWardrobe, isWearableProp, normalizeCharacterWardrobeInPrompt, mergeCharacterCastingNegativePrompt, CHARACTER_IDENTITY_LOCK } from '../../services/aiService';
 import { 
   getRegionalPrefix, 
   handleImageUpload, 
@@ -18,16 +18,20 @@ import SceneCard from './SceneCard';
 import PropCard from './PropCard';
 import WardrobeModal from './WardrobeModal';
 import TurnaroundModal from './TurnaroundModal';
+import ThreeViewModal from './ThreeViewModal';
 import { useAlert } from '../GlobalAlert';
 import { getAllAssetLibraryItems, saveAssetToLibrary, deleteAssetFromLibrary } from '../../services/storageService';
 import { applyLibraryItemToProject, createLibraryItemFromCharacter, createLibraryItemFromScene, createLibraryItemFromProp, cloneCharacterForProject } from '../../services/assetLibraryService';
 import { AspectRatioSelector } from '../AspectRatioSelector';
-import { getUserAspectRatio, setUserAspectRatio, getActiveImageModel, resolveShotGenerationModel } from '../../services/modelRegistry';
+import { getUserAspectRatio, getActiveImageModel, resolveShotGenerationModel } from '../../services/modelRegistry';
 import { updatePromptWithVersion } from '../../services/promptVersionService';
 import CharacterLibraryPickerModal from './CharacterLibraryPicker';
 import ProjectAssetPicker from './ProjectAssetPicker';
 import { loadSeriesProject } from '../../services/storageService';
 import { SeriesProject } from '../../types';
+import BilingualLabel from '../BilingualLabel';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
+import { addCharacterImageHistory, resolveCharacterImageView, sameCharacterImage } from '../../services/characterImageHistory';
 
 interface Props {
   project: ProjectState;
@@ -38,6 +42,7 @@ interface Props {
 
 const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, onGeneratingChange }) => {
   const { showAlert } = useAlert();
+  const { text } = useInterfaceLanguage();
   const [batchProgress, setBatchProgress] = useState<{current: number, total: number} | null>(null);
   const [selectedCharId, setSelectedCharId] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
@@ -49,6 +54,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   const [libraryProjectFilter, setLibraryProjectFilter] = useState('all');
   const [replaceTargetCharId, setReplaceTargetCharId] = useState<string | null>(null);
   const [turnaroundCharId, setTurnaroundCharId] = useState<string | null>(null);
+  const [threeViewCharId, setThreeViewCharId] = useState<string | null>(null);
   const [showCharLibraryPicker, setShowCharLibraryPicker] = useState(false);
   const [showSceneLibraryPicker, setShowSceneLibraryPicker] = useState(false);
   const [showPropLibraryPicker, setShowPropLibraryPicker] = useState(false);
@@ -176,14 +182,20 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     return () => window.removeEventListener('openCharacterLibraryPicker', handler);
   }, [project.projectId]);
 
-  // 横竖屏选择状态（从持久化配置读取）
-  const [aspectRatio, setAspectRatioState] = useState<AspectRatio>(() => getUserAspectRatio());
+  // 横竖屏选择状态：优先读取当前项目，旧项目回退到模型默认配置。
+  const [aspectRatio, setAspectRatioState] = useState<AspectRatio>(
+    () => project.aspectRatio || getUserAspectRatio()
+  );
   
-  // 包装 setAspectRatio，同时持久化到模型配置
+  // 包装 setAspectRatio，同时持久化到当前项目。
   const setAspectRatio = (ratio: AspectRatio) => {
     setAspectRatioState(ratio);
-    setUserAspectRatio(ratio);
+    updateProject({ aspectRatio: ratio });
   };
+
+  useEffect(() => {
+    setAspectRatioState(project.aspectRatio || getUserAspectRatio());
+  }, [project.projectId, project.aspectRatio]);
   
 
   // 获取项目配置
@@ -202,7 +214,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     const hasGeneratingCharacters = project.scriptData?.characters.some(char => {
       const isCharGenerating = char.status === 'generating';
       const hasGeneratingVariations = char.variations?.some(v => v.status === 'generating');
-      return isCharGenerating || hasGeneratingVariations;
+      return isCharGenerating || hasGeneratingVariations || char.threeView?.status === 'generating';
     }) ?? false;
 
     const hasGeneratingScenes = project.scriptData?.scenes.some(scene => 
@@ -312,7 +324,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           } else {
             const prompts = await generateVisualPrompts(
               'character',
-              char,
+              { ...char, wardrobe: inferCharacterWardrobe(char, scriptSnapshot.props) },
               genre,
               shotPromptModel,
               visualStyle,
@@ -388,7 +400,26 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       }
 
       if (type === 'character') {
-        const castingCharacter = scriptSnapshot.characters.find(c => compareIds(c.id, id));
+        const rawCastingCharacter = scriptSnapshot.characters.find(c => compareIds(c.id, id));
+        const effectiveWardrobe = inferCharacterWardrobe(rawCastingCharacter, scriptSnapshot.props);
+        const castingCharacter = rawCastingCharacter
+          ? { ...rawCastingCharacter, wardrobe: effectiveWardrobe }
+          : rawCastingCharacter;
+        if (rawCastingCharacter && effectiveWardrobe) {
+          const normalizedPrompt = normalizeCharacterWardrobeInPrompt(rawCastingCharacter.visualPrompt || '', castingCharacter);
+          if (rawCastingCharacter.wardrobe !== effectiveWardrobe || normalizedPrompt !== rawCastingCharacter.visualPrompt) {
+            updateProject(prev => {
+              if (!prev.scriptData) return prev;
+              const newData = cloneScriptData(prev.scriptData);
+              const c = newData.characters.find(c => compareIds(c.id, id));
+              if (c) {
+                c.wardrobe = effectiveWardrobe;
+                if (normalizedPrompt) c.visualPrompt = normalizedPrompt;
+              }
+              return { ...prev, scriptData: newData };
+            });
+          }
+        }
         enhancedPrompt = applyCharacterCastingPositivePrompt(
           enhancedPrompt,
           listProjectPropNames(scriptSnapshot.props),
@@ -444,8 +475,11 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         if (type === 'character') {
           const c = newData.characters.find(c => compareIds(c.id, id));
           if (c) {
+            if (c.referenceImage) addCharacterImageHistory(c, c.referenceImage, 'generated', c.visualPrompt);
             c.referenceImage = imageUrl;
             c.status = 'completed';
+            c.activeImageView = 'casting';
+            addCharacterImageHistory(c, imageUrl, 'generated', c.visualPrompt);
           }
         } else {
           const s = newData.scenes.find(s => compareIds(s.id, id));
@@ -528,14 +562,49 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         const newData = cloneScriptData(prev.scriptData);
         const char = newData.characters.find(c => compareIds(c.id, charId));
         if (char) {
+          if (char.referenceImage) addCharacterImageHistory(char, char.referenceImage, 'generated', char.visualPrompt);
           char.referenceImage = base64;
           char.status = 'completed';
+          char.activeImageView = 'casting';
+          addCharacterImageHistory(char, base64, 'uploaded', char.visualPrompt);
         }
         return { ...prev, scriptData: newData };
       });
     } catch (e: any) {
       showAlert(e.message, { type: 'error' });
     }
+  };
+
+  const handleApplyCharacterHistory = (charId: string, imageUrl: string) => {
+    updateProject((prev) => {
+      if (!prev.scriptData) return prev;
+      const newData = cloneScriptData(prev.scriptData);
+      const char = newData.characters.find(c => compareIds(c.id, charId));
+      if (!char || (resolveCharacterImageView(char) === 'casting' && sameCharacterImage(char.referenceImage, imageUrl))) return prev;
+      const selected = char.imageHistory?.find(entry => sameCharacterImage(entry.imageUrl, imageUrl));
+      if (char.referenceImage) addCharacterImageHistory(char, char.referenceImage, 'generated', char.visualPrompt);
+      char.referenceImage = imageUrl;
+      char.status = 'completed';
+      char.activeImageView = 'casting';
+      addCharacterImageHistory(char, imageUrl, selected?.source || 'generated', selected?.prompt || char.visualPrompt);
+      return { ...prev, scriptData: newData };
+    });
+  };
+
+  const handleOpenCharacterView = (charId: string, view: 'turnaround' | 'threeView') => {
+    updateProject((prev) => {
+      if (!prev.scriptData) return prev;
+      const newData = cloneScriptData(prev.scriptData);
+      const char = newData.characters.find(c => compareIds(c.id, charId));
+      const hasImage = view === 'turnaround' ? !!char?.turnaround?.imageUrl : !!char?.threeView?.imageUrl;
+      if (!char || !hasImage || char.activeImageView === view) return prev;
+      char.activeImageView = view;
+      return { ...prev, scriptData: newData };
+    });
+    window.setTimeout(() => {
+      if (view === 'turnaround') setTurnaroundCharId(charId);
+      else setThreeViewCharId(charId);
+    }, 0);
   };
 
   /**
@@ -776,7 +845,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         if (!char) return;
         prompts = await generateVisualPrompts(
           'character',
-          char,
+          { ...char, wardrobe: inferCharacterWardrobe(char, project.scriptData.props) },
           genre,
           shotPromptModel,
           visualStyle,
@@ -1078,6 +1147,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       name: '新道具',
       category: '其他',
       description: '',
+      presentationMode: 'unknown',
       visualPrompt: '',
       status: 'pending'
     };
@@ -1285,7 +1355,13 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   /**
    * 更新道具基本信息
    */
-  const handleUpdatePropInfo = (propId: string, updates: { name?: string; category?: string; description?: string }) => {
+  const handleUpdatePropInfo = (propId: string, updates: {
+    name?: string;
+    category?: string;
+    description?: string;
+    presentationMode?: PropPresentationMode;
+    presentationNote?: string;
+  }) => {
     if (!project.scriptData) return;
     const newData = cloneScriptData(project.scriptData);
     const prop = (newData.props || []).find(p => compareIds(p.id, propId));
@@ -1293,6 +1369,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       if (updates.name !== undefined) prop.name = updates.name;
       if (updates.category !== undefined) prop.category = updates.category;
       if (updates.description !== undefined) prop.description = updates.description;
+      if (updates.presentationMode !== undefined) prop.presentationMode = updates.presentationMode;
+      if (updates.presentationNote !== undefined) prop.presentationNote = updates.presentationNote || undefined;
       updateProject({ scriptData: invalidateShotGenerationMeta(newData) });
     }
   };
@@ -1328,7 +1406,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
    * 批量生成道具
    */
   const handleBatchGenerateProps = async () => {
-    const items = project.scriptData?.props || [];
+    const items = (project.scriptData?.props || []).filter((prop) => !isWearableProp(prop));
     if (!items.length) return;
 
     const itemsToGen = items.filter(p => !p.referenceImage);
@@ -1374,6 +1452,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     const newVar: CharacterVariation = {
       id: generateId('var'),
       name: name || "New Outfit",
+      wardrobe: prompt || "",
       visualPrompt: prompt || char.visualPrompt || "",
       referenceImage: undefined
     };
@@ -1381,6 +1460,16 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     if (!char.variations) char.variations = [];
     char.variations.push(newVar);
     
+    updateProject({ scriptData: newData });
+  };
+
+  /** 基础服装是镜头默认造型；服装变体只在镜头明确选择后覆盖。 */
+  const handleSaveBaseWardrobe = (charId: string, wardrobe: string) => {
+    if (!project.scriptData) return;
+    const newData = cloneScriptData(project.scriptData);
+    const char = newData.characters.find(c => compareIds(c.id, charId));
+    if (!char) return;
+    char.wardrobe = wardrobe;
     updateProject({ scriptData: newData });
   };
 
@@ -1417,7 +1506,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       const refImages = char.referenceImage ? [char.referenceImage] : [];
       const regionalPrefix = getRegionalPrefix(language, 'character');
       const enhancedPrompt = applyCharacterCastingPositivePrompt(
-        `${regionalPrefix}Character "${char.name}" wearing NEW OUTFIT: ${variation.visualPrompt}. This is an attire change only — keep the same subject and body plan as the reference, and apply the described new outfit.`,
+        `${regionalPrefix}Character "${char.name}" wearing NEW OUTFIT: ${variation.wardrobe || variation.visualPrompt}. This is an attire change only — keep the same subject and body plan as the reference, replace the base wardrobe completely, and preserve every specified garment color and material exactly.`,
         listProjectPropNames(project.scriptData?.props),
         char
       );
@@ -1587,6 +1676,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         if (c && c.turnaround) {
           c.turnaround.imageUrl = imageUrl;
           c.turnaround.status = 'completed';
+          c.activeImageView = 'turnaround';
         }
         return { ...prev, scriptData: newData };
       });
@@ -1640,6 +1730,69 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     handleConfirmTurnaroundPanels(charId, char.turnaround.panels);
   };
 
+  const handleGenerateThreeView = async (charId: string) => {
+    const char = project.scriptData?.characters.find(c => compareIds(c.id, charId));
+    if (!char) return;
+
+    updateProject((prev) => {
+      if (!prev.scriptData) return prev;
+      const newData = cloneScriptData(prev.scriptData);
+      const target = newData.characters.find(c => compareIds(c.id, charId));
+      if (target) {
+        target.threeView = {
+          ...target.threeView,
+          status: 'generating',
+        };
+      }
+      return { ...prev, scriptData: newData };
+    });
+
+    try {
+      const imageUrl = await generateCharacterThreeViewImage(
+        char,
+        visualStyle,
+        char.referenceImage,
+        { target: { kind: 'threeView', characterId: charId } }
+      );
+      updateProject((prev) => {
+        if (!prev.scriptData) return prev;
+        const newData = cloneScriptData(prev.scriptData);
+        const target = newData.characters.find(c => compareIds(c.id, charId));
+        if (target) {
+          target.threeView = { ...target.threeView, imageUrl, status: 'completed' };
+          target.activeImageView = 'threeView';
+        }
+        return { ...prev, scriptData: newData };
+      });
+    } catch (e: any) {
+      updateProject((prev) => {
+        if (!prev.scriptData) return prev;
+        const newData = cloneScriptData(prev.scriptData);
+        const target = newData.characters.find(c => compareIds(c.id, charId));
+        if (target) {
+          target.threeView = { ...target.threeView, status: 'failed' };
+        }
+        return { ...prev, scriptData: newData };
+      });
+      if (onApiKeyError && onApiKeyError(e)) return;
+      showAlert(e?.message || text('三视图生成失败', 'Three-view generation failed'), { type: 'error' });
+    }
+  };
+
+  const handleRegenerateCharacterView = (char: Character) => {
+    const view = resolveCharacterImageView(char);
+    if (view === 'turnaround') {
+      if (char.turnaround?.panels?.length === 9) handleRegenerateTurnaroundImage(char.id);
+      else handleGenerateTurnaroundPanels(char.id);
+      return;
+    }
+    if (view === 'threeView') {
+      handleGenerateThreeView(char.id);
+      return;
+    }
+    handleGenerateAsset('character', char.id);
+  };
+
   // 空状态
   if (!project.scriptData) {
     return (
@@ -1651,8 +1804,11 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   
   const allCharactersReady = project.scriptData.characters.every(c => c.referenceImage);
   const allScenesReady = project.scriptData.scenes.every(s => s.referenceImage);
-  const allPropsReady = (project.scriptData.props || []).length > 0 && (project.scriptData.props || []).every(p => p.referenceImage);
-  const selectedChar = project.scriptData.characters.find(c => compareIds(c.id, selectedCharId));
+  const visibleProps = (project.scriptData.props || []).filter((prop) => !isWearableProp(prop));
+  const allPropsReady = visibleProps.length > 0 && visibleProps.every(p => p.referenceImage);
+  const selectedChar = selectedCharId == null
+    ? undefined
+    : project.scriptData.characters.find(c => compareIds(c.id, selectedCharId));
   const getLibraryProjectName = (item: AssetLibraryItem): string => {
     const projectName = typeof item.projectName === 'string' ? item.projectName.trim() : '';
     return projectName || 'Unknown Project';
@@ -1705,6 +1861,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         <WardrobeModal
           character={selectedChar}
           onClose={() => setSelectedCharId(null)}
+          onBaseWardrobeSave={handleSaveBaseWardrobe}
           onAddVariation={handleAddVariation}
           onDeleteVariation={handleDeleteVariation}
           onGenerateVariation={handleGenerateVariation}
@@ -1725,6 +1882,18 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
             onUpdatePanel={handleUpdateTurnaroundPanel}
             onRegenerate={handleRegenerateTurnaround}
             onRegenerateImage={handleRegenerateTurnaroundImage}
+            onImageClick={setPreviewImage}
+          />
+        ) : null;
+      })()}
+
+      {threeViewCharId && (() => {
+        const threeViewChar = project.scriptData?.characters.find(c => compareIds(c.id, threeViewCharId));
+        return threeViewChar ? (
+          <ThreeViewModal
+            character={threeViewChar}
+            onClose={() => setThreeViewCharId(null)}
+            onGenerate={handleGenerateThreeView}
             onImageClick={setPreviewImage}
           />
         ) : null;
@@ -1888,10 +2057,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         <div className="flex items-center gap-4">
           <h2 className="text-lg font-bold text-[var(--text-primary)] flex items-center gap-3">
             <Users className="w-5 h-5 text-[var(--accent)]" />
-            角色与场景
-            <span className="text-xs text-[var(--text-muted)] font-mono font-normal uppercase tracking-wider bg-[var(--bg-base)]/30 px-2 py-1 rounded">
-              Assets & Casting
-            </span>
+            <BilingualLabel primary="视觉设定" secondary="VISUAL DEVELOPMENT" mode="badge" />
           </h2>
         </div>
         <div className="flex items-center gap-3">
@@ -1901,11 +2067,11 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
             className={STYLES.secondaryButton}
           >
             <Archive className="w-4 h-4" />
-            资产库
+            {text('资产库', 'Asset Library')}
           </button>
           {/* 横竖屏选择：场景/道具；角色定妆固定竖构图 */}
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-[var(--text-tertiary)] uppercase">场景比例</span>
+            <span className="text-[10px] text-[var(--text-tertiary)] uppercase">{text('场景比例', 'SCENE RATIO')}</span>
             <AspectRatioSelector
               value={aspectRatio}
               onChange={setAspectRatio}
@@ -1926,7 +2092,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
               {project.scriptData.scenes.length} SCENES
             </span>
             <span className={STYLES.badge}>
-              {(project.scriptData.props || []).length} PROPS
+              {visibleProps.length} PROPS
             </span>
           </div>
         </div>
@@ -1939,9 +2105,9 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
             <div>
               <h3 className="text-sm font-bold text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-2">
                 <div className="w-1.5 h-1.5 bg-[var(--accent)] rounded-full" />
-                角色定妆 (Casting)
+                <BilingualLabel primary="角色定妆" secondary="CHARACTER CASTING" />
               </h3>
-              <p className="text-xs text-[var(--text-tertiary)] mt-1 pl-3.5">全身棚拍定妆，只锁脸、体型、服装和鞋子；背包等道具在镜头里再加</p>
+              <p className="text-xs text-[var(--text-tertiary)] mt-1 pl-3.5">{text('全身棚拍定妆，只锁脸、体型、服装和鞋子；背包等道具在镜头里再加', 'Full-body casting references lock the face, build, wardrobe, and footwear; shot-specific props are added later.')}</p>
             </div>
             <div className="flex gap-2">
               <button 
@@ -1950,7 +2116,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 className="px-3 py-1.5 bg-[var(--bg-hover)] hover:bg-[var(--border-secondary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               >
                 <Users className="w-3 h-3" />
-                新建角色
+                {text('新建角色', 'New Character')}
               </button>
               {project.projectId && (
                 <button
@@ -1963,7 +2129,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                   className={STYLES.secondaryButton}
                 >
                   <Link2 className="w-3 h-3" />
-                  从角色库添加
+                  {text('从角色库添加', 'Add from Cast')}
                 </button>
               )}
               <button 
@@ -1972,7 +2138,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 className={STYLES.secondaryButton}
               >
                 <Archive className="w-3 h-3" />
-                从资产库选择
+                {text('从资产库选择', 'Choose Asset')}
               </button>
               <button 
                 onClick={() => handleBatchGenerate('character')}
@@ -1980,7 +2146,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 className={allCharactersReady ? STYLES.secondaryButton : STYLES.primaryButton}
               >
                 {allCharactersReady ? <RefreshCw className="w-3 h-3" /> : <Sparkles className="w-3 h-3" />}
-                {allCharactersReady ? '重新生成所有角色' : '一键生成所有角色'}
+                {allCharactersReady ? text('重新生成所有角色', 'Regenerate All') : text('一键生成所有角色', 'Generate All')}
               </button>
             </div>
           </div>
@@ -1992,7 +2158,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 character={char}
                 isGenerating={char.status === 'generating'}
                 shapeReferenceImage={char.shapeReferenceImage}
-                onGenerate={() => handleGenerateAsset('character', char.id)}
+                onGenerate={() => handleRegenerateCharacterView(char)}
                 onUpload={(file) => handleUploadCharacterImage(char.id, file)}
                 onUploadShapeReference={(file) => handleUploadShapeReferenceImage('character', char.id, file)}
                 onClearShapeReference={() => handleClearShapeReferenceImage('character', char.id)}
@@ -2000,12 +2166,14 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 onRegeneratePrompt={() => handleRegenerateAssetPrompt('character', char.id)}
                 isRegeneratingPrompt={regeneratingPromptIds.has(`character:${char.id}`)}
                 onOpenWardrobe={() => setSelectedCharId(char.id)}
-                onOpenTurnaround={() => setTurnaroundCharId(char.id)}
+                onOpenTurnaround={() => handleOpenCharacterView(char.id, 'turnaround')}
+                onOpenThreeView={() => handleOpenCharacterView(char.id, 'threeView')}
                 onImageClick={setPreviewImage}
                 onDelete={() => handleDeleteCharacter(char.id)}
                 onUpdateInfo={(updates) => handleUpdateCharacterInfo(char.id, updates)}
                 onAddToLibrary={() => handleAddCharacterToLibrary(char)}
                 onReplaceFromLibrary={() => openLibrary('character', char.id)}
+                onApplyHistory={(imageUrl) => handleApplyCharacterHistory(char.id, imageUrl)}
               />
             ))}
           </div>
@@ -2017,9 +2185,9 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
             <div>
               <h3 className="text-sm font-bold text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-2">
                 <div className="w-1.5 h-1.5 bg-[var(--success)] rounded-full" />
-                场景概念 (Locations)
+                <BilingualLabel primary="场景概念" secondary="LOCATIONS" />
               </h3>
-              <p className="text-xs text-[var(--text-tertiary)] mt-1 pl-3.5">为剧本场景生成环境参考图</p>
+              <p className="text-xs text-[var(--text-tertiary)] mt-1 pl-3.5">{text('为剧本场景生成环境参考图', 'Create environment references for the locations in the script.')}</p>
             </div>
             <div className="flex gap-2">
               <button 
@@ -2028,7 +2196,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 className="px-3 py-1.5 bg-[var(--bg-hover)] hover:bg-[var(--border-secondary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               >
                 <MapPin className="w-3 h-3" />
-                新建场景
+                {text('新建场景', 'New Location')}
               </button>
               {project.projectId && (
                 <button
@@ -2037,7 +2205,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                   className={STYLES.secondaryButton}
                 >
                   <Link2 className="w-3 h-3" />
-                  从场景库添加
+                  {text('从场景库添加', 'Add from Locations')}
                 </button>
               )}
               <button 
@@ -2046,7 +2214,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 className={STYLES.secondaryButton}
               >
                 <Archive className="w-3 h-3" />
-                从资产库选择
+                {text('从资产库选择', 'Choose Asset')}
               </button>
               <button 
                 onClick={() => handleBatchGenerate('scene')}
@@ -2054,12 +2222,12 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 className={allScenesReady ? STYLES.secondaryButton : STYLES.primaryButton}
               >
                 {allScenesReady ? <RefreshCw className="w-3 h-3" /> : <Sparkles className="w-3 h-3" />}
-                {allScenesReady ? '重新生成所有场景' : '一键生成所有场景'}
+                {allScenesReady ? text('重新生成所有场景', 'Regenerate All') : text('一键生成所有场景', 'Generate All')}
               </button>
             </div>
           </div>
 
-          <div className={GRID_LAYOUTS.cards}>
+          <div className={GRID_LAYOUTS.compactCards}>
             {project.scriptData.scenes.map((scene) => (
               <SceneCard
                 key={scene.id}
@@ -2088,9 +2256,9 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
             <div>
               <h3 className="text-sm font-bold text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-2">
                 <div className="w-1.5 h-1.5 bg-purple-500 rounded-full" />
-                道具库 (Props)
+                <BilingualLabel primary="道具库" secondary="PROPS" />
               </h3>
-              <p className="text-xs text-[var(--text-tertiary)] mt-1 pl-3.5">管理分镜中需要保持一致性的道具/物品</p>
+              <p className="text-xs text-[var(--text-tertiary)] mt-1 pl-3.5">{text('管理分镜中需要保持一致性的道具/物品', 'Manage props and objects that must stay consistent across shots.')}</p>
             </div>
             <div className="flex gap-2">
               <button 
@@ -2099,7 +2267,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 className="px-3 py-1.5 bg-[var(--bg-hover)] hover:bg-[var(--border-secondary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
               >
                 <Package className="w-3 h-3" />
-                新建道具
+                {text('新建道具', 'New Prop')}
               </button>
               {project.projectId && (
                 <button
@@ -2108,7 +2276,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                   className={STYLES.secondaryButton}
                 >
                   <Link2 className="w-3 h-3" />
-                  从道具库添加
+                  {text('从道具库添加', 'Add from Props')}
                 </button>
               )}
               <button 
@@ -2117,28 +2285,28 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 className={STYLES.secondaryButton}
               >
                 <Archive className="w-3 h-3" />
-                从资产库选择
+                {text('从资产库选择', 'Choose Asset')}
               </button>
-              {(project.scriptData.props || []).length > 0 && (
+              {visibleProps.length > 0 && (
                 <button 
                   onClick={handleBatchGenerateProps}
                   disabled={!!batchProgress}
                   className={allPropsReady ? STYLES.secondaryButton : STYLES.primaryButton}
                 >
                   {allPropsReady ? <RefreshCw className="w-3 h-3" /> : <Sparkles className="w-3 h-3" />}
-                  {allPropsReady ? '重新生成所有道具' : '一键生成所有道具'}
+                  {allPropsReady ? text('重新生成所有道具', 'Regenerate All') : text('一键生成所有道具', 'Generate All')}
                 </button>
               )}
             </div>
           </div>
 
-          {(project.scriptData.props || []).length === 0 ? (
+          {visibleProps.length === 0 ? (
             <div className="border border-dashed border-[var(--border-primary)] rounded-xl p-10 text-center text-[var(--text-muted)] text-sm">
-              暂无道具。点击"新建道具"添加需要在多个分镜中保持一致的物品。
+              {text('暂无道具。点击“新建道具”添加需要在多个分镜中保持一致的物品。', 'No props yet. Add objects that need to remain consistent across multiple shots.')}
             </div>
           ) : (
-            <div className={GRID_LAYOUTS.cards}>
-              {(project.scriptData.props || []).map((prop) => (
+            <div className={GRID_LAYOUTS.compactCards}>
+              {visibleProps.map((prop) => (
                 <PropCard
                   key={prop.id}
                   prop={prop}

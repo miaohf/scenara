@@ -3,6 +3,7 @@ import { MapPin, Check, Loader2, Trash2, Edit2, AlertCircle, FolderPlus, Upload,
 import PromptEditor from './PromptEditor';
 import ImageUploadButton from './ImageUploadButton';
 import InlineEditableText from './InlineEditableText';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface SceneCardProps {
   scene: {
@@ -45,6 +46,7 @@ const SceneCard: React.FC<SceneCardProps> = ({
   onUpdateInfo,
   onAddToLibrary,
 }) => {
+  const { text } = useInterfaceLanguage();
   const handleShapeReferenceChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -70,20 +72,20 @@ const SceneCard: React.FC<SceneCardProps> = ({
             {isGenerating ? (
               <>
                 <Loader2 className="w-10 h-10 mb-3 animate-spin text-[var(--accent)]" />
-                <span className="text-[10px] text-[var(--text-tertiary)]">生成中...</span>
+                <span className="text-[10px] text-[var(--text-tertiary)]">{text('生成中...', 'Generating...')}</span>
               </>
             ) : scene.status === 'failed' ? (
               <>
                 <AlertCircle className="w-10 h-10 mb-3 text-[var(--error)]" />
-                <span className="text-[10px] text-[var(--error)] mb-2">生成失败</span>
+                <span className="text-[10px] text-[var(--error)] mb-2">{text('生成失败', 'Generation failed')}</span>
                 <ImageUploadButton
                   variant="inline"
                   size="small"
                   onUpload={onUpload}
                   onGenerate={onGenerate}
                   isGenerating={isGenerating}
-                  uploadLabel="上传"
-                  generateLabel="重试"
+                  uploadLabel={text('上传', 'Upload')}
+                  generateLabel={text('重试', 'Retry')}
                 />
               </>
             ) : (
@@ -95,8 +97,8 @@ const SceneCard: React.FC<SceneCardProps> = ({
                   onUpload={onUpload}
                   onGenerate={onGenerate}
                   isGenerating={isGenerating}
-                  uploadLabel="上传"
-                  generateLabel="生成"
+                  uploadLabel={text('上传', 'Upload')}
+                  generateLabel={text('生成', 'Generate')}
                 />
               </>
             )}
@@ -158,8 +160,8 @@ const SceneCard: React.FC<SceneCardProps> = ({
             onSave={onPromptSave}
             onRegenerate={onRegeneratePrompt}
             isRegenerating={isRegeneratingPrompt}
-            label="场景提示词"
-            placeholder="输入场景视觉描述..."
+            label={text('场景提示词', 'Scene Prompt')}
+            placeholder={text('输入场景视觉描述...', 'Describe the location visually...')}
             maxHeight="max-h-[160px]"
           />
         </div>
@@ -173,20 +175,20 @@ const SceneCard: React.FC<SceneCardProps> = ({
               onUpload={onUpload}
               onGenerate={onGenerate}
               isGenerating={isGenerating}
-              uploadLabel="上传图片"
+              uploadLabel={text('上传图片', 'Upload Image')}
             />
           </div>
         )}
 
         <div className="mt-3 pt-3 border-t border-[var(--border-primary)]">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-[10px] font-mono text-[var(--text-tertiary)] uppercase tracking-wider">场景参考图</span>
+            <span className="text-[10px] font-mono text-[var(--text-tertiary)] uppercase tracking-wider">{text('场景参考图', 'SCENE REFERENCE')}</span>
             {shapeReferenceImage && (
               <button
                 onClick={onClearShapeReference}
                 disabled={isGenerating}
                 className="text-[9px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30"
-                title="清除场景参考图"
+                title={text('清除场景参考图', 'Clear scene reference')}
               >
                 <X className="w-3 h-3" />
               </button>
@@ -195,7 +197,7 @@ const SceneCard: React.FC<SceneCardProps> = ({
           <div className="flex items-center gap-2">
             <label className="px-2 py-1 bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded text-[9px] font-bold uppercase tracking-wider text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer flex items-center gap-1">
               <Upload className="w-3 h-3" />
-              上传场景参考图
+              {text('上传场景参考图', 'Upload Reference')}
               <input
                 type="file"
                 accept="image/*"
@@ -203,15 +205,15 @@ const SceneCard: React.FC<SceneCardProps> = ({
                 onChange={handleShapeReferenceChange}
               />
             </label>
-            <span className="text-[9px] text-[var(--text-muted)]">仅参考场景构图，风格遵循剧本</span>
+            <span className="text-[9px] text-[var(--text-muted)]">{text('仅参考场景构图，风格遵循剧本', 'Uses composition only; style follows the script')}</span>
           </div>
           {shapeReferenceImage && (
             <button
               onClick={() => onImageClick(shapeReferenceImage)}
               className="mt-2 w-full flex items-center gap-2 p-2 rounded border border-[var(--border-primary)] hover:border-[var(--border-secondary)] transition-colors text-left"
             >
-              <img src={shapeReferenceImage} alt="场景参考图" className="w-10 h-10 rounded object-cover" />
-              <span className="text-[10px] text-[var(--text-secondary)]">已设置场景参考图，下次生成将生效</span>
+              <img src={shapeReferenceImage} alt={text('场景参考图', 'Scene reference')} className="w-10 h-10 rounded object-cover" />
+              <span className="text-[10px] text-[var(--text-secondary)]">{text('已设置场景参考图，下次生成将生效', 'Reference set; it will apply to the next generation')}</span>
             </button>
           )}
         </div>
@@ -223,7 +225,7 @@ const SceneCard: React.FC<SceneCardProps> = ({
             className="flex-1 py-2 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <FolderPlus className="w-3 h-3" />
-            加入资产库
+            {text('加入资产库', 'Add to Library')}
           </button>
           <button
             onClick={onDelete}
@@ -231,7 +233,7 @@ const SceneCard: React.FC<SceneCardProps> = ({
             className="flex-1 py-2 bg-transparent hover:bg-[var(--error-bg)] text-[var(--error-text)] hover:text-[var(--error-text)] border border-[var(--error-border)] hover:border-[var(--error-border)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <Trash2 className="w-3 h-3" />
-            删除场景
+            {text('删除场景', 'Delete Scene')}
           </button>
         </div>
       </div>

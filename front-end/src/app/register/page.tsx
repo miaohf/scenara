@@ -4,9 +4,11 @@ import { useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/providers/auth-provider";
 import { AuthShell } from "@/components/AuthShell";
+import { useInterfaceLanguage } from "@/contexts/InterfaceLanguageContext";
 
 export default function RegisterPage() {
   const { register } = useAuth();
+  const { text } = useInterfaceLanguage();
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -21,7 +23,7 @@ export default function RegisterPage() {
     try {
       await register(email, username, password);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "注册失败");
+      setError(err instanceof Error ? err.message : text("注册失败", "Registration failed"));
     } finally {
       setSubmitting(false);
     }
@@ -34,8 +36,8 @@ export default function RegisterPage() {
           <p className="text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--accent-text)] lg:hidden">
             SCENARA
           </p>
-          <h2 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)]">创建账号</h2>
-          <p className="text-sm text-[var(--text-tertiary)]">加入后即可开始你的第一个项目</p>
+          <h2 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)]">{text("创建账号", "Create account")}</h2>
+          <p className="text-sm text-[var(--text-tertiary)]">{text("加入后即可开始你的第一个项目", "Create your first production project")}</p>
         </div>
 
         <form method="post" action="#" onSubmit={handleSubmit} className="space-y-5">
@@ -46,7 +48,7 @@ export default function RegisterPage() {
           ) : null}
 
           <label className="block space-y-2">
-            <span className="text-xs font-medium text-[var(--text-secondary)]">邮箱</span>
+            <span className="text-xs font-medium text-[var(--text-secondary)]">{text("邮箱", "Email")}</span>
             <input
               name="email"
               type="email"
@@ -57,7 +59,7 @@ export default function RegisterPage() {
           </label>
 
           <label className="block space-y-2">
-            <span className="text-xs font-medium text-[var(--text-secondary)]">用户名</span>
+            <span className="text-xs font-medium text-[var(--text-secondary)]">{text("用户名", "Username")}</span>
             <input
               name="username"
               autoComplete="username"
@@ -67,7 +69,7 @@ export default function RegisterPage() {
           </label>
 
           <label className="block space-y-2">
-            <span className="text-xs font-medium text-[var(--text-secondary)]">密码</span>
+            <span className="text-xs font-medium text-[var(--text-secondary)]">{text("密码", "Password")}</span>
             <input
               name="password"
               type="password"
@@ -83,17 +85,17 @@ export default function RegisterPage() {
             disabled={submitting}
             className="mt-2 h-11 w-full rounded-xl bg-[var(--btn-primary-bg)] text-sm font-semibold text-[var(--btn-primary-text)] shadow-[0_10px_28px_var(--btn-primary-shadow)] transition-colors hover:bg-[var(--btn-primary-hover)] disabled:opacity-50"
           >
-            {submitting ? "注册中..." : "注册"}
+            {submitting ? text("注册中…", "Creating…") : text("注册", "Create account")}
           </button>
         </form>
 
         <p className="mt-6 text-center text-sm text-[var(--text-muted)]">
-          已有账号？{" "}
+          {text("已有账号？", "Already have an account?")}{" "}
           <Link
             href="/login"
             className="font-medium text-[var(--accent-text)] transition-colors hover:text-[var(--accent-text-hover)]"
           >
-            登录
+            {text("登录", "Sign in")}
           </Link>
         </p>
       </div>

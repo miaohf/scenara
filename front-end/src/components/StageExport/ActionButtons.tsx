@@ -3,6 +3,8 @@ import { Play, Download, FileVideo, Loader2 } from 'lucide-react';
 import { DownloadState } from './constants';
 import { useAlert } from '../GlobalAlert';
 import { MasterExportMode, MasterVideoQuality } from '../../services/exportService';
+import BilingualLabel from '../BilingualLabel';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface Props {
   completedShotsCount: number;
@@ -30,12 +32,15 @@ const ActionButtons: React.FC<Props> = ({
   onDownloadMaster
 }) => {
   const { showAlert } = useAlert();
+  const { text } = useInterfaceLanguage();
   const { isDownloading, phase, progress: downloadProgress } = downloadState;
   const canDownloadMaster = progress === 100;
   const canDownloadSegments = completedShotsCount > 0;
   const canDownloadByMode = exportMode === 'segments-zip' ? canDownloadSegments : canDownloadMaster;
 
-  const modeLabel = exportMode === 'segments-zip' ? '下载分镜片段 ZIP' : '下载母版视频（WEBM）';
+  const modeLabel = exportMode === 'segments-zip'
+    ? text('下载分镜 ZIP', 'DOWNLOAD SHOT ZIP')
+    : text('下载母版（WEBM）', 'DOWNLOAD MASTER (WEBM)');
   const cardBase = 'min-h-[156px] rounded-xl border border-[var(--border-primary)] bg-[var(--bg-surface)] p-4 flex flex-col justify-between shadow-sm';
   const titleClass = 'text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider';
   const descClass = 'text-[10px] leading-relaxed text-[var(--text-tertiary)]';
@@ -49,8 +54,8 @@ const ActionButtons: React.FC<Props> = ({
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch">
       <div className={cardBase}>
         <div className="space-y-1.5">
-          <p className={titleClass}>预览校验</p>
-          <p className={descClass}>快速检查镜头顺序与生成完整度，避免导出后再返工。</p>
+          <p className={titleClass}><BilingualLabel primary="预览校验" secondary="PREVIEW" /></p>
+          <p className={descClass}>{text('快速检查镜头顺序与生成完整度', 'Review sequence and completeness')}</p>
         </div>
         <button
           onClick={onPreview}
@@ -60,13 +65,13 @@ const ActionButtons: React.FC<Props> = ({
           }
         >
           <Play className="w-4 h-4" />
-          预览视频 ({completedShotsCount}/{totalShots})
+          {text('预览', 'PREVIEW')} ({completedShotsCount}/{totalShots})
         </button>
       </div>
 
       <div className={cardBase}>
         <div className="space-y-2">
-          <p className={titleClass}>导出设置</p>
+          <p className={titleClass}><BilingualLabel primary="导出设置" secondary="EXPORT" /></p>
           <div className="grid grid-cols-2 gap-2">
             <select
               value={exportMode}
@@ -74,8 +79,8 @@ const ActionButtons: React.FC<Props> = ({
               disabled={isDownloading}
               className="h-8 bg-[var(--bg-elevated)] border border-[var(--border-primary)] text-[var(--text-secondary)] rounded px-2 text-[11px] focus:outline-none"
             >
-              <option value="master-video">母版拼接</option>
-              <option value="segments-zip">分镜ZIP</option>
+              <option value="master-video">{text('母版拼接', 'Master video')}</option>
+              <option value="segments-zip">{text('分镜打包', 'Shot ZIP')}</option>
             </select>
             {exportMode === 'master-video' ? (
               <select
@@ -84,9 +89,9 @@ const ActionButtons: React.FC<Props> = ({
                 disabled={isDownloading}
                 className="h-8 bg-[var(--bg-elevated)] border border-[var(--border-primary)] text-[var(--text-secondary)] rounded px-2 text-[11px] focus:outline-none"
               >
-                <option value="economy">省流</option>
-                <option value="balanced">均衡</option>
-                <option value="pro">高画质</option>
+                <option value="economy">{text('省流', 'Economy')}</option>
+                <option value="balanced">{text('均衡', 'Balanced')}</option>
+                <option value="pro">{text('高画质', 'Pro')}</option>
               </select>
             ) : (
               <div className="h-8 rounded border border-transparent bg-transparent" aria-hidden="true" />
@@ -120,15 +125,15 @@ const ActionButtons: React.FC<Props> = ({
 
       <div className={cardBase}>
         <div className="space-y-1.5">
-          <p className={titleClass}>剪辑工程</p>
-          <p className={descClass}>导出 NLE 工程模板（PR/FCP/达芬奇）用于协同制作。</p>
+          <p className={titleClass}><BilingualLabel primary="剪辑工程" secondary="NLE PROJECT" /></p>
+          <p className={descClass}>{text('导出 PR、FCP 或达芬奇工程模板', 'Continue editing with your team')}</p>
         </div>
         <button
           className={ghostActionClass}
           onClick={() => showAlert('暂未开发', { type: 'info', title: '提示' })}
         >
           <FileVideo className="w-4 h-4" />
-          导出剪辑工程文件
+          {text('导出工程', 'EXPORT PROJECT')}
         </button>
       </div>
     </div>

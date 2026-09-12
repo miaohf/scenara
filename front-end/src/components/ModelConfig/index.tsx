@@ -3,23 +3,12 @@
  * 独立的模型管理界面
  */
 
-import React, { useRef, useState, useEffect } from 'react';
-import { X, Settings, MessageSquare, Image, Video, Mic, Key, ExternalLink, Gift, Sparkles } from 'lucide-react';
-import { ModelType, ModelDefinition } from '../../types/model';
-import {
-  getRegistryState,
-  getModels,
-  getActiveModelsConfig,
-  setActiveModel,
-  updateModel,
-  registerModel,
-  removeModel,
-  getGlobalApiKey,
-  setGlobalApiKey,
-} from '../../services/modelRegistry';
-import { verifyApiKey } from '../../services/modelService';
+import React, { useRef, useState } from 'react';
+import { X, Settings, MessageSquare, Image as ImageIcon, Video, Mic, Key } from 'lucide-react';
+import { ModelType } from '../../types/model';
 import ModelList from './ModelList';
 import GlobalSettings from './GlobalSettings';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface ModelConfigModalProps {
   isOpen: boolean;
@@ -29,6 +18,7 @@ interface ModelConfigModalProps {
 type TabType = 'global' | 'chat' | 'image' | 'video' | 'audio';
 
 const ModelConfigModal: React.FC<ModelConfigModalProps> = ({ isOpen, onClose }) => {
+  const { text } = useInterfaceLanguage();
   const [activeTab, setActiveTab] = useState<TabType>('global');
   const [refreshKey, setRefreshKey] = useState(0);
   const modalRef = useRef<HTMLDivElement | null>(null);
@@ -38,12 +28,12 @@ const ModelConfigModal: React.FC<ModelConfigModalProps> = ({ isOpen, onClose }) 
 
   if (!isOpen) return null;
 
-  const tabs: { id: TabType; label: string; icon: React.ReactNode }[] = [
-    { id: 'global', label: '全局配置', icon: <Key className="w-4 h-4" /> },
-    { id: 'chat', label: '对话模型', icon: <MessageSquare className="w-4 h-4" /> },
-    { id: 'image', label: '图片模型', icon: <Image className="w-4 h-4" /> },
-    { id: 'video', label: '视频模型', icon: <Video className="w-4 h-4" /> },
-    { id: 'audio', label: '配音模型', icon: <Mic className="w-4 h-4" /> },
+  const tabs: { id: TabType; label: string; english: string; icon: React.ReactNode }[] = [
+    { id: 'global', label: '全局', english: 'GLOBAL', icon: <Key className="w-4 h-4" /> },
+    { id: 'chat', label: '对话', english: 'CHAT', icon: <MessageSquare className="w-4 h-4" /> },
+    { id: 'image', label: '图片', english: 'IMAGE', icon: <ImageIcon className="w-4 h-4" /> },
+    { id: 'video', label: '视频', english: 'VIDEO', icon: <Video className="w-4 h-4" /> },
+    { id: 'audio', label: '配音', english: 'AUDIO', icon: <Mic className="w-4 h-4" /> },
   ];
 
   return (
@@ -82,8 +72,7 @@ const ModelConfigModal: React.FC<ModelConfigModalProps> = ({ isOpen, onClose }) 
               <Settings className="w-5 h-5 text-[var(--accent-text)]" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-[var(--text-primary)]">模型配置</h2>
-              <p className="text-[10px] text-[var(--text-tertiary)] uppercase tracking-widest font-mono">MODEL CONFIGURATION</p>
+              <h2 className="text-lg font-bold text-[var(--text-primary)]">{text('模型配置', 'Model configuration')}</h2>
             </div>
           </div>
           <button
@@ -107,7 +96,9 @@ const ModelConfigModal: React.FC<ModelConfigModalProps> = ({ isOpen, onClose }) 
               }`}
             >
               {tab.icon}
-              {tab.label}
+              <span className="flex flex-col items-start leading-tight">
+                <span>{text(tab.label, tab.english)}</span>
+              </span>
             </button>
           ))}
         </div>
@@ -127,13 +118,13 @@ const ModelConfigModal: React.FC<ModelConfigModalProps> = ({ isOpen, onClose }) 
         {/* 底部 */}
         <div className="px-6 py-4 border-t border-[var(--border-subtle)] bg-[var(--bg-sunken)] rounded-b-xl flex-shrink-0 flex items-center justify-between">
           <p className="text-[10px] text-[var(--text-muted)] font-mono">
-            配置保存后同步至服务端账号
+            {text('配置保存后同步至服务端账号', 'SAVED TO YOUR ACCOUNT')}
           </p>
           <button
             onClick={onClose}
             className="px-4 py-2 bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] text-xs font-bold rounded-lg hover:bg-[var(--btn-primary-hover)] transition-colors"
           >
-            完成
+            {text('完成', 'DONE')}
           </button>
         </div>
       </div>

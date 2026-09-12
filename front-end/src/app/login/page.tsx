@@ -4,9 +4,11 @@ import { useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/providers/auth-provider";
 import { AuthShell } from "@/components/AuthShell";
+import { useInterfaceLanguage } from "@/contexts/InterfaceLanguageContext";
 
 export default function LoginPage() {
   const { login } = useAuth();
+  const { text } = useInterfaceLanguage();
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -20,7 +22,7 @@ export default function LoginPage() {
     try {
       await login(username, password);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "登录失败");
+      setError(err instanceof Error ? err.message : text("登录失败", "Login failed"));
     } finally {
       setSubmitting(false);
     }
@@ -33,8 +35,8 @@ export default function LoginPage() {
           <p className="text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--accent-text)] lg:hidden">
             SCENARA
           </p>
-          <h2 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)]">欢迎回来</h2>
-          <p className="text-sm text-[var(--text-tertiary)]">登录后继续你的漫剧项目</p>
+          <h2 className="text-2xl font-semibold tracking-tight text-[var(--text-primary)]">{text("欢迎回来", "Welcome back")}</h2>
+          <p className="text-sm text-[var(--text-tertiary)]">{text("登录后继续你的漫剧项目", "Sign in to continue your projects")}</p>
         </div>
 
         <form method="post" action="#" onSubmit={handleSubmit} className="space-y-5">
@@ -45,7 +47,7 @@ export default function LoginPage() {
           ) : null}
 
           <label className="block space-y-2">
-            <span className="text-xs font-medium text-[var(--text-secondary)]">用户名</span>
+            <span className="text-xs font-medium text-[var(--text-secondary)]">{text("用户名", "Username")}</span>
             <input
               name="username"
               autoComplete="username"
@@ -55,7 +57,7 @@ export default function LoginPage() {
           </label>
 
           <label className="block space-y-2">
-            <span className="text-xs font-medium text-[var(--text-secondary)]">密码</span>
+            <span className="text-xs font-medium text-[var(--text-secondary)]">{text("密码", "Password")}</span>
             <input
               name="password"
               type="password"
@@ -70,17 +72,17 @@ export default function LoginPage() {
             disabled={submitting}
             className="mt-2 h-11 w-full rounded-xl bg-[var(--btn-primary-bg)] text-sm font-semibold text-[var(--btn-primary-text)] shadow-[0_10px_28px_var(--btn-primary-shadow)] transition-colors hover:bg-[var(--btn-primary-hover)] disabled:opacity-50"
           >
-            {submitting ? "登录中..." : "登录"}
+            {submitting ? text("登录中…", "Signing in…") : text("登录", "Sign in")}
           </button>
         </form>
 
         <p className="mt-6 text-center text-sm text-[var(--text-muted)]">
-          还没有账号？{" "}
+          {text("还没有账号？", "New to Scenara?")}{" "}
           <Link
             href="/register"
             className="font-medium text-[var(--accent-text)] transition-colors hover:text-[var(--accent-text-hover)]"
           >
-            注册
+            {text("注册", "Create account")}
           </Link>
         </p>
       </div>

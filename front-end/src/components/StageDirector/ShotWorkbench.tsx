@@ -16,6 +16,9 @@ import {
   ChevronDown,
   ChevronUp,
   SlidersHorizontal,
+  Images,
+  ShieldAlert,
+  ListTree,
 } from 'lucide-react';
 import {
   Shot,
@@ -23,6 +26,7 @@ import {
   AspectRatio,
   VideoDuration,
   DubbingMode,
+  Character,
   NineGridData,
   NineGridPanel,
   StoryboardGridPanelCount,
@@ -31,19 +35,27 @@ import SceneContext from './SceneContext';
 import KeyframeEditor from './KeyframeEditor';
 import VideoGenerator from './VideoGenerator';
 import DubbingPanel from './DubbingPanel';
-import { resolveEffectiveVideoModelId, resolveVideoModelRouting } from './utils';
-import { getModelById } from '../../services/modelRegistry';
+import { getRefImagesForShot, isQwenEditKeyframeWorkflow, resolveEffectiveVideoModelId, resolveVideoModelRouting } from './utils';
+import { getActiveImageModel, getModelById } from '../../services/modelRegistry';
 import { findSceneByIdCompat, getShotDisplayKey } from '../../services/storyboardIdUtils';
 import {
   STORYBOARD_GRID_LAYOUTS,
   resolveStoryboardGridLayout,
 } from './constants';
+import {
+  buildReferenceImagePack,
+  describeReferencePack,
+  ReferenceImagePack,
+} from '../../services/referenceImagePack';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
+import { inspectShotProductionConflicts } from '../../services/productionConflictService';
 
 interface ShotWorkbenchProps {
   shot: Shot;
   shotIndex: number;
   totalShots: number;
   scriptData?: ProjectState['scriptData'];
+  projectAspectRatio?: AspectRatio;
   currentVideoModelId: string;
   nextShotHasStartFrame?: boolean;
   isAIOptimizing?: boolean;
@@ -72,10 +84,11 @@ interface ShotWorkbenchProps {
   onCopyNextStartFrame: () => void;
   useAIEnhancement: boolean;
   onToggleAIEnhancement: () => void;
-  onGenerateVideo: (aspectRatio: AspectRatio, duration: VideoDuration, modelId: string) => void;
+  onGenerateVideo: (aspectRatio: AspectRatio, duration: VideoDuration, modelId: string, quality?: 'standard' | 'turbo') => void;
   onCancelVideo?: () => void;
   onCancelKeyframe?: (type: 'start' | 'end') => void;
-  onGenerateDubbing: (mode: DubbingMode, text: string, modelId?: string) => void;
+  voiceCharacters?: Pick<Character, 'id' | 'name'>[];
+  onGenerateDubbing: (mode: DubbingMode, text: string, modelId?: string, speakerId?: string) => void;
   onClearDubbing: () => void;
   onEditVideoPrompt: () => void;
   onVideoModelChange: (modelId: string) => void;
@@ -95,6 +108,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   shotIndex,
   totalShots,
   scriptData,
+  projectAspectRatio = '16:9',
   currentVideoModelId,
   nextShotHasStartFrame = false,
   isAIOptimizing = false,
@@ -127,6 +141,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   onCancelVideo,
   onCancelKeyframe,
   onGenerateDubbing,
+  voiceCharacters = [],
   onClearDubbing,
   onEditVideoPrompt,
   onVideoModelChange,
@@ -138,11 +153,35 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   onSelectNineGridPanel,
   onShowNineGrid,
 }) => {
+  const { language, text } = useInterfaceLanguage();
   const scene = findSceneByIdCompat(scriptData?.scenes, shot.sceneId);
   const activeCharacters = scriptData?.characters.filter((c) => shot.characters.includes(c.id)) || [];
   const availableCharacters = scriptData?.characters.filter((c) => !shot.characters.includes(c.id)) || [];
   const activeProps = (scriptData?.props || []).filter((p) => (shot.props || []).includes(p.id));
   const availablePropsForShot = (scriptData?.props || []).filter((p) => !(shot.props || []).includes(p.id));
+  const previewEntries = useMemo(
+    () => getRefImagesForShot(shot, scriptData || null).entries,
+    [shot, scriptData],
+  );
+  const previewEntrySignature = previewEntries
+    .map((entry) => {
+      const imageIdentity = entry.image.startsWith('data:')
+        ? `${entry.image.slice(0, 32)}:${entry.image.length}:${entry.image.slice(-32)}`
+        : entry.image;
+      return `${entry.type}:${entry.label}:${imageIdentity}`;
+    })
+    .join('|');
+  const activeImageModel = getActiveImageModel() as { params?: { keyframeWorkflowName?: string; workflowName?: string } } | undefined;
+  const previewWorkflowName = activeImageModel?.params?.keyframeWorkflowName || activeImageModel?.params?.workflowName;
+  const previewReferenceLimit = isQwenEditKeyframeWorkflow(previewWorkflowName) ? 3 : 5;
+  const [referencePreviewPack, setReferencePreviewPack] = useState<ReferenceImagePack | null>(null);
+  const [isPreparingReferencePreview, setIsPreparingReferencePreview] = useState(false);
+  const [showReferenceSlots, setShowReferenceSlots] = useState(false);
+  const productionIssues = useMemo(
+    () => inspectShotProductionConflicts(shot, scriptData, language),
+    [shot, scriptData, language],
+  );
+  const blockingProductionIssues = productionIssues.filter((issue) => issue.severity === 'error');
 
   const startKf = shot.keyframes?.find((k) => k.type === 'start');
   const endKf = shot.keyframes?.find((k) => k.type === 'end');
@@ -173,6 +212,34 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   useEffect(() => {
     setLocalVideoModelId(currentVideoModelId || resolveEffectiveVideoModelId(shot.videoModel));
   }, [currentVideoModelId, shot.id, shot.videoModel]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (previewEntries.length === 0) {
+      setReferencePreviewPack(null);
+      setIsPreparingReferencePreview(false);
+      return () => { cancelled = true; };
+    }
+
+    setIsPreparingReferencePreview(true);
+    buildReferenceImagePack(previewEntries, {
+      maxReferenceImages: previewReferenceLimit,
+      reservedReferenceSlots: 1,
+      alwaysCompositeTypes: ['character', 'prop'],
+    })
+      .then((pack) => {
+        if (!cancelled) setReferencePreviewPack(pack);
+      })
+      .catch((error) => {
+        console.warn('[ReferencePack] 合并参考图预览准备失败。', error);
+        if (!cancelled) setReferencePreviewPack(null);
+      })
+      .finally(() => {
+        if (!cancelled) setIsPreparingReferencePreview(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [previewEntrySignature, previewReferenceLimit]);
 
   const modelRouting = resolveVideoModelRouting(
     localVideoModelId || currentVideoModelId || resolveEffectiveVideoModelId(shot.videoModel)
@@ -655,21 +722,168 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
           {isSectionOpen('context') && (
             <div className="border-t border-[var(--border-primary)] p-3">
               {scriptData ? (
-                <SceneContext
-                  shot={shot}
-                  scene={scene}
-                  scenes={scriptData.scenes}
-                  characters={activeCharacters}
-                  availableCharacters={availableCharacters}
-                  props={activeProps}
-                  availableProps={availablePropsForShot}
-                  onAddCharacter={onAddCharacter}
-                  onRemoveCharacter={onRemoveCharacter}
-                  onVariationChange={onVariationChange}
-                  onSceneChange={onSceneChange}
-                  onAddProp={onAddProp}
-                  onRemoveProp={onRemoveProp}
-                />
+                <>
+                  <SceneContext
+                    shot={shot}
+                    scene={scene}
+                    scenes={scriptData.scenes}
+                    characters={activeCharacters}
+                    availableCharacters={availableCharacters}
+                    props={activeProps}
+                    availableProps={availablePropsForShot}
+                    onAddCharacter={onAddCharacter}
+                    onRemoveCharacter={onRemoveCharacter}
+                    onVariationChange={onVariationChange}
+                    onSceneChange={onSceneChange}
+                    onAddProp={onAddProp}
+                    onRemoveProp={onRemoveProp}
+                  />
+                  {productionIssues.length > 0 && (
+                    <div className={`mt-3 rounded-lg border p-3 ${
+                      blockingProductionIssues.length > 0
+                        ? 'border-[var(--error-border)] bg-[var(--error-bg)]'
+                        : 'border-[var(--warning-border)] bg-[var(--warning-bg)]'
+                    }`}>
+                      <div className="flex items-center gap-2">
+                        <ShieldAlert className={`w-4 h-4 ${blockingProductionIssues.length > 0 ? 'text-[var(--error-text)]' : 'text-[var(--warning-text)]'}`} />
+                        <p className="text-[11px] font-bold text-[var(--text-primary)]">
+                          {blockingProductionIssues.length > 0
+                            ? text(`发现 ${blockingProductionIssues.length} 个生成阻断项`, `${blockingProductionIssues.length} generation blocker(s)`)
+                            : text('制作一致性提醒', 'Production consistency notes')}
+                        </p>
+                      </div>
+                      <div className="mt-2 space-y-1.5">
+                        {productionIssues.map((issue) => (
+                          <div key={issue.code} className="text-[10px] leading-relaxed text-[var(--text-secondary)]">
+                            <span className={`mr-1 font-bold uppercase ${issue.severity === 'error' ? 'text-[var(--error-text)]' : issue.severity === 'warning' ? 'text-[var(--warning-text)]' : 'text-[var(--text-muted)]'}`}>
+                              {issue.severity}
+                            </span>
+                            {issue.message}
+                            {issue.suggestion && <p className="ml-10 text-[var(--text-muted)]">{issue.suggestion}</p>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {(isPreparingReferencePreview || !!referencePreviewPack) && (
+                  <div className="mt-3 rounded-lg border border-[var(--border-primary)] bg-[var(--bg-base)]/45 p-3">
+                    <div className="flex items-center gap-2">
+                      <Images className="w-3.5 h-3.5 text-[var(--accent-text)]" />
+                      <p className="text-[11px] font-bold text-[var(--text-secondary)] tracking-wide">
+                        {text('智能整理参考图', 'Smart reference packing')}
+                      </p>
+                      {isPreparingReferencePreview && (
+                        <Loader2 className="w-3 h-3 animate-spin text-[var(--text-muted)]" />
+                      )}
+                      {referencePreviewPack && (
+                        <button
+                          type="button"
+                          onClick={() => setShowReferenceSlots((current) => !current)}
+                          className="ml-auto flex items-center gap-1 rounded border border-[var(--border-primary)] px-2 py-1 text-[9px] font-semibold text-[var(--text-secondary)] hover:border-[var(--accent-border)]"
+                        >
+                          <ListTree className="w-3 h-3" />
+                          {showReferenceSlots ? text('收起预案', 'Hide Plan') : text('检查槽位预案', 'Inspect Slot Plan')}
+                        </button>
+                      )}
+                    </div>
+                    {referencePreviewPack && (
+                      <>
+                        <p className="mt-1 text-[10px] leading-relaxed text-[var(--text-tertiary)]">
+                          {describeReferencePack(referencePreviewPack, language)}
+                        </p>
+                        <p className="mt-1 text-[9px] leading-relaxed text-[var(--text-muted)]">
+                          {text(
+                            `严格预案按当前工作流 ${previewReferenceLimit} 张上限预留 1 个安全槽位；实际任务无需模板图或连续性图时会自动使用该槽位。`,
+                            `The strict plan reserves 1 of ${previewReferenceLimit} slots for a template or continuity frame; the actual request can use it when no extra workflow image is needed.`,
+                          )}
+                        </p>
+                        <div className="mt-2 grid grid-cols-2 gap-2">
+                          {referencePreviewPack.compositeGroups.map((group) => (
+                            <button
+                              key={`${group.type}:${group.entry.label}`}
+                              type="button"
+                              onClick={() => onImageClick(
+                                group.entry.image,
+                                `${group.entry.label} · ${text('全景参考', 'Panorama reference')}`,
+                              )}
+                              className="min-w-0 overflow-hidden rounded-md border border-[var(--border-secondary)] bg-[var(--bg-elevated)] text-left hover:border-[var(--accent-border)] transition-colors"
+                            >
+                              <img
+                                src={group.entry.image}
+                                alt={`${group.entry.label} ${text('全景参考', 'panorama reference')}`}
+                                className="h-20 w-full object-cover object-center"
+                              />
+                              <div className="px-2 py-1.5">
+                                <p className="truncate text-[10px] font-semibold text-[var(--text-secondary)]">
+                                  {group.type === 'character'
+                                    ? text('角色全景参考', 'Character panorama')
+                                    : group.type === 'prop'
+                                      ? text('道具全景参考', 'Prop panorama')
+                                      : text('角色多视图参考', 'Character view-sheet panorama')}
+                                </p>
+                                <p className="truncate text-[9px] text-[var(--text-muted)]">
+                                  {group.entry.includedLabels?.join(' · ')}
+                                </p>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                        {showReferenceSlots && (
+                          <div className="mt-3 space-y-1.5 border-t border-[var(--border-primary)] pt-3">
+                            {referencePreviewPack.slots.map((slot) => (
+                              <button
+                                key={`${slot.slot}:${slot.kind}`}
+                                type="button"
+                                disabled={!slot.image}
+                                onClick={() => slot.image && onImageClick(slot.image, `${text('参考图槽位', 'Reference Slot')} ${slot.slot} · ${slot.label}`)}
+                                className="flex w-full items-center gap-2 rounded-md border border-[var(--border-primary)] bg-[var(--bg-elevated)] p-2 text-left disabled:cursor-default"
+                              >
+                                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-[var(--bg-base)] font-mono text-[10px] font-bold text-[var(--accent-text)]">{slot.slot}</span>
+                                {slot.image ? (
+                                  <img src={slot.image} alt={slot.label} className="h-9 w-12 shrink-0 rounded object-cover" />
+                                ) : (
+                                  <div className="h-9 w-12 shrink-0 rounded border border-dashed border-[var(--border-secondary)] bg-[var(--bg-base)]" />
+                                )}
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2">
+                                    <span className="truncate text-[10px] font-semibold text-[var(--text-secondary)]">
+                                      {slot.kind === 'reserved'
+                                        ? text('安全预留槽位', 'Reserved safety slot')
+                                        : slot.kind === 'empty'
+                                          ? text('可用槽位', 'Available slot')
+                                          : slot.kind === 'continuity'
+                                            ? text('首帧连贯性', 'Start-frame continuity')
+                                            : slot.label}
+                                    </span>
+                                    <span className="rounded border border-[var(--border-primary)] px-1.5 py-0.5 text-[8px] uppercase text-[var(--text-muted)]">{slot.role}</span>
+                                  </div>
+                                  {slot.includedLabels?.length ? (
+                                    <p className="mt-0.5 truncate text-[9px] text-[var(--text-muted)]">{slot.includedLabels.join(' · ')}</p>
+                                  ) : (slot.detailZh || slot.detailEn || slot.detail) ? (
+                                    <p className="mt-0.5 truncate text-[9px] text-[var(--text-muted)]">
+                                      {language === 'zh' ? (slot.detailZh || slot.detail) : (slot.detailEn || slot.detail)}
+                                    </p>
+                                  ) : null}
+                                </div>
+                              </button>
+                            ))}
+                            {referencePreviewPack.droppedInspections.length > 0 && (
+                              <div className="rounded-md border border-[var(--warning-border)] bg-[var(--warning-bg)] p-2">
+                                <p className="text-[9px] font-bold text-[var(--warning-text)]">{text('未采用的参考图', 'Omitted References')}</p>
+                                {referencePreviewPack.droppedInspections.map(({ entry }) => (
+                                  <p key={`${entry.type}:${entry.label}`} className="mt-1 text-[9px] text-[var(--text-secondary)]">
+                                    {entry.type}: {entry.label} — {text('在严格安全预案中暂不采用', 'omitted by the strict safety plan')}
+                                  </p>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                  )}
+                </>
               ) : (
                 <p className="text-xs text-[var(--text-muted)]">暂无脚本资产数据。</p>
               )}
@@ -906,6 +1120,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                 hasEndFrame={hasEndFrame}
                 onGenerate={onGenerateVideo}
                 onCancel={onCancelVideo}
+                defaultAspectRatio={projectAspectRatio}
                 planningShotDuration={scriptData?.planningShotDuration}
                 onEditPrompt={onEditVideoPrompt}
                 onModelChange={(modelId) => {
@@ -915,6 +1130,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
               />
               <DubbingPanel
                 shot={shot}
+                voiceCharacters={voiceCharacters}
                 onGenerateDubbing={onGenerateDubbing}
                 onClearDubbing={onClearDubbing}
               />

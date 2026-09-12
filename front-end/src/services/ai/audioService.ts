@@ -58,8 +58,9 @@ const blobToDataUrl = (blob: Blob): Promise<string> =>
 const buildPromptText = (text: string, mode: DubbingMode, language: string): string => {
   const styleInstruction =
     mode === 'narration'
-      ? `请使用自然、克制的${language}旁白语气朗读以下内容，保持节奏稳定，不要添加额外文本。`
-      : `请使用有情绪但不过度夸张的${language}对白语气朗读以下内容，保持语义清晰，不要添加额外文本。`;
+      ? `请使用自然、克制的旁白语气，严格用以下原文的语言朗读，保持节奏稳定。不要翻译、改写或添加额外文本。`
+      : `请使用有情绪但不过度夸张的对白语气，严格用以下原文的语言朗读，保持语义清晰。不要翻译、改写或添加额外文本。`;
+  void language;
   return `${styleInstruction}\n\n${text}`;
 };
 
@@ -287,4 +288,3 @@ export const generateDubbingAudio = async (
     clearTimeout(timeoutId);
   }
 };
-

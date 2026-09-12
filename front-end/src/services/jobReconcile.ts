@@ -1,6 +1,7 @@
-import type { Episode } from "@/types";
+import type { Character, Episode, Keyframe, Shot } from "@/types";
 import { extractJobMedia, type JobStatus } from "./aiApiAdapter";
 import { sameShotRef } from "./generationQueue";
+import { addCharacterImageHistory, mergeCharacterImageHistories } from "./characterImageHistory";
 
 const sameId = (left: unknown, right: unknown): boolean => String(left) === String(right);
 
@@ -34,7 +35,8 @@ export const episodeHasGeneratingWork = (episode: Episode | null | undefined): b
       (character) =>
         character.status === "generating" ||
         character.variations?.some((variation) => variation.status === "generating") ||
-        character.turnaround?.status === "generating_image",
+        character.turnaround?.status === "generating_image" ||
+        character.threeView?.status === "generating",
     )
   ) {
     return true;
@@ -71,7 +73,7 @@ export function reconcileEpisodeWithJobs(
     if (leftTime !== rightTime) return leftTime - rightTime;
     return left.id.localeCompare(right.id);
   });
-  let next: Episode = {
+  const next: Episode = {
     ...episode,
     scriptData: episode.scriptData
       ? {
@@ -80,6 +82,8 @@ export function reconcileEpisodeWithJobs(
             ...item,
             variations: item.variations?.map((variation) => ({ ...variation })),
             turnaround: item.turnaround ? { ...item.turnaround } : item.turnaround,
+            threeView: item.threeView ? { ...item.threeView } : item.threeView,
+            imageHistory: item.imageHistory?.map((entry) => ({ ...entry })),
           })),
           scenes: episode.scriptData.scenes.map((item) => ({ ...item })),
           props: (episode.scriptData.props || []).map((item) => ({ ...item })),
@@ -124,6 +128,13 @@ export function reconcileEpisodeWithJobs(
       const item = list?.find((row) => sameId(row.id, target.id));
       if (!item) continue;
       if (url && isNewerMedia(item.referenceImage, url)) {
+        if (target.kind === "character") {
+          const character = item as Character;
+          const shouldActivate = character.status === "generating";
+          if (character.referenceImage) addCharacterImageHistory(character, character.referenceImage, "generated", character.visualPrompt);
+          addCharacterImageHistory(character, url, "generated", character.visualPrompt);
+          if (shouldActivate) character.activeImageView = "casting";
+        }
         item.referenceImage = url;
         item.status = "completed";
         changed = true;
@@ -163,9 +174,11 @@ export function reconcileEpisodeWithJobs(
       const character = next.scriptData?.characters.find((row) => sameId(row.id, target.characterId));
       if (!character) continue;
       const turnaround = character.turnaround ? { ...character.turnaround } : { panels: [], status: "generating_image" as const };
+      const shouldActivate = turnaround.status === "generating_image";
       if (url && isNewerMedia(turnaround.imageUrl, url)) {
         turnaround.imageUrl = url;
         turnaround.status = "completed";
+        if (shouldActivate) character.activeImageView = "turnaround";
         changed = true;
       } else if ((job.status === "failed" || job.status === "cancelled") && turnaround.status === "generating_image" && !url) {
         turnaround.status = job.status === "cancelled" && turnaround.imageUrl ? "completed" : "failed";
@@ -178,6 +191,29 @@ export function reconcileEpisodeWithJobs(
       continue;
     }
 
+    if (target.kind === "threeView") {
+      const key = `threeView:${target.characterId}`;
+      markClaimed(key);
+      const character = next.scriptData?.characters.find((row) => sameId(row.id, target.characterId));
+      if (!character) continue;
+      const threeView = character.threeView ? { ...character.threeView } : { status: "generating" as const };
+      const shouldActivate = threeView.status === "generating";
+      if (url && isNewerMedia(threeView.imageUrl, url)) {
+        threeView.imageUrl = url;
+        threeView.status = "completed";
+        if (shouldActivate) character.activeImageView = "threeView";
+        changed = true;
+      } else if ((job.status === "failed" || job.status === "cancelled") && threeView.status === "generating" && !url) {
+        threeView.status = job.status === "cancelled" && threeView.imageUrl ? "completed" : "failed";
+        changed = true;
+      } else if (isActive(job.status) && threeView.status !== "generating") {
+        threeView.status = "generating";
+        changed = true;
+      }
+      character.threeView = threeView;
+      continue;
+    }
+
     const shot = next.shots.find(
       (row, index) => sameId(row.id, target.shotId) || sameShotRef(String(target.shotId), row.id, index),
     );
@@ -185,9 +221,12 @@ export function reconcileEpisodeWithJobs(
 
     if (target.kind === "keyframe") {
       const key = `keyframe:${shot.id}:${target.type}`;
-      markClaimed(key);
       if (!shot.keyframes) shot.keyframes = [];
       let frame = shot.keyframes.find((row) => row.type === target.type);
+      // 旧生成任务可能在用户复制/上传/重新生成后才完成。只要当前帧已有
+      // generationId 且与任务不一致，就不能让该任务回写或认领当前帧。
+      if (frame?.generationId && frame.generationId !== target.generationId) continue;
+      markClaimed(key);
       if (!frame && ((job.status === "completed" && url) || isActive(job.status))) {
         frame = {
           id: `kf-${shot.id}-${target.type}`,
@@ -285,6 +324,13 @@ export function reconcileEpisodeWithJobs(
           };
           changed = true;
         }
+        if (nextChar.threeView?.status === "generating" && !claimed.has(`threeView:${nextChar.id}`)) {
+          nextChar.threeView = {
+            ...nextChar.threeView,
+            status: nextChar.threeView.imageUrl ? "completed" : "failed",
+          };
+          changed = true;
+        }
         return nextChar;
       });
       next.scriptData.scenes = next.scriptData.scenes.map((scene) => {
@@ -304,20 +350,20 @@ export function reconcileEpisodeWithJobs(
     }
 
     next.shots = next.shots.map((shot) => {
-      const keyframes = shot.keyframes?.map((frame) => {
+      const keyframes = shot.keyframes?.map((frame): Keyframe => {
         if (frame.status === "generating" && !claimed.has(`keyframe:${shot.id}:${frame.type}`)) {
           changed = true;
           return { ...frame, status: frame.imageUrl ? "completed" : "failed" };
         }
         return frame;
       });
-      const interval =
+      const interval: Shot["interval"] =
         shot.interval?.status === "generating" && !claimed.has(`video:${shot.id}`)
           ? ((changed = true), { ...shot.interval, status: shot.interval.videoUrl ? "completed" : "failed" as const })
           : shot.interval;
-      const nineGrid =
+      const nineGrid: Shot["nineGrid"] =
         shot.nineGrid &&
-        (shot.nineGrid.status === "generating_image" || shot.nineGrid.status === "generating") &&
+        shot.nineGrid.status === "generating_image" &&
         !claimed.has(`nineGrid:${shot.id}`)
           ? ((changed = true), {
               ...shot.nineGrid,
@@ -326,7 +372,7 @@ export function reconcileEpisodeWithJobs(
           : shot.nineGrid?.status === "generating_panels"
             ? ((changed = true), { ...shot.nineGrid, status: shot.nineGrid.panels?.length ? "panels_ready" : "failed" as const })
             : shot.nineGrid;
-      const dubbing =
+      const dubbing: Shot["dubbing"] =
         shot.dubbing?.status === "generating"
           ? ((changed = true), { ...shot.dubbing, status: shot.dubbing.audioUrl ? "completed" : "failed" as const })
           : shot.dubbing;
@@ -363,7 +409,16 @@ function takeServerMedia<T extends { status?: string }>(
   if (!server) return local;
   const serverUrl = server[urlKey];
   const localUrl = local[urlKey];
-  if (hasMediaUrl(serverUrl) && isNewerMedia(hasMediaUrl(localUrl) ? String(localUrl) : undefined, String(serverUrl))) {
+  const localStatus = String(local.status || "");
+  const localIsGenerating = ["generating", "generating_image", "generating_panels"].includes(localStatus);
+  // 服务端刷新只负责补齐空媒体或替换“本地正在生成”的旧预览。
+  // 如果用户刚手动复制/上传了一张 completed 图片，不能因为服务端快照
+  // 仍是旧 URL 就把用户的选择覆盖掉。
+  if (
+    hasMediaUrl(serverUrl) &&
+    isNewerMedia(hasMediaUrl(localUrl) ? String(localUrl) : undefined, String(serverUrl)) &&
+    (!hasMediaUrl(localUrl) || localIsGenerating)
+  ) {
     return { ...local, [urlKey]: serverUrl, status: doneStatus };
   }
   return local;
@@ -411,6 +466,22 @@ export function mergeEpisodeMediaFromServer(
             changed = true;
             next = { ...next, turnaround };
           }
+          const threeView = character.threeView
+            ? takeServerMedia(character.threeView, serverChar?.threeView, "imageUrl")
+            : character.threeView;
+          if (threeView !== character.threeView) {
+            changed = true;
+            next = { ...next, threeView };
+          }
+          const imageHistory = mergeCharacterImageHistories(character.imageHistory, serverChar?.imageHistory);
+          if (imageHistory !== character.imageHistory) {
+            changed = true;
+            next = { ...next, imageHistory };
+          }
+          if (serverChar?.activeImageView && serverChar.activeImageView !== character.activeImageView) {
+            changed = true;
+            next = { ...next, activeImageView: serverChar.activeImageView };
+          }
           return variations !== character.variations ? { ...next, variations } : next;
         }),
         scenes: mergeAsset(local.scriptData.scenes, server.scriptData?.scenes) || local.scriptData.scenes,
@@ -423,9 +494,19 @@ export function mergeEpisodeMediaFromServer(
       (row, rowIndex) => sameId(row.id, shot.id) || sameShotRef(String(shot.id), row.id, rowIndex) || sameShotRef(String(row.id), shot.id, index),
     );
     const keyframes = shot.keyframes?.map((frame) => {
+      const serverFrame = serverShot?.keyframes?.find((row) => row.type === frame.type);
+      // 服务端旧快照可能在本地新版本保存完成前返回。generationId 存在时，
+      // 只能合并同一版本的结果，避免轮询把手动复制的帧换回旧图。
+      if (
+        frame.generationId &&
+        serverFrame &&
+        serverFrame.generationId !== frame.generationId
+      ) {
+        return frame;
+      }
       const merged = takeServerMedia(
         frame,
-        serverShot?.keyframes?.find((row) => row.type === frame.type),
+        serverFrame,
         "imageUrl",
       );
       if (merged !== frame) changed = true;

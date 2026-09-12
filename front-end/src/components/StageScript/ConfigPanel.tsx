@@ -5,6 +5,7 @@ import { DURATION_OPTIONS, LANGUAGE_OPTIONS, VISUAL_STYLE_OPTIONS, STYLES } from
 import ModelSelector from '../ModelSelector';
 import { getChatModelApiName } from '../../services/modelRegistry';
 import { parseDurationToSeconds } from '../../services/durationParser';
+import BilingualLabel from '../BilingualLabel';
 
 interface Props {
   title: string;
@@ -104,7 +105,7 @@ const ConfigPanel: React.FC<Props> = ({
       <div className="h-14 px-5 border-b border-[var(--border-primary)] flex items-center justify-between shrink-0">
         <h2 className="text-sm font-bold text-[var(--text-primary)] tracking-wide flex items-center gap-2">
           <BookOpen className="w-4 h-4 text-[var(--text-tertiary)]" />
-          项目配置
+          <BilingualLabel primary="剧本策划" secondary="STORY PLANNING" mode="stacked" />
         </h2>
       </div>
 

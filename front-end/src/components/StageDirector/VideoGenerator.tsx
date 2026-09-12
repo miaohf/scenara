@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Video, Loader2, Edit2 } from 'lucide-react';
 import { Shot, AspectRatio, VideoDuration } from '../../types';
 import { VideoSettingsPanel } from '../AspectRatioSelector';
-import { resolveVideoModelRouting } from './utils';
+import { isMiniMaxH3VideoModel, resolveVideoModelRouting } from './utils';
 import {
   getDefaultAspectRatio,
   getVideoModels,
@@ -20,11 +20,12 @@ interface VideoGeneratorProps {
   shotIndex?: number;
   hasStartFrame: boolean;
   hasEndFrame: boolean;
-  onGenerate: (aspectRatio: AspectRatio, duration: VideoDuration, modelId: string) => void;
+  onGenerate: (aspectRatio: AspectRatio, duration: VideoDuration, modelId: string, quality?: 'standard' | 'turbo') => void;
   onCancel?: () => void;
   onEditPrompt: () => void;
   onModelChange?: (modelId: string) => void;
   planningShotDuration?: number;
+  defaultAspectRatio?: AspectRatio;
 }
 
 const VideoGenerator: React.FC<VideoGeneratorProps> = ({
@@ -37,6 +38,7 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   onEditPrompt,
   onModelChange,
   planningShotDuration,
+  defaultAspectRatio = '16:9',
 }) => {
   const normalizeModelId = (modelId?: string) => {
     if (!modelId) return modelId;
@@ -74,7 +76,10 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   const [veoFastQuality, setVeoFastQuality] = useState<'standard' | '4k'>(
     resolveVeoFastQuality(shot.videoModel)
   );
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>(() => getDefaultAspectRatio());
+  const [h3Quality, setH3Quality] = useState<'standard' | 'turbo'>(shot.interval?.videoQuality || 'standard');
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>(
+    () => shot.interval?.aspectRatio || defaultAspectRatio || getDefaultAspectRatio()
+  );
   const [duration, setDuration] = useState<VideoDuration>(5);
   const [durationHint, setDurationHint] = useState('');
   const [recommendedDuration, setRecommendedDuration] = useState<VideoDuration>(5);
@@ -96,7 +101,9 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
       : selectedModelId;
   const modelRouting = resolveVideoModelRouting(effectiveModelId || selectedModelId || 'sora-2');
   const routingLabel =
-    modelRouting.family === 'sora'
+    isMiniMaxH3VideoModel(effectiveModelId || selectedModelId)
+      ? 'ComfyUI H3'
+      : modelRouting.family === 'sora'
       ? 'Sora'
       : modelRouting.family === 'doubao-task'
         ? 'Doubao Task'
@@ -112,6 +119,8 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   const isGenerating = isBusy;
   const hasVideo = !!shot.interval?.videoUrl;
   const resolvedVideoSrc = useResolvedVideoUrl(shot.interval?.videoUrl);
+  const [mediaAspectRatio, setMediaAspectRatio] = useState<AspectRatio | null>(null);
+  const previewAspectRatio = hasVideo ? (mediaAspectRatio || shot.interval?.aspectRatio || aspectRatio) : aspectRatio;
 
   useEffect(() => {
     if (!selectedModel) return;
@@ -133,6 +142,12 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
       setDuration(recommendation.duration);
     }
   }, [selectedModelId, shot.id]);
+
+  useEffect(() => {
+    setAspectRatio(shot.interval?.aspectRatio || defaultAspectRatio || getDefaultAspectRatio());
+    setH3Quality(shot.interval?.videoQuality || 'standard');
+    setMediaAspectRatio(null);
+  }, [shot.id, shot.interval?.aspectRatio, defaultAspectRatio]);
 
   useEffect(() => {
     if (!selectedModel) return;
@@ -166,7 +181,11 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   }, [shot.id, shot.videoModel, activeVideoModel?.id, videoModels.map((m) => m.id).join('|')]);
 
   const handleGenerate = () => {
-    onGenerate(aspectRatio, duration, effectiveModelId);
+    onGenerate(aspectRatio, duration, effectiveModelId, h3Quality);
+  };
+
+  const handleH3QualityChange = (quality: 'standard' | 'turbo') => {
+    setH3Quality(quality);
   };
 
   const handleVeoFastQualityChange = (quality: 'standard' | '4k') => {
@@ -177,7 +196,8 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
     }
   };
 
-  const canGenerate = hasStartFrame && !isMissingVolcengineApiKey;
+  const isRef2VModel = effectiveModelId.toLowerCase().includes('r2v');
+  const canGenerate = (isRef2VModel || hasStartFrame) && !isMissingVolcengineApiKey;
 
   return (
     <div className="grid grid-cols-1 @min-[720px]:grid-cols-[minmax(0,22rem)_minmax(0,1fr)] gap-3 items-start">
@@ -267,12 +287,38 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
               {capability.label} {capability.enabled ? 'ON' : 'OFF'}
             </span>
           ))}
+          {isMiniMaxH3VideoModel(effectiveModelId || selectedModelId) && (
+            <span className="px-1.5 py-0.5 rounded border text-[10px] font-mono text-[var(--success)] border-[var(--success)]/40 bg-[var(--success)]/10">
+              原生音频 ON
+            </span>
+          )}
           {hasEndFrame && !modelRouting.supportsEndFrame && (
             <p className="basis-full text-[9px] text-[var(--warning-text)] font-mono">
               当前模型会自动忽略尾帧输入，仅使用首帧驱动。
             </p>
           )}
         </div>
+        {isMiniMaxH3VideoModel(effectiveModelId || selectedModelId) && (
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-[var(--text-tertiary)] uppercase">视频质量</span>
+            <div className="flex gap-1">
+              {(['standard', 'turbo'] as const).map((quality) => (
+                <button
+                  key={quality}
+                  onClick={() => handleH3QualityChange(quality)}
+                  disabled={isGenerating}
+                  className={`px-3 py-1.5 rounded-md text-xs transition-all ${
+                    h3Quality === quality
+                      ? 'bg-[var(--accent)] text-[var(--text-primary)]'
+                      : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)] hover:text-[var(--text-secondary)]'
+                  } ${isGenerating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                >
+                  {quality === 'standard' ? '高质量（20步）' : 'Turbo（4/8步）'}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {selectedModelId === 'veo_3_1-fast' && (
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-[var(--text-tertiary)] uppercase">清晰度</span>
@@ -376,15 +422,26 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
       <div className="min-w-0 flex justify-center items-start">
         <div
           className={`h-56 max-w-full rounded-lg overflow-hidden border relative ${
-            aspectRatio === '9:16'
+            previewAspectRatio === '9:16'
               ? 'aspect-[9/16]'
-              : aspectRatio === '1:1'
+              : previewAspectRatio === '1:1'
                 ? 'aspect-square'
                 : 'aspect-video'
           } ${hasVideo ? 'bg-[var(--bg-base)] border-[var(--border-secondary)]' : 'bg-[var(--nav-hover-bg)] border-dashed border-[var(--border-primary)] flex items-center justify-center'}`}
         >
           {hasVideo ? (
-            <video src={resolvedVideoSrc} controls className="w-full h-full object-contain" />
+            <video
+              src={resolvedVideoSrc}
+              controls
+              onLoadedMetadata={(event) => {
+                const video = event.currentTarget;
+                if (video.videoWidth && video.videoHeight) {
+                  const ratio = video.videoWidth / video.videoHeight;
+                  setMediaAspectRatio(ratio < 0.8 ? '9:16' : ratio > 1.25 ? '16:9' : '1:1');
+                }
+              }}
+              className="w-full h-full object-contain"
+            />
           ) : (
             <span className="text-xs text-[var(--text-muted)] font-mono">{aspectRatio}</span>
           )}

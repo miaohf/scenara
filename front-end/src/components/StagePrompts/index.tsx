@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Search, Film, Users, MapPin, Package, SlidersHorizontal, X } from 'lucide-react';
+import { Search, Film, Users, MapPin, Package, SlidersHorizontal, X, BookOpen } from 'lucide-react';
 import { ProjectState, PromptVersion } from '../../types';
 import { PromptCategory, EditingPrompt } from './constants';
 import { 
@@ -21,18 +21,23 @@ import {
   resolvePromptTemplateConfig,
   searchPromptTemplateFields,
 } from '../../services/promptTemplateService';
+import BilingualLabel from '../BilingualLabel';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
+import ProductionBibleSection from './ProductionBibleSection';
+import { resolveProductionBible } from '../../services/productionBibleService';
 
 interface Props {
   project: ProjectState;
   updateProject: (updates: Partial<ProjectState> | ((prev: ProjectState) => ProjectState)) => void;
 }
 
-type SectionKey = 'templates' | 'characters' | 'scenes' | 'props' | 'shots';
+type SectionKey = 'bible' | 'templates' | 'characters' | 'scenes' | 'props' | 'shots';
 
-const SECTION_KEYS: SectionKey[] = ['templates', 'characters', 'scenes', 'props', 'shots'];
+const SECTION_KEYS: SectionKey[] = ['bible', 'templates', 'characters', 'scenes', 'props', 'shots'];
 
 const CATEGORY_LABELS: Record<PromptCategory, string> = {
   all: '全部',
+  bible: '项目圣经',
   templates: '模板',
   characters: '角色',
   scenes: '场景',
@@ -40,7 +45,18 @@ const CATEGORY_LABELS: Record<PromptCategory, string> = {
   keyframes: '关键帧',
 };
 
+const CATEGORY_LABELS_EN: Record<PromptCategory, string> = {
+  all: 'All',
+  bible: 'Bible',
+  templates: 'Templates',
+  characters: 'Characters',
+  scenes: 'Locations',
+  props: 'Props',
+  keyframes: 'Keyframes',
+};
+
 const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
+  const { text } = useInterfaceLanguage();
   const [searchQuery, setSearchQuery] = useState('');
   const [category, setCategory] = useState<PromptCategory>('all');
   const [editingPrompt, setEditingPrompt] = useState<EditingPrompt>(null);
@@ -121,6 +137,12 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
   const searchedScenes = filterScenes(project.scriptData?.scenes || [], searchQuery);
   const searchedProps = filterProps(project.scriptData?.props || [], searchQuery);
   const searchedShots = filterShots(project.shots || [], searchQuery);
+  const resolvedBible = resolveProductionBible(project.scriptData);
+  const bibleText = Object.values(resolvedBible)
+    .flatMap((value) => Array.isArray(value) ? value : [String(value || '')])
+    .join('\n')
+    .toLowerCase();
+  const bibleMatchesSearch = !searchQuery.trim() || bibleText.includes(searchQuery.trim().toLowerCase());
 
   const filteredTemplateFields = category === 'all' || category === 'templates'
     ? searchedTemplateFields
@@ -141,14 +163,17 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
   const filteredShots = category === 'all' || category === 'keyframes'
     ? searchedShots
     : [];
+  const filteredBibleCount = project.scriptData && (category === 'all' || category === 'bible') && bibleMatchesSearch ? 7 : 0;
 
   const totalCharacters = project.scriptData?.characters.length || 0;
   const totalScenes = project.scriptData?.scenes.length || 0;
   const totalProps = project.scriptData?.props.length || 0;
   const totalShots = project.shots.length || 0;
   const totalTemplates = searchPromptTemplateFields(templateConfig, '').length;
-  const totalItems = totalTemplates + totalCharacters + totalScenes + totalProps + totalShots;
+  const totalBibleItems = project.scriptData ? 7 : 0;
+  const totalItems = totalBibleItems + totalTemplates + totalCharacters + totalScenes + totalProps + totalShots;
   const visibleItems =
+    filteredBibleCount +
     filteredTemplateFields.length +
     filteredCharacters.length +
     filteredScenes.length +
@@ -158,6 +183,14 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
   const hasFilteredResults = visibleItems > 0;
 
   const sectionSummary = [
+    {
+      key: 'bible' as const,
+      category: 'bible' as const,
+      label: '项目圣经',
+      icon: <BookOpen className="w-4 h-4" />,
+      total: totalBibleItems,
+      filtered: bibleMatchesSearch ? totalBibleItems : 0,
+    },
     {
       key: 'templates' as const,
       category: 'templates' as const,
@@ -200,7 +233,7 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
     }
   ];
 
-  const categoryOptions: PromptCategory[] = ['all', 'templates', 'characters', 'scenes', 'props', 'keyframes'];
+  const categoryOptions: PromptCategory[] = ['all', 'bible', 'templates', 'characters', 'scenes', 'props', 'keyframes'];
   const editingCategoryLabel = editingPrompt
     ? (() => {
         switch (editingPrompt.type) {
@@ -223,29 +256,31 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
   return (
     <div className="h-full bg-[var(--bg-secondary)] flex flex-col">
       {/* Header */}
-      <div className="border-b border-[var(--border-primary)] bg-[var(--bg-base)]/85 backdrop-blur-sm sticky top-0 z-10">
+      <div className="border-b border-[var(--border-primary)] bg-[var(--bg-primary)]/95 backdrop-blur-sm sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-6 py-6 space-y-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <h1 className="text-2xl font-bold text-[var(--text-primary)] mb-1">提示词管理</h1>
-              <p className="text-sm text-[var(--text-tertiary)]">集中查看、检索并编辑角色/场景/道具/关键帧的提示词</p>
+              <h1 className="text-2xl font-bold text-[var(--text-primary)] mb-1">
+                <BilingualLabel primary="提示词库" secondary="PROMPT LIBRARY" mode="stacked" />
+              </h1>
+              <p className="text-sm text-[var(--text-tertiary)]">{text('统一管理角色、场景、道具、关键帧与视频提示词', 'Review, search and edit production prompts')}</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <span className="text-xs px-3 py-1.5 rounded-full bg-[var(--bg-elevated)] border border-[var(--border-primary)] text-[var(--text-secondary)] font-mono">
-                总条目 {totalItems}
+                {text('总条目', 'TOTAL')} {totalItems}
               </span>
               <span className="text-xs px-3 py-1.5 rounded-full bg-[var(--accent-bg)] border border-[var(--accent-border)] text-[var(--accent-text)] font-mono">
-                当前结果 {visibleItems}
+                {text('当前结果', 'RESULTS')} {visibleItems}
               </span>
               {editingPrompt && (
                 <span className="text-xs px-3 py-1.5 rounded-full bg-[var(--warning-bg)] border border-[var(--warning-border)] text-[var(--warning-text)]">
-                  正在编辑：{editingCategoryLabel}
+                  {text('正在编辑', 'EDITING')}: {text(editingCategoryLabel || '', editingPrompt.type === 'scene' ? 'Locations' : editingPrompt.type === 'prop' ? 'Props' : editingPrompt.type === 'keyframe' || editingPrompt.type === 'video' ? 'Keyframes' : 'Characters')}
                 </span>
               )}
             </div>
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
             {sectionSummary.map((item) => {
               const isActive = category === 'all' || category === item.category;
               return (
@@ -261,7 +296,7 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
                 >
                   <div className="flex items-center gap-2 text-[var(--text-secondary)] mb-1">
                     {item.icon}
-                    <span className="text-sm font-semibold">{item.label}</span>
+                    <span className="text-sm font-semibold">{text(item.label, CATEGORY_LABELS_EN[item.category])}</span>
                   </div>
                   <div className="text-xs font-mono text-[var(--text-tertiary)]">
                     {item.filtered} / {item.total}
@@ -279,7 +314,7 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="搜索提示词、角色、场景、动作..."
+                placeholder={text('搜索提示词、角色、场景、动作...', 'Search prompts, characters, locations, or actions...')}
                 className="w-full bg-[var(--bg-elevated)] border border-[var(--border-primary)] text-[var(--text-primary)] pl-10 pr-10 py-2 rounded-lg text-sm focus:border-[var(--accent)] focus:outline-none"
               />
               {searchQuery && (
@@ -287,7 +322,7 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
                   type="button"
                   onClick={() => setSearchQuery('')}
                   className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-                  title="清空搜索"
+                  title={text('清空搜索', 'Clear search')}
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -306,7 +341,7 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
                       : 'bg-[var(--bg-elevated)] border-[var(--border-primary)] text-[var(--text-secondary)] hover:border-[var(--accent-border)]'
                   }`}
                 >
-                  {CATEGORY_LABELS[option]}
+                  {text(CATEGORY_LABELS[option], CATEGORY_LABELS_EN[option])}
                 </button>
               ))}
             </div>
@@ -317,14 +352,14 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
                 onClick={() => setAllSectionsExpanded(true)}
                 className="text-xs px-3 py-1.5 rounded-md bg-[var(--bg-elevated)] border border-[var(--border-primary)] text-[var(--text-secondary)] hover:border-[var(--border-secondary)]"
               >
-                全部展开
+                {text('全部展开', 'Expand All')}
               </button>
               <button
                 type="button"
                 onClick={() => setAllSectionsExpanded(false)}
                 className="text-xs px-3 py-1.5 rounded-md bg-[var(--bg-elevated)] border border-[var(--border-primary)] text-[var(--text-secondary)] hover:border-[var(--border-secondary)]"
               >
-                全部收起
+                {text('全部收起', 'Collapse All')}
               </button>
             </div>
           </div>
@@ -334,6 +369,19 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
       {/* Content */}
       <div className="flex-1 overflow-y-auto">
         <div className="p-6 max-w-7xl mx-auto space-y-6">
+          {project.scriptData && filteredBibleCount > 0 && (
+            <ProductionBibleSection
+              key={project.scriptData.productionBible?.updatedAt || 'derived'}
+              scriptData={project.scriptData}
+              isExpanded={expandedSections.has('bible')}
+              onToggle={() => toggleSection('bible')}
+              onUpdate={(productionBible) => updateProject((prev) => prev.scriptData ? ({
+                ...prev,
+                scriptData: { ...prev.scriptData, productionBible },
+              }) : prev)}
+            />
+          )}
+
           {(category === 'all' || category === 'templates') && (
             <TemplateSection
               templateConfig={templateConfig}
@@ -407,9 +455,9 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
           {/* No Filter Results */}
           {!hasNoData && !hasFilteredResults && (
             <div className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-elevated)] p-8 text-center">
-              <p className="text-base text-[var(--text-secondary)] mb-2">当前筛选条件下没有可显示的提示词</p>
+              <p className="text-base text-[var(--text-secondary)] mb-2">{text('当前筛选条件下没有可显示的提示词', 'No prompts match the current filters')}</p>
               <p className="text-sm text-[var(--text-tertiary)] mb-4">
-                你可以调整分类或清空搜索关键字后重试
+                {text('你可以调整分类或清空搜索关键字后重试', 'Change the category or clear the search to try again.')}
               </p>
               <div className="flex flex-wrap justify-center gap-2">
                 {!!searchQuery && (
@@ -418,7 +466,7 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
                     onClick={() => setSearchQuery('')}
                     className="text-xs px-3 py-1.5 rounded-md bg-[var(--bg-base)] border border-[var(--border-primary)] text-[var(--text-secondary)] hover:border-[var(--border-secondary)]"
                   >
-                    清空搜索
+                    {text('清空搜索', 'Clear Search')}
                   </button>
                 )}
                 {category !== 'all' && (
@@ -427,7 +475,7 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
                     onClick={() => setCategory('all')}
                     className="text-xs px-3 py-1.5 rounded-md bg-[var(--accent)] border border-[var(--accent)] text-[var(--accent-on)]"
                   >
-                    查看全部分类
+                    {text('查看全部分类', 'View All Categories')}
                   </button>
                 )}
               </div>
@@ -439,8 +487,8 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
             <div className="text-center py-16 rounded-xl border border-[var(--border-primary)] bg-[var(--bg-elevated)]">
               <div className="text-[var(--text-muted)] mb-4">
                 <Film className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                <p className="text-lg">暂无提示词数据</p>
-                <p className="text-sm mt-2">请先在剧本阶段生成角色和场景，或在导演工作台生成分镜</p>
+                <p className="text-lg">{text('暂无提示词数据', 'No prompt data yet')}</p>
+                <p className="text-sm mt-2">{text('请先在剧本阶段生成角色和场景，或在导演工作台生成分镜', 'Generate characters and locations in Story Planning, or create shots in Shot Design first.')}</p>
               </div>
             </div>
           )}

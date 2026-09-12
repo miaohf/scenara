@@ -2,6 +2,7 @@ import React from 'react';
 import { MapPin, Clock, X, Edit2, Package } from 'lucide-react';
 import { Shot, Character, Scene, Prop } from '../../types';
 import HoverImagePreview from '../HoverImagePreview';
+import { resolveCharacterDisplayImage } from '../../services/characterImageHistory';
 
 interface SceneContextProps {
   shot: Shot;
@@ -96,7 +97,7 @@ const SceneContext: React.FC<SceneContextProps> = ({
             const hasVars = char.variations && char.variations.length > 0;
             const selectedVarId = shot.characterVariations?.[char.id];
             const selectedVar = char.variations?.find((v) => v.id === selectedVarId);
-            const charImage = selectedVar?.referenceImage || char.referenceImage;
+            const charImage = selectedVar?.referenceImage || resolveCharacterDisplayImage(char);
 
             return (
               <div

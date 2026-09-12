@@ -112,6 +112,11 @@ export async function apiCallComfyImage(
     steps: options.steps,
     referenceCount: options.referenceImages?.length || 0,
   });
+  console.info("[ComfyUI Image] 最终提示词 payload", {
+    prompt: payload.prompt,
+    negativePrompt: payload.negativePrompt,
+    hasWardrobeLock: /(?:^|[,.\n])\s*Attire:\s*\S+/i.test(payload.prompt || ""),
+  });
   const job = await createJob("comfyui_image", payload, options.episodeId, options.target);
   options.onJobCreated?.(job);
   console.info("[ComfyUI Image] 任务已创建:", job.id);
@@ -184,7 +189,7 @@ const sameTarget = (left?: GenerationTarget | null, right?: GenerationTarget | n
   if (left.kind === "variation") {
     return left.kind === right.kind && left.id === right.id && left.characterId === right.characterId;
   }
-  if (left.kind === "turnaround") {
+  if (left.kind === "turnaround" || left.kind === "threeView") {
     return left.kind === right.kind && left.characterId === right.characterId;
   }
   if (left.kind === "keyframe") {
@@ -394,8 +399,12 @@ export async function apiCallComfyVideo(
       modelId: options.modelId,
       aspectRatio: options.aspectRatio || "16:9",
       duration: options.duration ?? 5,
+      steps: options.steps,
       startImage: options.startImage,
       endImage: options.endImage,
+      referenceImages: options.referenceImages,
+      referenceVideos: options.referenceVideos,
+      referenceAudios: options.referenceAudios,
       audioUrl: options.audioUrl,
       workflowName: options.workflowName,
     },

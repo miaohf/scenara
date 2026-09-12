@@ -244,12 +244,12 @@ const blobToDataUrl = (blob: Blob): Promise<string> =>
 const mapAspectRatioToComfySize = (aspectRatio: AspectRatio): { width: number; height: number } => {
   switch (aspectRatio) {
     case '9:16':
-      return { width: 576, height: 1024 };
+      return { width: 768, height: 1344 };
     case '1:1':
-      return { width: 1024, height: 1024 };
+      return { width: 768, height: 768 };
     case '16:9':
     default:
-      return { width: 1024, height: 576 };
+      return { width: 1344, height: 768 };
   }
 };
 

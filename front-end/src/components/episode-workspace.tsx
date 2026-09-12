@@ -21,6 +21,7 @@ import { reconcileEpisodeWithJobs } from "@/services/jobReconcile";
 import { useAlert } from "@/components/GlobalAlert";
 import { useProjectContext } from "@/contexts/ProjectContext";
 import { GenerationQueueProvider } from "@/contexts/GenerationQueueContext";
+import { useInterfaceLanguage } from "@/contexts/InterfaceLanguageContext";
 import {
   checkCharacterSync,
   checkSceneSync,
@@ -37,7 +38,8 @@ const episodeHasBackgroundJobs = (episode: Episode): boolean => {
       (character) =>
         character.status === "generating" ||
         character.variations?.some((variation) => variation.status === "generating") ||
-        character.turnaround?.status === "generating_image",
+        character.turnaround?.status === "generating_image" ||
+        character.threeView?.status === "generating",
     )
   ) {
     return true;
@@ -62,6 +64,8 @@ export default function EpisodeWorkspace() {
   const { episodeId } = useProjectRoute();
   const router = useRouter();
   const { showAlert } = useAlert();
+  const { text } = useInterfaceLanguage();
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const {
     project,
     currentEpisode,
@@ -328,12 +332,12 @@ export default function EpisodeWorkspace() {
     }
   };
 
-  const displayEpisodeTitle =
-    project &&
-    currentEpisode.episodeNumber === 1 &&
-    currentEpisode.title?.trim() === project.title?.trim()
-      ? `第 ${currentEpisode.episodeNumber} 集`
-      : currentEpisode.title;
+  const episodeUsesDefaultTitle =
+    /^第\s*\d+\s*集$/u.test(currentEpisode.title?.trim() || '') ||
+    (project && currentEpisode.episodeNumber === 1 && currentEpisode.title?.trim() === project.title?.trim());
+  const displayEpisodeTitle = episodeUsesDefaultTitle
+    ? text(`第 ${currentEpisode.episodeNumber} 集`, `Episode ${currentEpisode.episodeNumber}`)
+    : currentEpisode.title;
   const episodeLabel = project ? `${project.title} / ${displayEpisodeTitle}` : displayEpisodeTitle;
 
   return (
@@ -362,8 +366,10 @@ export default function EpisodeWorkspace() {
             : undefined
         }
         onGoToProject={project ? handleGoToProject : undefined}
+        collapsed={isSidebarCollapsed}
+        onCollapsedChange={setIsSidebarCollapsed}
       />
-      <main className="relative ml-72 h-screen flex-1 overflow-hidden">
+      <main className={`${isSidebarCollapsed ? 'ml-20' : 'ml-72'} relative h-screen flex-1 overflow-hidden transition-[margin] duration-300 ease-out`}>
         {project &&
           currentEpisode &&
           (() => {

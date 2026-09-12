@@ -4,6 +4,7 @@ import { Prop, PromptVersion } from '../../types';
 import { EditingPrompt, STYLES } from './constants';
 import CollapsibleSection from './CollapsibleSection';
 import PromptEditor from './PromptEditor';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface Props {
   props: Prop[];
@@ -30,11 +31,12 @@ const PropSection: React.FC<Props> = ({
   onPromptChange,
   onRollbackVersion
 }) => {
+  const { text } = useInterfaceLanguage();
   if (props.length === 0) return null;
 
   return (
     <CollapsibleSection
-      title="道具"
+      title={text('道具', 'Props')}
       icon={<Package className="w-5 h-5" />}
       count={props.length}
       isExpanded={isExpanded}
@@ -53,7 +55,7 @@ const PropSection: React.FC<Props> = ({
               onClick={() => onStartEdit('prop', prop.id, prop.visualPrompt || '')}
               className={STYLES.button.edit}
             >
-              编辑
+              {text('编辑', 'Edit')}
             </button>
           </div>
 
@@ -69,7 +71,7 @@ const PropSection: React.FC<Props> = ({
             />
           ) : (
             <p className={STYLES.display.base}>
-              {prop.visualPrompt || '未设置提示词'}
+              {prop.visualPrompt || text('未设置提示词', 'No prompt set')}
             </p>
           )}
         </div>

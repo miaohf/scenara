@@ -35,7 +35,7 @@ export const STYLES = {
   }
 };
 
-export type PromptCategory = 'characters' | 'scenes' | 'props' | 'keyframes' | 'templates' | 'all';
+export type PromptCategory = 'bible' | 'characters' | 'scenes' | 'props' | 'keyframes' | 'templates' | 'all';
 
 export type EditingPrompt = {
   type: 'character' | 'character-variation' | 'scene' | 'prop' | 'keyframe' | 'video';
@@ -53,8 +53,8 @@ export const STATUS_STYLES = {
 };
 
 export const STATUS_LABELS = {
-  completed: '✓ 已生成',
-  generating: '生成中',
-  failed: '失败',
-  idle: '待生成'
+  completed: { zh: '✓ 已生成', en: '✓ READY' },
+  generating: { zh: '生成中', en: 'RUNNING' },
+  failed: { zh: '失败', en: 'FAILED' },
+  idle: { zh: '待生成', en: 'PENDING' }
 };

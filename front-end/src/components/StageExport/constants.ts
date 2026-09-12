@@ -9,7 +9,7 @@ export const STYLES = {
   
   // 头部
   header: {
-    container: "h-16 border-b border-[var(--border-primary)] bg-[var(--bg-elevated)] px-6 flex items-center justify-between shrink-0",
+    container: "h-16 border-b border-[var(--border-primary)] bg-[var(--bg-primary)]/95 px-6 flex items-center justify-between shrink-0",
     title: "text-lg font-bold text-[var(--text-primary)] flex items-center gap-3",
     subtitle: "text-xs text-[var(--text-muted)] font-mono font-normal uppercase tracking-wider bg-[var(--bg-base)]/30 px-2 py-1 rounded",
     status: "text-[10px] text-[var(--text-tertiary)] font-mono uppercase bg-[var(--bg-elevated)] border border-[var(--border-primary)] px-2 py-1 rounded"

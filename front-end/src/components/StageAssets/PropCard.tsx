@@ -1,10 +1,11 @@
 import React from 'react';
 import { Package, Check, Loader2, Trash2, Edit2, AlertCircle, FolderPlus, Upload, X } from 'lucide-react';
-import { Prop } from '../../types';
+import { Prop, PropPresentationMode } from '../../types';
 import { PROP_CATEGORIES } from './constants';
 import PromptEditor from './PromptEditor';
 import ImageUploadButton from './ImageUploadButton';
 import InlineEditableText from './InlineEditableText';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface PropCardProps {
   prop: Prop;
@@ -19,7 +20,13 @@ interface PropCardProps {
   isRegeneratingPrompt?: boolean;
   onImageClick: (imageUrl: string) => void;
   onDelete: () => void;
-  onUpdateInfo: (updates: { name?: string; category?: string; description?: string }) => void;
+  onUpdateInfo: (updates: {
+    name?: string;
+    category?: string;
+    description?: string;
+    presentationMode?: PropPresentationMode;
+    presentationNote?: string;
+  }) => void;
   onAddToLibrary: () => void;
 }
 
@@ -39,6 +46,7 @@ const PropCard: React.FC<PropCardProps> = ({
   onUpdateInfo,
   onAddToLibrary,
 }) => {
+  const { text } = useInterfaceLanguage();
   const handleShapeReferenceChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -64,20 +72,20 @@ const PropCard: React.FC<PropCardProps> = ({
             {isGenerating ? (
               <>
                 <Loader2 className="w-10 h-10 mb-3 animate-spin text-[var(--accent)]" />
-                <span className="text-[10px] text-[var(--text-tertiary)]">生成中...</span>
+                <span className="text-[10px] text-[var(--text-tertiary)]">{text('生成中...', 'Generating...')}</span>
               </>
             ) : prop.status === 'failed' ? (
               <>
                 <AlertCircle className="w-10 h-10 mb-3 text-[var(--error)]" />
-                <span className="text-[10px] text-[var(--error)] mb-2">生成失败</span>
+                <span className="text-[10px] text-[var(--error)] mb-2">{text('生成失败', 'Generation failed')}</span>
                 <ImageUploadButton
                   variant="inline"
                   size="small"
                   onUpload={onUpload}
                   onGenerate={onGenerate}
                   isGenerating={isGenerating}
-                  uploadLabel="上传"
-                  generateLabel="重试"
+                  uploadLabel={text('上传', 'Upload')}
+                  generateLabel={text('重试', 'Retry')}
                 />
               </>
             ) : (
@@ -89,8 +97,8 @@ const PropCard: React.FC<PropCardProps> = ({
                   onUpload={onUpload}
                   onGenerate={onGenerate}
                   isGenerating={isGenerating}
-                  uploadLabel="上传"
-                  generateLabel="生成"
+                  uploadLabel={text('上传', 'Upload')}
+                  generateLabel={text('生成', 'Generate')}
                 />
               </>
             )}
@@ -131,6 +139,43 @@ const PropCard: React.FC<PropCardProps> = ({
           </select>
         </div>
 
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[9px] font-mono text-[var(--text-muted)] uppercase tracking-wider shrink-0">
+            {text('呈现方式', 'Presentation')}
+          </span>
+          <select
+            value={prop.presentationMode || 'unknown'}
+            onChange={(e) => onUpdateInfo({ presentationMode: e.target.value as PropPresentationMode })}
+            className="min-w-0 flex-1 px-1.5 py-1 bg-[var(--bg-elevated)] text-[var(--text-tertiary)] text-[9px] rounded border border-[var(--border-primary)] cursor-pointer hover:bg-[var(--bg-hover)] hover:text-[var(--text-secondary)] transition-colors focus:outline-none"
+            title={text('只在镜头中需要时作为提示词约束使用', 'Used as a prompt constraint only when relevant in a shot')}
+          >
+            <option value="unknown">{text('未指定', 'Unspecified')}</option>
+            <option value="handheld">{text('手提/手持', 'Handheld')}</option>
+            <option value="worn">{text('穿戴/背负', 'Worn')}</option>
+            <option value="placed">{text('放置', 'Placed')}</option>
+            <option value="mounted">{text('安装/悬挂', 'Mounted')}</option>
+            <option value="used">{text('使用中', 'In use')}</option>
+            <option value="background">{text('背景出现', 'Background')}</option>
+          </select>
+        </div>
+
+        <InlineEditableText
+          value={prop.presentationNote || ''}
+          onSave={(next) => onUpdateInfo({ presentationNote: next })}
+          required={false}
+          multiline={false}
+          inputClassName="text-[10px] text-[var(--text-secondary)] w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-2 py-1 mb-2 focus:outline-none focus:border-[var(--accent)]"
+          renderDisplay={(value, startEdit) => (
+            <p
+              onClick={startEdit}
+              className="text-[9px] text-[var(--text-muted)] line-clamp-1 mb-2 cursor-pointer hover:text-[var(--text-secondary)] transition-colors"
+              title={text('可选：补充短的使用或位置事实，例如“两个短提手，不使用肩带”', 'Optional: add a short handling or position fact, e.g. “two short handles; no shoulder strap”')}
+            >
+              {value || text('点击添加使用/位置说明（可选）...', 'Click to add handling/position note (optional)...')}
+            </p>
+          )}
+        />
+
         <InlineEditableText
           value={prop.description || ''}
           onSave={(next) => onUpdateInfo({ description: next })}
@@ -143,7 +188,7 @@ const PropCard: React.FC<PropCardProps> = ({
               onClick={startEdit}
               className="text-[10px] text-[var(--text-tertiary)] line-clamp-2 mb-3 cursor-pointer hover:text-[var(--text-secondary)] transition-colors min-h-[28px]"
             >
-              {value || '点击添加道具描述...'}
+              {value || text('点击添加道具描述...', 'Click to add a prop description...')}
             </p>
           )}
         />
@@ -154,8 +199,8 @@ const PropCard: React.FC<PropCardProps> = ({
             onSave={onPromptSave}
             onRegenerate={onRegeneratePrompt}
             isRegenerating={isRegeneratingPrompt}
-            label="道具提示词"
-            placeholder="输入道具的视觉描述..."
+            label={text('道具提示词', 'Prop Prompt')}
+            placeholder={text('输入道具的视觉描述...', 'Describe the prop visually...')}
             maxHeight="max-h-[160px]"
           />
         </div>
@@ -168,20 +213,20 @@ const PropCard: React.FC<PropCardProps> = ({
               onUpload={onUpload}
               onGenerate={onGenerate}
               isGenerating={isGenerating}
-              uploadLabel="上传图片"
+              uploadLabel={text('上传图片', 'Upload Image')}
             />
           </div>
         )}
 
         <div className="mt-3 pt-3 border-t border-[var(--border-primary)]">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-[10px] font-mono text-[var(--text-tertiary)] uppercase tracking-wider">道具参考图</span>
+            <span className="text-[10px] font-mono text-[var(--text-tertiary)] uppercase tracking-wider">{text('道具参考图', 'PROP REFERENCE')}</span>
             {shapeReferenceImage && (
               <button
                 onClick={onClearShapeReference}
                 disabled={isGenerating}
                 className="text-[9px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-30"
-                title="清除道具参考图"
+                title={text('清除道具参考图', 'Clear prop reference')}
               >
                 <X className="w-3 h-3" />
               </button>
@@ -190,7 +235,7 @@ const PropCard: React.FC<PropCardProps> = ({
           <div className="flex items-center gap-2">
             <label className="px-2 py-1 bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded text-[9px] font-bold uppercase tracking-wider text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer flex items-center gap-1">
               <Upload className="w-3 h-3" />
-              上传道具参考图
+              {text('上传道具参考图', 'Upload Reference')}
               <input
                 type="file"
                 accept="image/*"
@@ -198,15 +243,15 @@ const PropCard: React.FC<PropCardProps> = ({
                 onChange={handleShapeReferenceChange}
               />
             </label>
-            <span className="text-[9px] text-[var(--text-muted)]">仅参考道具外形，风格遵循剧本</span>
+            <span className="text-[9px] text-[var(--text-muted)]">{text('仅参考道具外形，风格遵循剧本', 'Uses shape only; style follows the script')}</span>
           </div>
           {shapeReferenceImage && (
             <button
               onClick={() => onImageClick(shapeReferenceImage)}
               className="mt-2 w-full flex items-center gap-2 p-2 rounded border border-[var(--border-primary)] hover:border-[var(--border-secondary)] transition-colors text-left"
             >
-              <img src={shapeReferenceImage} alt="道具参考图" className="w-10 h-10 rounded object-cover" />
-              <span className="text-[10px] text-[var(--text-secondary)]">已设置道具参考图，下次生成将生效</span>
+              <img src={shapeReferenceImage} alt={text('道具参考图', 'Prop reference')} className="w-10 h-10 rounded object-cover" />
+              <span className="text-[10px] text-[var(--text-secondary)]">{text('已设置道具参考图，下次生成将生效', 'Reference set; it will apply to the next generation')}</span>
             </button>
           )}
         </div>
@@ -218,7 +263,7 @@ const PropCard: React.FC<PropCardProps> = ({
             className="flex-1 py-2 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <FolderPlus className="w-3 h-3" />
-            加入资产库
+            {text('加入资产库', 'Add to Library')}
           </button>
           <button
             onClick={onDelete}
@@ -226,7 +271,7 @@ const PropCard: React.FC<PropCardProps> = ({
             className="flex-1 py-2 bg-transparent hover:bg-[var(--error-bg)] text-[var(--error-text)] hover:text-[var(--error-text)] border border-[var(--error-border)] hover:border-[var(--error-border)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <Trash2 className="w-3 h-3" />
-            删除道具
+            {text('删除道具', 'Delete Prop')}
           </button>
         </div>
       </div>

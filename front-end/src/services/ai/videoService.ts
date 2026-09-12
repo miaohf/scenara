@@ -500,14 +500,19 @@ export const generateVideo = async (
   aspectRatio: AspectRatio = '16:9',
   duration: VideoDuration = 8,
   audioUrl?: string,
-  options?: { target?: import("../../types/model").GenerationTarget }
+  options?: {
+    referenceImages?: string[];
+    referenceVideos?: string[];
+    referenceAudios?: string[];
+    steps?: number;
+    target?: import("../../types/model").GenerationTarget;
+    onJobCreated?: import("../../types/model").VideoGenerateOptions['onJobCreated'];
+  }
 ): Promise<string> => {
   const activeVideoModel = getActiveVideoModel();
   const resolvedVideoModel = resolveModel('video', model) as ReturnType<typeof resolveModel>;
   const videoModel =
-    isComfyUiVideoModel(activeVideoModel)
-      ? activeVideoModel
-      : (resolvedVideoModel || activeVideoModel);
+    resolvedVideoModel || activeVideoModel;
   const resolvedVideoModelId = (videoModel as any)?.id || model;
   const requestModel = resolveRequestModel('video', (videoModel as any)?.id || model) || '';
   const resolvedEndpoint = (videoModel as any)?.endpoint || '';
@@ -516,10 +521,15 @@ export const generateVideo = async (
       prompt,
       startImage: startImageBase64,
       endImage: endImageBase64,
+      referenceImages: options?.referenceImages,
+      referenceVideos: options?.referenceVideos,
+      referenceAudios: options?.referenceAudios,
       audioUrl,
       aspectRatio,
       duration,
+      steps: options?.steps,
       target: options?.target,
+      onJobCreated: options?.onJobCreated,
     }, videoModel as any);
   }
 

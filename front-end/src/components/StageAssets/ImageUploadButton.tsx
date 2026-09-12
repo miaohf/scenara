@@ -1,5 +1,6 @@
 import React from 'react';
 import { Upload, Sparkles, Loader2 } from 'lucide-react';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface ImageUploadButtonProps {
   onUpload: (file: File) => void;
@@ -17,11 +18,14 @@ const ImageUploadButton: React.FC<ImageUploadButtonProps> = ({
   onGenerate,
   isGenerating = false,
   hasImage = false,
-  uploadLabel = '上传',
-  generateLabel = '生成',
+  uploadLabel,
+  generateLabel,
   size = 'medium',
   variant = 'separate',
 }) => {
+  const { text } = useInterfaceLanguage();
+  const resolvedUploadLabel = uploadLabel || text('上传', 'Upload');
+  const resolvedGenerateLabel = generateLabel || text('生成', 'Generate');
   const sizeClasses = {
     small: 'px-3 py-1.5 text-[10px]',
     medium: 'px-4 py-2 text-xs',
@@ -52,12 +56,12 @@ const ImageUploadButton: React.FC<ImageUploadButtonProps> = ({
             ) : (
               <Sparkles className="w-3 h-3" />
             )}
-            {generateLabel}
+            {resolvedGenerateLabel}
           </button>
         )}
         <label className={buttonClass}>
           <Upload className="w-3 h-3" />
-          {uploadLabel}
+          {resolvedUploadLabel}
           <input
             type="file"
             accept="image/*"
@@ -77,24 +81,24 @@ const ImageUploadButton: React.FC<ImageUploadButtonProps> = ({
           onClick={onGenerate}
           disabled={isGenerating}
           className={`flex-1 py-1.5 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 border border-[var(--border-primary)] transition-colors`}
-          title="重新出图：换姿态和构图，不改已保存的提示词"
+          title={text('重新出图：换姿态和构图，不改已保存的提示词', 'Regenerate with a new pose and composition while preserving the saved prompt')}
         >
           {isGenerating ? (
             <>
               <Loader2 className="w-3 h-3 animate-spin" />
-              生成中...
+              {text('生成中...', 'Generating...')}
             </>
           ) : (
             <>
               <Sparkles className="w-3 h-3" />
-              {generateLabel === '生成' ? '重新生图' : generateLabel}
+              {resolvedGenerateLabel === text('生成', 'Generate') ? text('重新生图', 'Regenerate') : resolvedGenerateLabel}
             </>
           )}
         </button>
       )}
       <label className={`flex-1 py-1.5 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 border border-[var(--border-primary)] transition-colors cursor-pointer`}>
         <Upload className="w-3 h-3" />
-        {uploadLabel}
+        {resolvedUploadLabel}
         <input
           type="file"
           accept="image/*"

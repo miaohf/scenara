@@ -759,6 +759,7 @@ export const generateNineGridImage = async (
     hasTurnaround?: boolean;
     panelCount?: StoryboardGridPanelCount;
     promptTemplates?: PromptTemplateConfig;
+    referenceAnnotations?: string[];
     target?: import("../../types/model").GenerationTarget;
   }
 ): Promise<string> => {
@@ -859,7 +860,11 @@ ${imageNoTextConstraintTemplate}`;
       false,
       !!options?.hasTurnaround,
       layoutNegativePrompt,
-      { referencePackType: 'shot', target: options?.target }
+      {
+        referencePackType: 'shot',
+        referenceAnnotations: options?.referenceAnnotations,
+        target: options?.target,
+      }
     );
     const duration = Date.now() - startTime;
 

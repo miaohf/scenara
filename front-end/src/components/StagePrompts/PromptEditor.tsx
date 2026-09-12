@@ -3,6 +3,7 @@ import { Save, X, History } from 'lucide-react';
 import { PromptVersion } from '../../types';
 import { lintPromptText } from '../../services/promptLintService';
 import { STYLES } from './constants';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface Props {
   value: string;
@@ -29,12 +30,13 @@ const PromptEditor: React.FC<Props> = ({
   onChange,
   onSave,
   onCancel,
-  placeholder = '输入提示词...',
+  placeholder,
   size = 'large',
   isVideo = false,
   versions = [],
   onRollback,
 }) => {
+  const { text } = useInterfaceLanguage();
   const textareaClass = `${STYLES.textarea.base} ${
     size === 'large' ? STYLES.textarea.large : size === 'video' ? STYLES.textarea.video : STYLES.textarea.small
   }`;
@@ -79,7 +81,7 @@ const PromptEditor: React.FC<Props> = ({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className={textareaClass}
-        placeholder={placeholder}
+        placeholder={placeholder || text('输入提示词...', 'Enter a prompt...')}
         autoFocus
       />
 
@@ -108,7 +110,7 @@ const PromptEditor: React.FC<Props> = ({
                   onClick={() => onRollback(version.id)}
                   className="text-[10px] px-2 py-0.5 rounded border border-[var(--accent-border)] text-[var(--accent-text)] hover:bg-[var(--accent-bg)]"
                 >
-                  回滚
+                  {text('回滚', 'Restore')}
                 </button>
               </div>
             ))}
@@ -119,11 +121,11 @@ const PromptEditor: React.FC<Props> = ({
       <div className="flex gap-2">
         <button onClick={onSave} className={saveButtonClass} disabled={hasBlockingError}>
           <Save className="w-3 h-3" />
-          保存
+          {text('保存', 'Save')}
         </button>
         <button onClick={onCancel} className={cancelButtonClass}>
           <X className="w-3 h-3" />
-          取消
+          {text('取消', 'Cancel')}
         </button>
       </div>
     </div>
@@ -131,4 +133,3 @@ const PromptEditor: React.FC<Props> = ({
 };
 
 export default PromptEditor;
-

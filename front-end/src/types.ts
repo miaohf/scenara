@@ -1,12 +1,19 @@
 export interface CharacterVariation {
   id: string;
   name: string; // e.g., "Casual", "Tactical Gear", "Injured"
+  /** 该变体的服装事实描述；visualPrompt 保留作旧数据兼容和生图扩展。 */
+  wardrobe?: string;
+  /** 剧本解析时识别出的适用场景，用于自动选择镜头服装。 */
+  sceneIds?: string[];
   visualPrompt: string;
   promptVersions?: PromptVersion[]; // Prompt edit history with rollback support
   negativePrompt?: string; // 负面提示词，用于排除不想要的元素
   referenceImage?: string; // 角色变体参考图，存储为base64格式（data:image/png;base64,...）
   status?: 'pending' | 'generating' | 'completed' | 'failed'; // 生成状态，用于loading状态持久化
 }
+
+/** 角色在剧本中的用途；旧数据缺失时按名称/语义兼容推断。 */
+export type CharacterRole = 'visual' | 'voice';
 
 export type PromptVersionSource = 'ai-generated' | 'manual-edit' | 'rollback' | 'imported' | 'system';
 
@@ -138,14 +145,34 @@ export interface CharacterTurnaroundData {
   // generating_image: 用户已确认，正在生成九宫格图片
 }
 
+export interface CharacterThreeViewData {
+  imageUrl?: string;
+  prompt?: string;
+  status: 'pending' | 'generating' | 'completed' | 'failed';
+}
+
+export type CharacterImageView = 'casting' | 'turnaround' | 'threeView';
+export type CharacterImageHistorySource = 'generated' | 'uploaded';
+
+export interface CharacterImageHistoryEntry {
+  id: string;
+  imageUrl: string;
+  createdAt: number;
+  source: CharacterImageHistorySource;
+  prompt?: string;
+}
+
 export interface Character {
   id: string;
   name: string;
+  role?: CharacterRole;
   gender: string;
   age: string;
   personality: string;
   /** 物种/形态，如 human、黑背幼犬、拟人棕猫。缺省时按文本推断。 */
   species?: string;
+  /** 剧本中明确写出的服装/穿着描述，作为角色造型的唯一文字来源。 */
+  wardrobe?: string;
   visualPrompt?: string;
   promptVersions?: PromptVersion[]; // Prompt edit history with rollback support
   negativePrompt?: string;
@@ -153,6 +180,9 @@ export interface Character {
   shapeReferenceImage?: string; // Optional reference image used only for shape/silhouette guidance during generation
   referenceImage?: string;
   turnaround?: CharacterTurnaroundData;
+  threeView?: CharacterThreeViewData;
+  activeImageView?: CharacterImageView;
+  imageHistory?: CharacterImageHistoryEntry[];
   variations: CharacterVariation[];
   status?: 'pending' | 'generating' | 'completed' | 'failed';
   libraryId?: string;
@@ -177,6 +207,29 @@ export interface Scene {
 }
 
 /**
+ * 道具在镜头中的默认呈现方式。
+ * 这是结构化事实，不会默认完整展开到每个生图提示词中。
+ */
+export type PropPresentationMode =
+  | 'handheld'
+  | 'worn'
+  | 'placed'
+  | 'mounted'
+  | 'background'
+  | 'used'
+  | 'unknown';
+
+/** 镜头对某个道具呈现方式的覆盖约束。 */
+export interface ShotPropUsage {
+  mode?: PropPresentationMode;
+  actorId?: string;
+  hand?: 'left' | 'right' | 'both' | 'either';
+  position?: string;
+  action?: string;
+  forbiddenModes?: string[];
+}
+
+/**
  * 道具/物品 - 用于保持多分镜间物品视觉一致性
  * 如星图、武器、地图、信件等需要在多个镜头中重复出现的物品
  */
@@ -185,6 +238,16 @@ export interface Prop {
   name: string;           // 道具名称，如"星图"、"古剑"
   category: string;       // 分类：武器、文件/书信、食物/饮品、交通工具、装饰品、科技设备、其他
   description: string;    // 道具描述
+  /** 穿在角色身上的物品不应作为镜头独立道具参考图重复注入。 */
+  isWearable?: boolean;
+  /** 兼容旧道具数据：记录该服装组件的角色归属，但不作为独立道具生成。 */
+  wardrobeOwnerCharacterId?: string;
+  /** 道具的默认使用/呈现方式；旧数据缺失时按名称和描述保守推断。 */
+  presentationMode?: PropPresentationMode;
+  /** 只有需要补充关系时填写，例如“两个短提手，不使用肩带”。 */
+  presentationNote?: string;
+  /** 生成镜头时追加的禁止呈现方式，例如 backpack、shoulder-worn。 */
+  forbiddenPresentationModes?: string[];
   visualPrompt?: string;  // 视觉提示词
   promptVersions?: PromptVersion[]; // Prompt edit history with rollback support
   negativePrompt?: string; // 负面提示词，用于排除不想要的元素
@@ -212,6 +275,8 @@ export interface AssetLibraryItem {
 export interface Keyframe {
   id: string;
   type: 'start' | 'end';
+  /** 当前关键帧版本；用于忽略旧生成任务的迟到回写。 */
+  generationId?: string;
   visualPrompt: string;
   promptVersions?: PromptVersion[]; // Prompt edit history with rollback support
   imageUrl?: string; // 关键帧图像，存储为base64格式（data:image/png;base64,...）
@@ -224,6 +289,10 @@ export interface VideoInterval {
   endKeyframeId: string;
   duration: number;
   motionStrength: number;
+  /** 生成该视频时使用的画幅，避免被其他项目的全局设置覆盖预览。 */
+  aspectRatio?: AspectRatio;
+  /** 视频采样质量：standard 使用完整步数，turbo 使用加速 LoRA。 */
+  videoQuality?: 'standard' | 'turbo';
   videoUrl?: string; // 视频数据，存储为base64格式（data:video/mp4;base64,...），避免URL过期问题
   videoPrompt?: string; // 视频生成时使用的提示词
   promptVersions?: PromptVersion[]; // Prompt edit history with rollback support
@@ -271,12 +340,15 @@ export interface NineGridData {
 
 export type DubbingMode = 'narration' | 'dialogue';
 export type DubbingStatus = 'pending' | 'generating' | 'completed' | 'failed';
-export type DubbingOutputFormat = 'wav' | 'mp3';
+export type DubbingOutputFormat = 'wav' | 'mp3' | 'opus';
 
 export interface ShotDubbing {
   mode: DubbingMode;
   text: string;
   modelId: string;
+  /** 对白对应的声音角色；旁白模式为空。 */
+  speakerId?: string;
+  speakerName?: string;
   voice?: string;
   outputFormat?: DubbingOutputFormat;
   audioUrl?: string; // base64 data url
@@ -296,6 +368,8 @@ export interface Shot {
   characters: string[]; // Character IDs
   characterVariations?: { [characterId: string]: string }; // Added: Map char ID to variation ID for this shot
   props?: string[]; // 道具ID数组，引用 ScriptData.props 中的道具
+  /** 镜头级道具使用方式覆盖；未设置时使用道具默认值或保守推断。 */
+  propUsages?: { [propId: string]: ShotPropUsage };
   keyframes: Keyframe[];
   interval?: VideoInterval;
   qualityAssessment?: ShotQualityAssessment;
@@ -339,6 +413,22 @@ export interface ArtDirection {
   visualStyle?: string;
 }
 
+/**
+ * 项目级事实与制作约束。与 ArtDirection 的“画风”职责分开：
+ * ProductionBible 锁定剧情事实、服装、场景和摄影规则。
+ */
+export interface ProductionBible {
+  version: number;
+  worldRules: string;
+  costumeRules: string;
+  sceneAnchors: string;
+  characterVoiceRules: string;
+  cameraLanguage: string;
+  platformGuardrails: string;
+  pinnedDecisions: string[];
+  updatedAt?: number;
+}
+
 export interface ScriptData {
   title: string;
   genre: string;
@@ -349,6 +439,7 @@ export interface ScriptData {
   shotGenerationModel?: string; // Model used for shot generation
   planningShotDuration?: number; // Locked shot duration baseline (seconds) used for shot count planning
   artDirection?: ArtDirection; // 全局美术指导文档，用于统一角色和场景的视觉风格
+  productionBible?: ProductionBible; // 项目圣经：事实、服装、场景与制作约束
   characters: Character[];
   scenes: Scene[];
   props: Prop[]; // 道具列表，用于保持多分镜间物品视觉一致性
@@ -450,6 +541,8 @@ export interface Episode {
   targetDuration: string;
   language: string;
   visualStyle: string;
+  /** 当前剧集/项目的统一画幅；旧数据缺失时由前端兼容回退。 */
+  aspectRatio?: AspectRatio;
   shotGenerationModel: string;
   scriptData: ScriptData | null;
   shots: Shot[];

@@ -536,7 +536,9 @@ def _aspect_ratio_size(aspect_ratio: str, *, video: bool = False, minimax: bool 
     elif video:
         mapping = {"16:9": (1280, 720), "9:16": (720, 1280), "1:1": (720, 720)}
     else:
-        mapping = {"16:9": (1024, 576), "9:16": (576, 1024), "1:1": (1024, 1024)}
+        # 图片资产与 MiniMax H3 共用 768p 画布，避免首尾帧在送入视频工作流前
+        # 从 1024x576 再放大到 1344x768，减少一次无效插值造成的细节损失。
+        mapping = {"16:9": (1344, 768), "9:16": (768, 1344), "1:1": (768, 768)}
     return mapping.get(aspect_ratio, mapping["16:9"])
 
 
@@ -759,6 +761,9 @@ def patch_video_workflow(
     aspect_ratio: str = "16:9",
     start_image_name: str | None = None,
     end_image_name: str | None = None,
+    reference_image_names: list[str] | None = None,
+    reference_video_names: list[str] | None = None,
+    reference_audio_names: list[str] | None = None,
     audio_name: str | None = None,
 ) -> dict[str, Any]:
     patched = copy.deepcopy(workflow)
@@ -859,12 +864,15 @@ def patch_video_workflow(
             inputs.pop("audioUI", None)
 
     minimax_id = None
+    ref2v_id = None
     last_loader_id = None
     for node_id, node in nodes.items():
         class_type = str(node.get("class_type", "")).lower()
         title = str(node.get("_meta", {}).get("title", "")).lower()
         if class_type == "minimaxh3imagetovideo":
             minimax_id = node_id
+        if class_type == "minimaxh3referencetovideo":
+            ref2v_id = node_id
         if class_type == "loadimage" and "last" in title:
             last_loader_id = node_id
     if minimax_id:
@@ -877,6 +885,33 @@ def patch_video_workflow(
             minimax_inputs["last_frame"] = [last_loader_id, 0]
         else:
             minimax_inputs.pop("last_frame", None)
+    if ref2v_id and reference_image_names is not None:
+        ref_inputs = nodes[ref2v_id].setdefault("inputs", {})
+        ref_slots = sorted(
+            (key for key in ref_inputs if key.startswith("ref_images.ref_image_")),
+            key=lambda key: int(key.rsplit("_", 1)[-1]),
+        )
+        for index, slot in enumerate(ref_slots):
+            link = ref_inputs.get(slot)
+            linked_node = nodes.get(str(link[0])) if isinstance(link, list) and link else None
+            if index < len(reference_image_names) and linked_node is not None:
+                linked_node.setdefault("inputs", {})["image"] = reference_image_names[index]
+            else:
+                ref_inputs.pop(slot, None)
+    if ref2v_id:
+        ref_inputs = nodes[ref2v_id].setdefault("inputs", {})
+        for prefix, names, field in (
+            ("ref_videos.ref_video_", reference_video_names or [], "video"),
+            ("ref_audios.ref_audio_", reference_audio_names or [], "audio"),
+        ):
+            slots = sorted((key for key in ref_inputs if key.startswith(prefix)), key=lambda key: int(key.rsplit("_", 1)[-1]))
+            for index, slot in enumerate(slots):
+                link = ref_inputs.get(slot)
+                linked_node = nodes.get(str(link[0])) if isinstance(link, list) and link else None
+                if index < len(names) and linked_node is not None:
+                    linked_node.setdefault("inputs", {})[field] = names[index]
+                else:
+                    ref_inputs.pop(slot, None)
 
     if not prompt_patched:
         raise AiConfigError("视频工作流中未找到 prompt 节点")
@@ -1436,12 +1471,15 @@ async def run_comfy_video(
     aspect_ratio = payload.get("aspectRatio") or params.get("defaultAspectRatio") or "16:9"
     duration = float(payload.get("duration") or params.get("defaultDuration") or 5)
     is_minimax = "minimax" in f"{workflow_name} {model_id or ''} {model.get('id') or ''} {model.get('apiModel') or ''}".lower()
+    is_ref2v = "r2v" in f"{workflow_name} {model_id or ''} {model.get('id') or ''} {model.get('apiModel') or ''}".lower()
     width, height = _aspect_ratio_size(aspect_ratio, video=True, minimax=is_minimax)
     seed = random.randint(0, 2**31 - 1)
 
     start_image = payload.get("startImage")
-    if not start_image:
+    if not start_image and not is_ref2v:
         raise AiConfigError("ComfyUI 图生视频需要首帧图片")
+    if is_ref2v and not (payload.get("referenceImages") or []):
+        raise AiConfigError("MiniMax H3 Ref2VA 至少需要一张角色、场景或道具参考图")
 
     workflow = load_workflow_template(workflow_name)
     logger.info(
@@ -1457,13 +1495,15 @@ async def run_comfy_video(
     )
     async with _comfyui_gpu_lock():
         async with httpx.AsyncClient(trust_env=False, timeout=7200) as client:
-            start_raw, start_mime = await _load_media_source(start_image)
-            if is_minimax:
-                start_raw = _resize_image_bytes(start_raw, width, height)
-                start_mime = "image/png"
-            start_name = await _upload_file(
-                client, base, "/upload/image", "image", f"start-{seed}.png", start_raw, start_mime
-            )
+            start_name = None
+            if start_image:
+                start_raw, start_mime = await _load_media_source(start_image)
+                if is_minimax:
+                    start_raw = _resize_image_bytes(start_raw, width, height)
+                    start_mime = "image/png"
+                start_name = await _upload_file(
+                    client, base, "/upload/image", "image", f"start-{seed}.png", start_raw, start_mime
+                )
             end_name = None
             if payload.get("endImage"):
                 end_raw, end_mime = await _load_media_source(payload["endImage"])
@@ -1473,6 +1513,28 @@ async def run_comfy_video(
                 end_name = await _upload_file(
                     client, base, "/upload/image", "image", f"end-{seed}.png", end_raw, end_mime
                 )
+            reference_names: list[str] = []
+            reference_values = payload.get("referenceImages") or []
+            if isinstance(reference_values, list):
+                for index, reference in enumerate(reference_values[: int(params.get("maxReferenceImages") or 9)]):
+                    raw, mime = await _load_media_source(reference)
+                    if is_minimax:
+                        raw = _resize_image_bytes(raw, width, height)
+                        mime = "image/png"
+                    reference_names.append(await _upload_file(
+                        client, base, "/upload/image", "image", f"ref-{seed}-{index + 1}.png", raw, mime
+                    ))
+            reference_video_names: list[str] = []
+            for index, reference in enumerate((payload.get("referenceVideos") or [])[:3]):
+                raw, mime = await _load_media_source(reference)
+                reference_video_names.append(await _upload_file(
+                    client, base, "/upload/image", "image", f"ref-video-{seed}-{index + 1}.mp4", raw, mime
+                ))
+            reference_audio_names: list[str] = []
+            for index, reference in enumerate((payload.get("referenceAudios") or [])[:3]):
+                reference_audio_names.append(await _upload_audio(
+                    client, base, reference, f"ref-audio-{seed}-{index + 1}.wav"
+                ))
             audio_name = None
             if payload.get("audioUrl"):
                 audio_name = await _upload_audio(client, base, payload["audioUrl"], f"audio-{seed}.wav")
@@ -1488,6 +1550,9 @@ async def run_comfy_video(
                 aspect_ratio=aspect_ratio,
                 start_image_name=start_name,
                 end_image_name=end_name,
+                reference_image_names=reference_names,
+                reference_video_names=reference_video_names,
+                reference_audio_names=reference_audio_names,
                 audio_name=audio_name,
             )
             content = await _queue_and_poll(

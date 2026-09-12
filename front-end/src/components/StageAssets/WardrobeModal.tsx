@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
-import { User, X, Shirt, Plus, RefreshCw, Loader2, Upload, AlertCircle } from 'lucide-react';
-import { Character, CharacterVariation } from '../../types';
-import ImageUploadButton from './ImageUploadButton';
-import { generateId } from './utils';
+import { User, X, Shirt, Plus, RefreshCw, Loader2, Upload, AlertCircle, Save } from 'lucide-react';
+import { Character } from '../../types';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface WardrobeModalProps {
   character: Character;
   onClose: () => void;
+  onBaseWardrobeSave: (charId: string, wardrobe: string) => void;
   onAddVariation: (charId: string, name: string, prompt: string) => void;
   onDeleteVariation: (charId: string, varId: string) => void;
   onGenerateVariation: (charId: string, varId: string) => void;
@@ -17,12 +17,15 @@ interface WardrobeModalProps {
 const WardrobeModal: React.FC<WardrobeModalProps> = ({
   character,
   onClose,
+  onBaseWardrobeSave,
   onAddVariation,
   onDeleteVariation,
   onGenerateVariation,
   onUploadVariation,
   onImageClick,
 }) => {
+  const { text } = useInterfaceLanguage();
+  const [baseWardrobe, setBaseWardrobe] = useState(character.wardrobe || '');
   const [newVarName, setNewVarName] = useState('');
   const [newVarPrompt, setNewVarPrompt] = useState('');
 
@@ -47,7 +50,7 @@ const WardrobeModal: React.FC<WardrobeModalProps> = ({
             </div>
             <div>
               <h3 className="text-lg font-bold text-[var(--text-primary)]">{character.name}</h3>
-              <p className="text-xs text-[var(--text-tertiary)] font-mono uppercase tracking-wider">Wardrobe & Variations</p>
+              <p className="text-xs text-[var(--text-tertiary)] font-mono uppercase tracking-wider">{text('服装与造型变体', 'Wardrobe & Variations')}</p>
             </div>
           </div>
           <button onClick={onClose} className="p-2 hover:bg-[var(--bg-hover)] rounded-full transition-colors">
@@ -61,7 +64,7 @@ const WardrobeModal: React.FC<WardrobeModalProps> = ({
             {/* Base Look */}
             <div>
               <h4 className="text-xs font-bold text-[var(--text-tertiary)] uppercase tracking-widest mb-4 flex items-center gap-2">
-                <User className="w-4 h-4" /> Base Appearance
+                <User className="w-4 h-4" /> {text('基础造型', 'Base Appearance')}
               </h4>
               <div className="bg-[var(--bg-primary)] p-4 rounded-xl border border-[var(--border-primary)]">
                 <div 
@@ -74,10 +77,31 @@ const WardrobeModal: React.FC<WardrobeModalProps> = ({
                     <div className="flex items-center justify-center h-full text-[var(--text-muted)]">No Image</div>
                   )}
                   <div className="absolute top-2 left-2 px-2 py-1 bg-[var(--bg-base)]/60 backdrop-blur rounded text-[10px] text-[var(--text-primary)] font-bold uppercase border border-[var(--overlay-border)]">
-                    Default
+                    {text('基础造型', 'Default')}
                   </div>
                 </div>
-                <p className="text-xs text-[var(--text-tertiary)] leading-relaxed font-mono">{character.visualPrompt}</p>
+                <label className="block text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">
+                  {text('基础服装（镜头默认）', 'Base Wardrobe (Shot Default)')}
+                </label>
+                <textarea
+                  value={baseWardrobe}
+                  onChange={(event) => setBaseWardrobe(event.target.value)}
+                  placeholder={text('准确描述服装颜色、材质、款式和鞋子；除非镜头选择服装变体，否则所有镜头都使用此造型。', 'Describe exact colors, materials, garments, and footwear. Every shot uses this look unless a variation is selected.')}
+                  className="w-full h-24 bg-[var(--bg-surface)] border border-[var(--border-primary)] rounded-lg px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] resize-y"
+                />
+                <button
+                  onClick={() => onBaseWardrobeSave(character.id, baseWardrobe.trim())}
+                  disabled={baseWardrobe.trim() === (character.wardrobe || '').trim()}
+                  className="mt-2 w-full py-2 bg-[var(--bg-hover)] hover:bg-[var(--border-secondary)] text-[var(--text-secondary)] rounded text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 disabled:opacity-40 transition-colors"
+                >
+                  <Save className="w-3 h-3" /> {text('保存基础服装', 'Save Base Wardrobe')}
+                </button>
+                <details className="mt-3">
+                  <summary className="text-[10px] text-[var(--text-muted)] cursor-pointer uppercase tracking-wider">
+                    {text('查看完整角色提示词', 'View full character prompt')}
+                  </summary>
+                  <p className="mt-2 text-xs text-[var(--text-tertiary)] leading-relaxed font-mono whitespace-pre-wrap">{character.visualPrompt}</p>
+                </details>
               </div>
             </div>
 
@@ -85,7 +109,7 @@ const WardrobeModal: React.FC<WardrobeModalProps> = ({
             <div>
               <div className="flex items-center justify-between mb-4">
                 <h4 className="text-xs font-bold text-[var(--text-tertiary)] uppercase tracking-widest flex items-center gap-2">
-                  <Shirt className="w-4 h-4" /> Variations / Outfits
+                  <Shirt className="w-4 h-4" /> {text('服装变体', 'Wardrobe Variations')}
                 </h4>
               </div>
 
@@ -134,7 +158,7 @@ const WardrobeModal: React.FC<WardrobeModalProps> = ({
                           <X className="w-3 h-3" />
                         </button>
                       </div>
-                      <p className="text-[10px] text-[var(--text-tertiary)] line-clamp-2 mb-3 font-mono">{variation.visualPrompt}</p>
+                      <p className="text-[10px] text-[var(--text-tertiary)] line-clamp-2 mb-3 font-mono">{variation.wardrobe || variation.visualPrompt}</p>
                       <div className="flex gap-3">
                         <button 
                           onClick={() => onGenerateVariation(character.id, variation.id)}
@@ -146,11 +170,11 @@ const WardrobeModal: React.FC<WardrobeModalProps> = ({
                           }`}
                         >
                           <RefreshCw className={`w-3 h-3 ${variation.status === 'generating' ? 'animate-spin' : ''}`} />
-                          {variation.status === 'failed' ? '重试' : variation.referenceImage ? 'Regenerate' : 'Generate Look'}
+                          {variation.status === 'failed' ? text('重试', 'Retry') : variation.referenceImage ? text('重新生成', 'Regenerate') : text('生成造型', 'Generate Look')}
                         </button>
                         <label className="text-[10px] font-bold uppercase tracking-wider text-[var(--success-text)] hover:text-[var(--text-primary)] flex items-center gap-1 transition-colors cursor-pointer">
                           <Upload className="w-3 h-3" />
-                          Upload
+                          {text('上传', 'Upload')}
                           <input
                             type="file"
                             accept="image/*"
@@ -174,13 +198,13 @@ const WardrobeModal: React.FC<WardrobeModalProps> = ({
                   <div className="space-y-3">
                     <input 
                       type="text" 
-                      placeholder="Variation Name (e.g. Tactical Gear)" 
+                      placeholder={text('变体名称（例如：雨天造型）', 'Variation name (e.g. Rain Look)')}
                       value={newVarName}
                       onChange={(e) => setNewVarName(e.target.value)}
                       className="w-full bg-[var(--bg-surface)] border border-[var(--border-primary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--border-secondary)]"
                     />
                     <textarea 
-                      placeholder="Visual description of outfit/state..."
+                      placeholder={text('准确描述这套服装的颜色、材质、款式和鞋子……', 'Exact colors, materials, garments, and footwear...')}
                       value={newVarPrompt}
                       onChange={(e) => setNewVarPrompt(e.target.value)}
                       className="w-full bg-[var(--bg-surface)] border border-[var(--border-primary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--border-secondary)] resize-none h-16"
@@ -190,7 +214,7 @@ const WardrobeModal: React.FC<WardrobeModalProps> = ({
                       disabled={!newVarName || !newVarPrompt}
                       className="w-full py-2 bg-[var(--bg-hover)] hover:bg-[var(--border-secondary)] text-[var(--text-secondary)] rounded text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 disabled:opacity-50 transition-colors"
                     >
-                      <Plus className="w-3 h-3" /> Add Variation
+                      <Plus className="w-3 h-3" /> {text('添加服装变体', 'Add Variation')}
                     </button>
                   </div>
                 </div>

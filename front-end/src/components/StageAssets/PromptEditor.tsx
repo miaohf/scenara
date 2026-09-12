@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Edit3, Save, AlertCircle, Camera, RefreshCw } from 'lucide-react';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface PromptEditorProps {
   prompt: string;
@@ -16,10 +17,13 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
   onSave,
   onRegenerate,
   isRegenerating = false,
-  label = '提示词',
-  placeholder = '输入视觉描述...',
-  maxHeight = 'max-h-[260px]',
+  label,
+  placeholder,
+  maxHeight = 'max-h-[180px]',
 }) => {
+  const { text } = useInterfaceLanguage();
+  const resolvedLabel = label || text('提示词', 'Prompt');
+  const resolvedPlaceholder = placeholder || text('输入视觉描述...', 'Enter a visual description...');
   const [isEditing, setIsEditing] = useState(false);
   const [editedPrompt, setEditedPrompt] = useState(prompt);
 
@@ -43,7 +47,7 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
       <div className="flex items-center justify-between mb-2 gap-2">
         <label className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-widest flex items-center gap-1.5">
           <Camera className="w-3 h-3" />
-          {label}
+          {resolvedLabel}
         </label>
         {!isEditing && (
           <div className="flex items-center gap-0.5 shrink-0">
@@ -52,8 +56,8 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
                 onClick={onRegenerate}
                 disabled={isRegenerating}
                 className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors p-1 hover:bg-[var(--bg-hover)] rounded disabled:opacity-40 disabled:cursor-not-allowed"
-                title="重新生成提示词（按当前项目风格，不会自动生图）"
-                aria-label="重新生成提示词"
+                title={text('重新生成提示词（按当前项目风格，不会自动生图）', 'Regenerate the prompt in the current project style without generating an image')}
+                aria-label={text('重新生成提示词', 'Regenerate prompt')}
               >
                 <RefreshCw className={`w-3 h-3 ${isRegenerating ? 'animate-spin' : ''}`} />
               </button>
@@ -62,8 +66,8 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
               onClick={handleStartEdit}
               disabled={isRegenerating}
               className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors p-1 hover:bg-[var(--bg-hover)] rounded disabled:opacity-40"
-              title="手工改写提示词"
-              aria-label="手工改写提示词"
+              title={text('手工改写提示词', 'Edit prompt manually')}
+              aria-label={text('手工改写提示词', 'Edit prompt manually')}
             >
               <Edit3 className="w-3 h-3" />
             </button>
@@ -77,7 +81,7 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
             value={editedPrompt}
             onChange={(e) => setEditedPrompt(e.target.value)}
             className={`flex-1 bg-[var(--bg-base)] border border-[var(--accent)] text-[var(--text-primary)] px-3 py-2 text-xs rounded-lg focus:outline-none focus:ring-1 focus:ring-[var(--accent)] resize-none font-mono leading-relaxed min-h-[140px] ${maxHeight}`}
-            placeholder={placeholder}
+            placeholder={resolvedPlaceholder}
             autoFocus
           />
           <div className="flex gap-2">
@@ -86,13 +90,13 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
               className="flex-1 py-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors"
             >
               <Save className="w-3 h-3" />
-              保存
+              {text('保存', 'Save')}
             </button>
             <button
               onClick={handleCancel}
               className="flex-1 py-1.5 bg-[var(--bg-hover)] hover:bg-[var(--border-secondary)] text-[var(--text-secondary)] rounded text-[10px] font-bold uppercase tracking-wider transition-colors"
             >
-              取消
+              {text('取消', 'Cancel')}
             </button>
           </div>
         </div>
@@ -106,7 +110,7 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
             <div className="flex items-start gap-2 text-[var(--text-muted)]">
               <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
               <p className="text-[10px] leading-relaxed">
-                未设置提示词。可点刷新图标自动生成，或点编辑图标手工填写。
+                {text('未设置提示词。可点刷新图标自动生成，或点编辑图标手工填写。', 'No prompt yet. Use refresh to generate one, or edit it manually.')}
               </p>
             </div>
           )}

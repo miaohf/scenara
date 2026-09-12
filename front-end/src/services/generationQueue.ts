@@ -19,11 +19,11 @@ export const jobTargetShotId = (job: JobStatus): string | undefined => {
 export const isVideoJob = (job: JobStatus): boolean =>
   job.target?.kind === "video" || job.job_type === "comfyui_video" || job.job_type === "video";
 
-export type JobKind = "video" | "keyframe" | "nineGrid" | "character" | "scene" | "prop" | "variation" | "turnaround" | "image" | "other";
+export type JobKind = "video" | "keyframe" | "nineGrid" | "character" | "scene" | "prop" | "variation" | "turnaround" | "threeView" | "image" | "other";
 
 export const jobKind = (job: JobStatus): JobKind => {
   const kind = job.target?.kind;
-  if (kind === "video" || kind === "nineGrid" || kind === "keyframe" || kind === "character" || kind === "scene" || kind === "prop" || kind === "variation" || kind === "turnaround") {
+  if (kind === "video" || kind === "nineGrid" || kind === "keyframe" || kind === "character" || kind === "scene" || kind === "prop" || kind === "variation" || kind === "turnaround" || kind === "threeView") {
     return kind;
   }
   if (job.job_type === "comfyui_video" || job.job_type === "video") return "video";
@@ -51,7 +51,9 @@ export const describeJobTitle = (job: JobStatus, episode?: Episode | null): stri
         : target.kind === "scene"
           ? episode?.scriptData?.scenes
           : episode?.scriptData?.props;
-    return list?.find((item) => String(item.id) === String(target.id))?.name || (target.kind === "character" ? "角色" : target.kind === "scene" ? "场景" : "道具");
+    const item = list?.find((row) => String(row.id) === String(target.id));
+    const name = item && ("name" in item ? item.name : item.location);
+    return name || (target.kind === "character" ? "角色" : target.kind === "scene" ? "场景" : "道具");
   }
 
   if (target.kind === "variation") {
@@ -60,6 +62,11 @@ export const describeJobTitle = (job: JobStatus, episode?: Episode | null): stri
   }
 
   if (target.kind === "turnaround") {
+    const character = episode?.scriptData?.characters.find((item) => String(item.id) === String(target.characterId));
+    return character ? character.name : "九宫格";
+  }
+
+  if (target.kind === "threeView") {
     const character = episode?.scriptData?.characters.find((item) => String(item.id) === String(target.characterId));
     return character ? character.name : "三视图";
   }
@@ -90,7 +97,8 @@ export const describeJob = (job: JobStatus, episode?: Episode | null): string =>
         : target.kind === "scene"
           ? episode?.scriptData?.scenes
           : episode?.scriptData?.props;
-    const name = list?.find((item) => String(item.id) === String(target.id))?.name;
+    const item = list?.find((row) => String(row.id) === String(target.id));
+    const name = item && ("name" in item ? item.name : item.location);
     const kindLabel = target.kind === "character" ? "角色" : target.kind === "scene" ? "场景" : "道具";
     return name ? `${kindLabel} ${name}` : kindLabel;
   }
@@ -103,6 +111,13 @@ export const describeJob = (job: JobStatus, episode?: Episode | null): string =>
   }
 
   if (target.kind === "turnaround") {
+    const character = episode?.scriptData?.characters.find(
+      (item) => String(item.id) === String(target.characterId),
+    );
+    return character ? `${character.name} 九宫格` : "角色九宫格";
+  }
+
+  if (target.kind === "threeView") {
     const character = episode?.scriptData?.characters.find(
       (item) => String(item.id) === String(target.characterId),
     );

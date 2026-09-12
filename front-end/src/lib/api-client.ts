@@ -118,7 +118,10 @@ export async function apiFetch<T>(
     if (refreshed) {
       return apiFetch<T>(path, init, false);
     }
-    throw new Error("Unauthorized");
+    // Consumers must be able to distinguish an expired/revoked session from a
+    // temporary network or upstream error.  In particular, AuthProvider should
+    // only discard stored credentials for a confirmed authentication failure.
+    throw Object.assign(new Error("Unauthorized"), { status: 401 });
   }
 
   if (!res.ok) {

@@ -1,9 +1,14 @@
 import type { ReactNode } from "react";
 import { Clapperboard } from "lucide-react";
+import LanguageModeSelector from "./LanguageModeSelector";
+import { useInterfaceLanguage } from "../contexts/InterfaceLanguageContext";
 
 export function AuthShell({ children }: { children: ReactNode }) {
+  const { text } = useInterfaceLanguage();
+
   return (
     <div className="relative min-h-screen overflow-hidden bg-[var(--bg-base)] text-[var(--text-primary)]">
+      <LanguageModeSelector className="absolute right-5 top-5 z-20 rounded-xl bg-[var(--bg-primary)]/80 p-2 backdrop-blur-sm" />
       <div
         aria-hidden
         className="pointer-events-none absolute -top-40 right-[-80px] h-[520px] w-[520px] rounded-full bg-[var(--accent)]/12 blur-3xl"
@@ -35,20 +40,23 @@ export function AuthShell({ children }: { children: ReactNode }) {
 
           <div className="max-w-md space-y-5">
             <p className="text-[11px] font-medium uppercase tracking-[0.32em] text-[var(--accent-text)]">
-              AI 漫剧工作台
+              {text("AI 漫剧工作台", "AI STORY PRODUCTION")}
             </p>
             <h1 className="text-5xl leading-[1.12] font-semibold tracking-tight text-[var(--text-primary)]">
-              把剧本
+              {text("把剧本", "Turn scripts")}
               <br />
-              变成画面
+              {text("变成画面", "into scenes")}
             </h1>
             <p className="max-w-sm text-sm leading-7 text-[var(--text-tertiary)]">
-              从故事拆解、角色定妆到分镜与成片，在同一条创作流里完成。
+              {text(
+                "从故事拆解、角色定妆到分镜与成片，在同一条创作流里完成。",
+                "Plan stories, develop characters, produce shots and deliver the final cut in one workflow.",
+              )}
             </p>
           </div>
 
           <p className="text-xs tracking-wide text-[var(--text-muted)]">
-            Script · Assets · Director · Export
+            {text("剧本 · 资产 · 导演 · 导出", "Script · Assets · Director · Export")}
           </p>
         </section>
 

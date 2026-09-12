@@ -4,8 +4,9 @@ import { Shot } from '../../types';
 import { getShotDisplayLabel } from '../../services/storyboardIdUtils';
 import { useGenerationQueue } from '../../contexts/GenerationQueueContext';
 import { formatJobProgressLabel, resolveShotKeyframeBadge, resolveShotVideoBadge } from '../../services/generationQueue';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
-const ShotThumb: React.FC<{ url: string; alt: string }> = ({ url, alt }) => {
+const ShotThumb: React.FC<{ url: string; alt: string; unavailableLabel: string }> = ({ url, alt, unavailableLabel }) => {
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
 
@@ -27,7 +28,7 @@ const ShotThumb: React.FC<{ url: string; alt: string }> = ({ url, alt }) => {
     return (
       <div className="absolute inset-0 flex flex-col items-center justify-center text-[var(--text-muted)]">
         <ImageIcon className="w-8 h-8 opacity-20 mb-1" />
-        <span className="text-[10px] text-[var(--error)]">无法预览</span>
+        <span className="text-[10px] text-[var(--error)]">{unavailableLabel}</span>
       </div>
     );
   }
@@ -53,6 +54,7 @@ interface ShotCardProps {
 }
 
 const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onDelete }) => {
+  const { text } = useInterfaceLanguage();
   const { jobs } = useGenerationQueue();
   const { status: videoStatus, job: videoJob, queuePosition } = resolveShotVideoBadge(shot, jobs, index);
   const startFrameBadge = resolveShotKeyframeBadge(shot, jobs, 'start', index);
@@ -64,10 +66,10 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
     : null;
   const quality = shot.qualityAssessment;
   const qualityGradeLabel = quality?.grade === 'pass'
-    ? '通过'
+    ? text('通过', 'PASS')
     : quality?.grade === 'warning'
-      ? '需优化'
-      : '高风险';
+      ? text('需优化', 'REVIEW')
+      : text('高风险', 'HIGH RISK');
   const qualityBadgeClass = quality?.grade === 'pass'
     ? 'bg-[var(--success-bg)] text-[var(--success-text)] border-[var(--success-border)]'
     : quality?.grade === 'warning'
@@ -102,7 +104,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
                 onDelete(shot.id);
               }}
               className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--error)] hover:bg-[var(--error)]/10 transition-all opacity-0 group-hover:opacity-100"
-              title="删除分镜"
+              title={text('删除分镜', 'Delete shot')}
             >
               <Trash2 className="w-3 h-3" />
             </button>
@@ -113,7 +115,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
       {/* Thumbnail */}
       <div className="aspect-video bg-[var(--bg-elevated)] relative overflow-hidden">
         {hasImage ? (
-          <ShotThumb url={sKf!.imageUrl!} alt={`Shot ${index + 1}`} />
+          <ShotThumb url={sKf!.imageUrl!} alt={`Shot ${index + 1}`} unavailableLabel={text('无法预览', 'Preview unavailable')} />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-muted)]">
             <ImageIcon className="w-8 h-8 opacity-20" />
@@ -125,7 +127,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
             <Loader2 className="w-6 h-6 animate-spin text-[var(--accent)]" />
             <span className="text-[10px] font-mono text-[var(--accent-text)]">
               {startFrameBadge.status === 'queued'
-                ? (startFrameBadge.queuePosition ? `排队 #${startFrameBadge.queuePosition}` : '排队中')
+                ? (startFrameBadge.queuePosition ? text(`排队 #${startFrameBadge.queuePosition}`, `QUEUED #${startFrameBadge.queuePosition}`) : text('排队中', 'QUEUED'))
                 : keyframeProgressLabel}
             </span>
             {startFrameBadge.status === 'running' && (
@@ -143,13 +145,13 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
         <div className="absolute top-2 right-2 flex flex-col gap-1 items-end">
           {quality && (
             <div className={`px-2 py-1 rounded-full text-[9px] font-bold border ${qualityBadgeClass}`}>
-              评分 {quality.score} · {qualityGradeLabel}
+              {text('评分', 'SCORE')} {quality.score} · {qualityGradeLabel}
             </div>
           )}
           {videoStatus === 'ready' && (
             <div
               className="w-7 h-7 rounded-full bg-[var(--success)] text-[var(--text-primary)] flex items-center justify-center shadow-lg"
-              title="视频已生成"
+              title={text('视频已生成', 'Video ready')}
             >
               <Video className="w-3.5 h-3.5" />
             </div>
@@ -157,7 +159,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
           {videoStatus === 'running' && (
             <div
               className="min-w-7 h-7 px-1.5 rounded-full bg-[var(--accent)] text-[var(--text-primary)] flex items-center justify-center shadow-lg font-mono text-[9px]"
-              title={typeof videoJob?.progress === 'number' ? `生成中 ${videoJob.progress}%` : '生成中'}
+              title={typeof videoJob?.progress === 'number' ? text(`生成中 ${videoJob.progress}%`, `Generating ${videoJob.progress}%`) : text('生成中', 'Generating')}
             >
               {typeof videoJob?.progress === 'number' ? `${videoJob.progress}%` : <Loader2 className="w-3.5 h-3.5 animate-spin" />}
             </div>
@@ -165,7 +167,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
           {videoStatus === 'queued' && (
             <div
               className="w-7 h-7 rounded-full bg-[var(--warning)] text-[var(--bg-base)] flex items-center justify-center shadow-lg"
-              title={queuePosition ? `排队 #${queuePosition}` : '排队中'}
+              title={queuePosition ? text(`排队 #${queuePosition}`, `Queued #${queuePosition}`) : text('排队中', 'Queued')}
             >
               <Clock3 className="w-3.5 h-3.5" />
             </div>
@@ -173,7 +175,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
           {videoStatus === 'failed' && (
             <div
               className="w-7 h-7 rounded-full bg-[var(--error)] text-[var(--text-primary)] flex items-center justify-center shadow-lg"
-              title="生成失败"
+              title={text('生成失败', 'Generation failed')}
             >
               <CircleAlert className="w-3.5 h-3.5" />
             </div>
@@ -182,7 +184,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
 
         {!isActive && !hasImage && !keyframeBusy && (
           <div className="absolute inset-0 bg-[var(--bg-base)]/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-            <span className="text-[var(--text-primary)] text-xs font-mono">点击编辑</span>
+            <span className="text-[var(--text-primary)] text-xs font-mono">{text('点击编辑', 'Click to edit')}</span>
           </div>
         )}
       </div>

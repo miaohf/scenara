@@ -5,6 +5,10 @@ import {
   NineGridPanel,
   NineGridData,
   PromptTemplateConfig,
+  PropPresentationMode,
+  ShotPropUsage,
+  Character,
+  DubbingMode,
 } from '../../types';
 import {
   VISUAL_STYLE_PROMPTS,
@@ -22,23 +26,35 @@ import {
 import { getActiveVideoModel, getModelById, getVideoModels } from '../../services/modelRegistry';
 import { findSceneByIdCompat } from '../../services/storyboardIdUtils';
 import { VideoModelParams } from '../../types/model';
+import {
+  buildVideoPromptPolicyBlock,
+  hasVideoPromptPolicy,
+} from '../../services/ai/videoPromptPolicy';
+import {
+  resolveCharacterDisplayImage,
+  resolveCharacterImageView,
+} from '../../services/characterImageHistory';
+import { ReferenceImageEntry } from '../../services/referenceImagePack';
+import { formatProductionBibleForPrompt } from '../../services/productionBibleService';
 
 const KEYFRAME_META_SPLITTER = '\n\n---PROMPT_META_START---';
 
 /**
  * getRefImagesForShot 的返回类型
- * hasTurnaround 标记是否包含了角色九宫格造型图，
+ * hasTurnaround 标记当前参考包是否使用了角色九宫格/三视图，
  * 用于在提示词中告知 AI 如何正确解读多视角参考。
  */
 export interface RefImagesResult {
   images: string[];
+  /** 保留图片的业务类型、名称与说明，供槽位合并和提示词映射使用。 */
+  entries: ReferenceImageEntry[];
+  /** 与 images 下标对齐，便于提交前核对每个参考图槽位的业务角色。 */
+  imageRoles: string[];
   hasTurnaround: boolean;
   selectedTurnaroundCount: number;
   droppedTurnaroundCount: number;
   sceneFirst: boolean;
 }
-
-const MAX_SHOT_REFERENCE_IMAGES = 5;
 
 export const isQwenEditKeyframeWorkflow = (workflowName?: string): boolean => {
   const name = String(workflowName || '').toLowerCase();
@@ -57,8 +73,58 @@ const dedupeImageRefs = (images: string[]): string[] => {
   return output;
 };
 
+const GARMENT_NAME_PATTERN = /\b(coat|jacket|shirt|sweater|hoodie|trousers|pants|dress|skirt|scarf|boots|shoes|sneakers|hat|helmet|raincoat)\b|服装|衣服|外套|上衣|毛衣|裤|裙|围巾|靴|鞋|帽|雨衣/i;
+const WEARING_CONTEXT_PATTERN = /\b(worn|wearing|wears|dressed|outfit|wardrobe|costume|attire)\b|穿着|身穿|佩戴|换装|造型|服饰/i;
+
+/**
+ * 兼容旧项目：新数据以 isWearable 为准；旧数据只有在“衣物名称 + 穿戴语境”
+ * 或已进入当前角色的基础/变体服装描述时，才按服装处理。避免误删手持头盔、
+ * 橱窗服装等真正需要独立参考图的道具。
+ */
+const isWornGarmentForShot = (
+  prop: NonNullable<ProjectState['scriptData']>['props'][number],
+  shot: Shot,
+  scriptData: NonNullable<ProjectState['scriptData']>,
+): boolean => {
+  if (prop.isWearable) return true;
+
+  const identityText = `${prop.name || ''} ${prop.category || ''}`;
+  if (!GARMENT_NAME_PATTERN.test(identityText)) return false;
+
+  const description = `${prop.description || ''} ${prop.visualPrompt || ''}`;
+  if (WEARING_CONTEXT_PATTERN.test(description)) return true;
+
+  const normalizedPropName = String(prop.name || '').trim().toLowerCase();
+  if (!normalizedPropName) return false;
+
+  return (shot.characters || []).some((characterId) => {
+    const character = scriptData.characters.find(c => String(c.id) === String(characterId));
+    if (!character) return false;
+    const selectedVariationId = shot.characterVariations?.[characterId];
+    const selectedVariation = selectedVariationId
+      ? character.variations?.find(v => String(v.id) === String(selectedVariationId))
+      : undefined;
+    const wardrobeText = `${selectedVariation?.wardrobe || selectedVariation?.visualPrompt || ''} ${character.wardrobe || ''}`.toLowerCase();
+    if (wardrobeText.includes(normalizedPropName)) return true;
+
+    const normalizedDescription = description.toLowerCase();
+    const normalizedCharacterName = String(character.name || '').trim().toLowerCase();
+    if (!normalizedCharacterName) return false;
+    return normalizedDescription.includes(`${normalizedCharacterName}'s`)
+      || normalizedDescription.includes(`${normalizedCharacterName}’s`)
+      || normalizedDescription.includes(`${normalizedCharacterName}的`);
+  });
+};
+
 export const isMiniMaxH3VideoModel = (modelId: string): boolean =>
   resolveVideoModelRouting(modelId).normalizedModelId.includes('minimax-h3');
+
+export type VideoModelFamily =
+  | 'sora'
+  | 'doubao-task'
+  | 'veo-fast'
+  | 'comfyui-ltx'
+  | 'unknown';
 
 const buildMiniMaxTimelineDurations = (videoDuration?: number) => {
   const totalDuration = Math.max(5, videoDuration || 5);
@@ -78,10 +144,126 @@ export interface VideoPromptContext {
   hasStartFrame?: boolean;
   hasEndFrame?: boolean;
   dialogue?: string;
+  nativeAudio?: {
+    mode?: DubbingMode;
+    text?: string;
+    speakerName?: string;
+  };
 }
 
+const VOICE_CHARACTER_NAME_PATTERN = /voice|narrator|speaker|radio|child|human|声音|旁白|无线电|回应/i;
+
+/** 兼容旧剧本：没有 role 字段时，从声音角色的命名特征保守推断。 */
+export const isVoiceCharacter = (character: Pick<Character, 'name' | 'role'>): boolean =>
+  character.role === 'voice' || (
+    !character.role && VOICE_CHARACTER_NAME_PATTERN.test(String(character.name || ''))
+  );
+
+/** 从镜头文本中解析声音角色，无法唯一确定时返回 undefined，避免错误绑定。 */
+export const resolveShotVoiceSpeakerName = (
+  shot: Shot,
+  scriptData: ProjectState['scriptData'],
+  text?: string,
+): string | undefined => {
+  const characters = scriptData?.characters || [];
+  const dialogueText = `${shot.dialogue || ''}\n${text || ''}`.toLocaleLowerCase();
+  const mentioned = characters.filter((character) =>
+    isVoiceCharacter(character) &&
+    character.name &&
+    dialogueText.includes(String(character.name).toLocaleLowerCase())
+  );
+  if (mentioned.length > 0) return mentioned.map((character) => character.name).join(' & ');
+
+  const onScreenCharacter = (shot.characters || [])
+    .map((id) => characters.find((character) => String(character.id) === String(id)))
+    .find((character) => character && !isVoiceCharacter(character));
+  if (onScreenCharacter && (shot.characters || []).length === 1) return onScreenCharacter.name;
+
+  const voiceCharacters = characters.filter(isVoiceCharacter);
+  return voiceCharacters.length === 1 ? voiceCharacters[0].name : undefined;
+};
+
+/** 从镜头结构化配音字段生成 H3 原生音频上下文，不上传 audioUrl。 */
+export const buildShotNativeAudioContext = (
+  shot: Shot,
+  scriptData: ProjectState['scriptData'],
+): VideoPromptContext['nativeAudio'] => {
+  const text = String(shot.dubbing?.text || shot.dialogue || '').trim();
+  const mode = shot.dubbing?.mode || (shot.dialogue?.trim() ? 'dialogue' : undefined);
+  if (!text && !mode) return undefined;
+  return {
+    mode,
+    text,
+    speakerName: shot.dubbing?.speakerName || resolveShotVoiceSpeakerName(shot, scriptData, text),
+  };
+};
+
+const NATIVE_AUDIO_DIRECTIVE_MARKER = '[NATIVE_AUDIO_DIRECTIVE_V1]';
+const NATIVE_AUDIO_DIRECTIVE_PATTERN = /\n\n\[NATIVE_AUDIO_DIRECTIVE_V1\][\s\S]*$/u;
+
+/** 为 H3 原生音频工作流生成稳定、可重复的对白/旁白指令。 */
+export const buildNativeAudioDirective = (
+  audio: VideoPromptContext['nativeAudio'],
+  language: string,
+): string => {
+  void language;
+  const text = String(audio?.text || '').trim();
+  if (audio?.mode === 'narration' && text) {
+    return `${NATIVE_AUDIO_DIRECTIVE_MARKER}\nAudio: Generate one restrained narrator voice. The narrator must say exactly the quoted text in its original language. Do not translate, paraphrase, or add words: "${text}". No other spoken dialogue, no subtitles, and no on-screen text.`;
+  }
+  if (audio?.mode === 'dialogue' && text) {
+    const speaker = audio.speakerName?.includes(' & ')
+      ? `Use the explicitly labeled speakers ${audio.speakerName}. Each speaker must say only the line associated with that speaker label`
+      : audio.speakerName
+        ? `The voice belongs to ${audio.speakerName}`
+      : 'Use one clearly distinguished off-screen or in-scene speaker';
+    return `${NATIVE_AUDIO_DIRECTIVE_MARKER}\nAudio: ${speaker}. The speaker must say exactly the quoted text in its original language. Do not translate, paraphrase, or add words: "${text}". Lip-sync only if the speaker is visible. No other spoken dialogue, no narrator voiceover, no subtitles, and no on-screen text.`;
+  }
+  return `${NATIVE_AUDIO_DIRECTIVE_MARKER}\nAudio: Generate environmental sound effects only. Absolutely no human voice, speech, dialogue, narration, singing, humming, whispering, murmuring, vocalization, or speech-like/gibberish sounds. No subtitles and no on-screen text.`;
+};
+
+/** H3 既有提示词也统一重写音频块，避免旧的“无旁白”规则残留。 */
+export const finalizeMiniMaxH3VideoPrompt = (
+  prompt: string,
+  audio: VideoPromptContext['nativeAudio'],
+  language: string,
+  durationSeconds?: number,
+): string => {
+  const totalDuration = Math.max(5, durationSeconds || 5);
+  const midDuration = (totalDuration / 2).toFixed(1);
+  const basePrompt = String(prompt || '')
+    .replace(NATIVE_AUDIO_DIRECTIVE_PATTERN, '')
+    .replace(WORKFLOW_AUDIO_BLOCK_PATTERN, '')
+    .replace(/\{duration\}/g, String(totalDuration))
+    .replace(/\{midDuration\}/g, midDuration)
+    .trimEnd();
+  const directive = buildNativeAudioDirective(audio, language);
+  const budget = Math.max(400, MAX_VIDEO_PROMPT_CHARS - Array.from(directive).length - 2);
+  return `${fitVideoPromptLength(basePrompt, budget)}\n\n${directive}`;
+};
+
+/** 单角色镜头的构图锁，防止“越肩镜头”被模型误解成两个相同角色。 */
+export const appendCharacterCompositionConstraints = (
+  prompt: string,
+  shot: Shot,
+  scriptData: ProjectState['scriptData'],
+): string => {
+  if (String(prompt || '').includes('[LOCKED CHARACTER COUNT — DO NOT CHANGE]')) return prompt;
+  const names = (shot.characters || [])
+    .map((id) => scriptData?.characters.find((character) => String(character.id) === String(id)))
+    .filter((character): character is NonNullable<typeof character> => !!character)
+    .map((character) => character.name)
+    .filter(Boolean);
+  if (names.length === 0) return prompt;
+  const subjectRule = names.length === 1
+    ? `- EXACTLY ONE visible human/character: ${names[0]}. Do not create a second copy, clone, duplicate, reflection, portrait, silhouette, or background version of ${names[0]}.
+- If this is an over-the-shoulder or rear view, it is still the same single ${names[0]}; do not add another foreground or background body.`
+    : `- Show exactly these named characters and no duplicate copies: ${names.join(', ')}.`;
+  return `${prompt.trim()}\n\n[LOCKED CHARACTER COUNT — DO NOT CHANGE]\n${subjectRule}\n- Keep the composition as one coherent shot; no split-screen, collage, mirror duplication, or multi-exposure.`;
+};
+
 const WORKFLOW_AUDIO_BLOCK_PATTERN =
-  /\n\nAudio(?:（角色对话[^）]*）|\s*\(character dialogue)[\s\S]*$/iu;
+  /\n\nAudio[\s\S]*$/iu;
 
 /** ComfyUI 原生音视频工作流：注入角色对话块，禁止旁白 */
 export const finalizeComfyUiVideoWorkflowPrompt = (
@@ -91,19 +273,16 @@ export const finalizeComfyUiVideoWorkflowPrompt = (
 ): string => {
   const trimmedDialogue = (dialogue || '').trim();
   const isChinese = isChineseLanguage(language);
-  const langLabel = isChinese ? '中文' : language;
   const basePrompt = prompt.replace(WORKFLOW_AUDIO_BLOCK_PATTERN, '').trimEnd();
 
   if (!trimmedDialogue) {
-    const noSpeechNote = isChinese
-      ? '\n\nAudio：本镜头无对白，仅保留环境音效，禁止旁白配音，禁止字幕与画面文字。'
-      : '\n\nAudio: No character dialogue in this shot; ambient sound only. No narrator voiceover, no subtitles or on-screen text.';
+    const noSpeechNote = '\n\nAudio: No character dialogue in this shot; ambient sound only. No human voice or speech-like vocalization, no narrator voiceover, no subtitles or on-screen text.';
     return fitVideoPromptLength(`${basePrompt}${noSpeechNote}`);
   }
 
   const block = isChinese
-    ? `\n\nAudio（角色对话，需口型同步）：\n「${trimmedDialogue}」\n画面中角色用${langLabel}清晰说出以上台词。禁止旁白配音，禁止字幕与画面文字。`
-    : `\n\nAudio (character dialogue, lip-sync required):\n"${trimmedDialogue}"\nThe on-screen character speaks this line clearly in ${langLabel}. No narrator voiceover, no subtitles or on-screen text.`;
+    ? `\n\nAudio（角色对话，需口型同步）：\n「${trimmedDialogue}」\n画面中角色用台词原本的语言，逐字清晰说出以上台词。不要翻译、改写或添加内容。禁止旁白配音，禁止字幕与画面文字。`
+    : `\n\nAudio (character dialogue, lip-sync required):\n"${trimmedDialogue}"\nThe on-screen character speaks this line clearly in the original language of the line. Do not translate, paraphrase, or add words. No narrator voiceover, no subtitles or on-screen text.`;
   return fitVideoPromptLength(`${basePrompt}${block}`);
 };
 
@@ -236,8 +415,8 @@ export const routeVideoFrameInputs = (
 
 /**
  * 获取镜头的参考图片
- * 增强版：如果角色有九宫格造型图，将整张九宫格图作为额外参考传入，
- * 并通过 hasTurnaround 标记告知调用方，以便在提示词中正确描述。
+ * 每个角色只占用一个主参考槽位：镜头服装变体优先，否则使用角色当前选中的
+ * 普通定妆照、九宫格或三视图。多视图不再作为额外图片重复追加。
  */
 export const getRefImagesForShot = (
   shot: Shot,
@@ -247,12 +426,15 @@ export const getRefImagesForShot = (
   const characterImages: string[] = [];
   const sceneImages: string[] = [];
   const propImages: string[] = [];
-  const turnaroundImages: string[] = [];
+  const selectedMultiViewImages = new Set<string>();
+  const imageRoleByUrl = new Map<string, string>();
   const sceneFirst = options?.sceneFirst === true;
 
   if (!scriptData) {
     return {
       images: [],
+      entries: [],
+      imageRoles: [],
       hasTurnaround: false,
       selectedTurnaroundCount: 0,
       droppedTurnaroundCount: 0,
@@ -261,6 +443,7 @@ export const getRefImagesForShot = (
   }
 
   const extraCharacterImages: string[] = [];
+  const entryByUrl = new Map<string, ReferenceImageEntry>();
 
   // Klein：主定妆 = Image 1，避免群像插在场景前改发型。
   // Qwen Edit：Image 1 会当成构图底图，定妆棚拍必须让路给场景。
@@ -270,19 +453,36 @@ export const getRefImagesForShot = (
       if (!char) return;
 
       const varId = shot.characterVariations?.[charId];
-      const lookbook = varId
-        ? (char.variations?.find(v => v.id === varId)?.referenceImage || char.referenceImage)
-        : char.referenceImage;
-      if (lookbook) {
+      const variationImage = varId
+        ? char.variations?.find(v => v.id === varId)?.referenceImage
+        : undefined;
+      const selectedCharacterImage = variationImage || resolveCharacterDisplayImage(char);
+      if (selectedCharacterImage) {
+        const view = variationImage ? 'variation' : resolveCharacterImageView(char);
+        const normalizedImage = selectedCharacterImage.trim();
+        imageRoleByUrl.set(normalizedImage, `character:${char.name || char.id}:${view}`);
+        entryByUrl.set(normalizedImage, {
+          image: normalizedImage,
+          // 九宫格/三视图仍是该角色的唯一主参考，不单独占第二个类型槽位。
+          // 多视图语义通过 detail 与 hasTurnaround 传递。
+          type: 'character',
+          label: char.name || char.id,
+          detail: variationImage
+            ? `服装变体：${char.variations?.find(v => v.id === varId)?.name || '未命名'}`
+            : view === 'turnaround'
+              ? '九宫格定妆照'
+              : view === 'threeView'
+                ? '三视图定妆照'
+                : '基础定妆照',
+        });
         if (characterImages.length === 0) {
-          characterImages.push(lookbook);
+          characterImages.push(selectedCharacterImage);
         } else {
-          extraCharacterImages.push(lookbook);
+          extraCharacterImages.push(selectedCharacterImage);
         }
-      }
-
-      if (char.turnaround?.status === 'completed' && char.turnaround.imageUrl) {
-        turnaroundImages.push(char.turnaround.imageUrl);
+        if (!variationImage && resolveCharacterImageView(char) !== 'casting') {
+          selectedMultiViewImages.add(normalizedImage);
+        }
       }
     });
   }
@@ -290,13 +490,33 @@ export const getRefImagesForShot = (
   const scene = findSceneByIdCompat(scriptData.scenes, shot.sceneId);
   if (scene?.referenceImage) {
     sceneImages.push(scene.referenceImage);
+    const normalizedImage = scene.referenceImage.trim();
+    imageRoleByUrl.set(normalizedImage, `scene:${scene.location || scene.id}`);
+    entryByUrl.set(normalizedImage, {
+      image: normalizedImage,
+      type: 'scene',
+      label: scene.location || scene.id,
+      detail: [scene.time, scene.atmosphere].filter(Boolean).join('，'),
+    });
   }
 
   if (shot.props && scriptData.props) {
     shot.props.forEach(propId => {
       const prop = scriptData.props.find(p => String(p.id) === String(propId));
+      // Worn garments belong to the character identity. Passing their standalone
+      // product images beside the character lookbook creates contradictory outfit
+      // references and can make the model copy the garment image instead.
+      if (prop && isWornGarmentForShot(prop, shot, scriptData)) return;
       if (prop?.referenceImage) {
         propImages.push(prop.referenceImage);
+        const normalizedImage = prop.referenceImage.trim();
+        imageRoleByUrl.set(normalizedImage, `prop:${prop.name || prop.id}`);
+        entryByUrl.set(normalizedImage, {
+          image: normalizedImage,
+          type: 'prop',
+          label: prop.name || prop.id,
+          detail: prop.description || prop.visualPrompt,
+        });
       }
     });
   }
@@ -305,16 +525,19 @@ export const getRefImagesForShot = (
     ? [...sceneImages, ...characterImages, ...propImages, ...extraCharacterImages]
     : [...characterImages, ...sceneImages, ...propImages, ...extraCharacterImages];
   const dedupedPrimary = dedupeImageRefs(orderedPrimary);
-  const primarySet = new Set(dedupedPrimary);
-  const dedupedTurnaround = dedupeImageRefs(turnaroundImages).filter((img) => !primarySet.has(img));
-  const remainingSlots = Math.max(0, MAX_SHOT_REFERENCE_IMAGES - dedupedPrimary.length);
-  const selectedTurnaround = dedupedTurnaround.slice(0, remainingSlots);
+  const images = dedupedPrimary;
+  const selectedTurnaroundCount = images.filter((img) => selectedMultiViewImages.has(img)).length;
+  const totalMultiViewCount = dedupedPrimary.filter((img) => selectedMultiViewImages.has(img)).length;
 
   return {
-    images: [...dedupedPrimary, ...selectedTurnaround],
-    hasTurnaround: selectedTurnaround.length > 0,
-    selectedTurnaroundCount: selectedTurnaround.length,
-    droppedTurnaroundCount: Math.max(0, dedupedTurnaround.length - selectedTurnaround.length),
+    images,
+    entries: images
+      .map((img) => entryByUrl.get(img))
+      .filter((entry): entry is ReferenceImageEntry => !!entry),
+    imageRoles: images.map((img) => imageRoleByUrl.get(img) || 'unknown'),
+    hasTurnaround: selectedTurnaroundCount > 0,
+    selectedTurnaroundCount,
+    droppedTurnaroundCount: Math.max(0, totalMultiViewCount - selectedTurnaroundCount),
     sceneFirst,
   };
 };
@@ -323,17 +546,164 @@ export const getRefImagesForShot = (
  * 获取镜头关联的道具信息（用于提示词注入）
  * hasImage 标记该道具是否有参考图，用于提示词中区分"参考图一致性"和"文字描述约束"
  */
-export const getPropsInfoForShot = (shot: Shot, scriptData: ProjectState['scriptData']): { name: string; description: string; hasImage: boolean }[] => {
+export interface ShotPropPromptInfo {
+  name: string;
+  description: string;
+  hasImage: boolean;
+  /** 仅在当前镜头确实需要关系约束时生成的短句。 */
+  presentationConstraint?: string;
+  /** 仅对有明确排除关系的道具追加，避免污染普通道具的负面提示词。 */
+  presentationNegativePrompt?: string;
+}
+
+const PROP_PRESENTATION_MODES = new Set<PropPresentationMode>([
+  'handheld',
+  'worn',
+  'placed',
+  'mounted',
+  'background',
+  'used',
+  'unknown',
+]);
+
+const normalizePropPresentationMode = (value: unknown): PropPresentationMode | undefined => {
+  const mode = String(value || '').trim().toLowerCase() as PropPresentationMode;
+  return PROP_PRESENTATION_MODES.has(mode) ? mode : undefined;
+};
+
+/**
+ * 兼容旧项目：没有结构化字段时只做保守推断，不把所有道具都强行标成“手持”。
+ * 明确的结构化值和镜头覆盖值始终优先于推断。
+ */
+export const inferPropPresentationMode = (
+  prop: {
+    name?: string;
+    category?: string;
+    description?: string;
+    visualPrompt?: string;
+    isWearable?: boolean;
+    presentationMode?: PropPresentationMode;
+  },
+): PropPresentationMode => {
+  const explicit = normalizePropPresentationMode(prop.presentationMode);
+  if (explicit && explicit !== 'unknown') return explicit;
+
+  const text = `${prop.name || ''} ${prop.category || ''} ${prop.description || ''} ${prop.visualPrompt || ''}`
+    .toLowerCase();
+  if (/backpack|rucksack|背包|双肩包|肩背/.test(text)) return 'worn';
+  if (prop.isWearable || /worn|wearing|穿戴|佩戴/.test(text)) return 'worn';
+  if (/mounted|attached|installed|fixed|挂在墙|安装|固定/.test(text)) return 'mounted';
+  if (/background prop|background only|背景道具|背景中/.test(text)) return 'background';
+  if (/placed on|on the table|on a table|on the desk|on the ground|on the floor|放在桌|放在地|置于/.test(text)) {
+    return 'placed';
+  }
+  if (/tool bag|canvas bag|briefcase|suitcase|handbag|hand-held|handheld|hand-carried|carried by hand|提包|工具包|手提|手持|握住|拿着/.test(text)) {
+    return 'handheld';
+  }
+  if (/use|operate|press|turn|打开|操作|使用|按下|拨动/.test(text)) return 'used';
+  return 'unknown';
+};
+
+const resolvePropActorName = (shot: Shot, scriptData: ProjectState['scriptData'], usage?: ShotPropUsage): string => {
+  const actorId = usage?.actorId || shot.characters?.[0];
+  const actor = actorId
+    ? scriptData?.characters.find((character) => String(character.id) === String(actorId))
+    : undefined;
+  return actor?.name || 'the character';
+};
+
+const buildPropPresentationConstraint = (
+  prop: NonNullable<ProjectState['scriptData']>['props'][number],
+  shot: Shot,
+  scriptData: ProjectState['scriptData'],
+): string | undefined => {
+  const usage = shot.propUsages?.[String(prop.id)];
+  const mode = normalizePropPresentationMode(usage?.mode) || inferPropPresentationMode(prop);
+  if (mode === 'unknown') return undefined;
+
+  const actor = resolvePropActorName(shot, scriptData, usage);
+  const hand = usage?.hand && usage.hand !== 'either' ? ` in the ${usage.hand} hand` : '';
+  const position = usage?.position?.trim();
+  const action = usage?.action?.trim();
+  const note = prop.presentationNote?.trim();
+  const customForbidden = [
+    ...(prop.forbiddenPresentationModes || []),
+    ...(usage?.forbiddenModes || []),
+  ].filter(Boolean);
+
+  if (mode === 'handheld') {
+    const objectPosition = position || (/bag|case|kit|包|箱/.test(`${prop.name} ${prop.description}`.toLowerCase())
+      ? 'beside the character, clearly separate from the back'
+      : 'clearly in the character\'s hand');
+    const verb = action || 'holds it by its handle';
+    const forbidden = customForbidden.length > 0
+      ? customForbidden.join(', ')
+      : 'backpack, rucksack, shoulder-worn, crossbody, or straps crossing the shoulders';
+    return `${actor} ${verb}${hand}; the ${prop.name} is hand-carried at ${objectPosition}. It is not worn on the body. Do not turn it into ${forbidden}.${note ? ` ${note}` : ''}`;
+  }
+  if (mode === 'worn') {
+    return `${actor} wears the ${prop.name} on the body as specified${position ? ` (${position})` : ''}; do not place it in the hands.${note ? ` ${note}` : ''}`;
+  }
+  if (mode === 'placed') {
+    return `The ${prop.name} remains placed ${position || 'in the specified location'} and is not carried by a character.${note ? ` ${note}` : ''}`;
+  }
+  if (mode === 'mounted') {
+    return `The ${prop.name} stays mounted or attached ${position ? `at ${position}` : 'to its specified surface'}; do not show it as a handheld object.${note ? ` ${note}` : ''}`;
+  }
+  if (mode === 'background') {
+    return `The ${prop.name} is background-only ${position ? `at ${position}` : ''}; do not promote it into a foreground carried object.${note ? ` ${note}` : ''}`;
+  }
+  return `${actor} actively uses the ${prop.name}${position ? ` at ${position}` : ''}${action ? `: ${action}` : ''}.${note ? ` ${note}` : ''}`;
+};
+
+const buildPropPresentationNegativePrompt = (
+  prop: NonNullable<ProjectState['scriptData']>['props'][number],
+  shot: Shot,
+): string | undefined => {
+  const usage = shot.propUsages?.[String(prop.id)];
+  const mode = normalizePropPresentationMode(usage?.mode) || inferPropPresentationMode(prop);
+  if (mode !== 'handheld') return undefined;
+  const customForbidden = [
+    ...(prop.forbiddenPresentationModes || []),
+    ...(usage?.forbiddenModes || []),
+  ].filter(Boolean);
+  return customForbidden.length > 0
+    ? customForbidden.join(', ')
+    : 'backpack, rucksack, shoulder-worn bag, sling bag, crossbody bag, bag worn on back, shoulder straps crossing the shoulders';
+};
+
+export const getPropsInfoForShot = (shot: Shot, scriptData: ProjectState['scriptData']): ShotPropPromptInfo[] => {
   if (!scriptData || !shot.props || !scriptData.props) return [];
   
   return shot.props
     .map(propId => scriptData.props.find(p => String(p.id) === String(propId)))
-    .filter((p): p is NonNullable<typeof p> => !!p)
-    .map(p => ({ name: p.name, description: p.description || p.visualPrompt || '', hasImage: !!p.referenceImage }));
+    .filter((p): p is NonNullable<typeof p> => !!p && !isWornGarmentForShot(p, shot, scriptData))
+    .map(p => ({
+      name: p.name,
+      description: p.description || p.visualPrompt || '',
+      hasImage: !!p.referenceImage,
+      presentationConstraint: buildPropPresentationConstraint(p, shot, scriptData),
+      presentationNegativePrompt: buildPropPresentationNegativePrompt(p, shot),
+    }));
 };
 
 /**
- * 获取镜头主角色参考图（变体优先，其次基础参考图）
+ * AI 增强后再次追加锁定事实，防止重写模型把“手提”压缩成泛化的 bag。
+ * 只追加存在关系约束的道具，普通静态道具不会增加提示词噪声。
+ */
+export const appendLockedPropConstraints = (
+  prompt: string,
+  propsInfo?: ShotPropPromptInfo[],
+): string => {
+  const constraints = (propsInfo || [])
+    .map((prop) => prop.presentationConstraint?.trim())
+    .filter(Boolean);
+  if (constraints.length === 0) return prompt;
+  return `${prompt.trim()}\n\n[LOCKED PROP PRESENTATION — DO NOT CHANGE]\n${constraints.map((item) => `- ${item}`).join('\n')}`;
+};
+
+/**
+ * 获取镜头主角色参考图（变体优先，其次角色当前选中的定妆图）
  */
 export const pickPrimaryCharacterReference = (
   shot: Shot,
@@ -350,7 +720,9 @@ export const pickPrimaryCharacterReference = (
       const variation = char.variations?.find(v => v.id === varId);
       if (variation?.referenceImage) return variation.referenceImage;
     }
-    if (char.referenceImage) return char.referenceImage;
+
+    const selectedImage = resolveCharacterDisplayImage(char);
+    if (selectedImage) return selectedImage;
   }
   return undefined;
 };
@@ -393,6 +765,8 @@ export const buildShotScriptContext = (
   }
 
   if (scriptData) {
+    const productionBible = formatProductionBibleForPrompt(scriptData);
+    if (productionBible) lines.push(productionBible);
     const scene = findSceneByIdCompat(scriptData.scenes, shot.sceneId);
     if (scene) {
       const sceneParts = [scene.location, scene.time, scene.atmosphere]
@@ -410,6 +784,18 @@ export const buildShotScriptContext = (
       if (names.length > 0) {
         lines.push(`出镜角色：${names.map(c => c.name).join('、')}`);
         names.forEach(char => {
+          const variationId = shot.characterVariations?.[char.id];
+          const variation = variationId
+            ? char.variations?.find(item => String(item.id) === String(variationId))
+            : undefined;
+          const wardrobe = String(
+            variation?.wardrobe || variation?.visualPrompt || char.wardrobe || ''
+          ).trim();
+          if (wardrobe) {
+            lines.push(
+              `${char.name}服装锁定${variation ? `（${variation.name}）` : '（基础造型）'}：${wardrobe.slice(0, 360)}。该描述优先于旧分镜提示词中的冲突服装信息。`
+            );
+          }
           // 已有定妆图时不要把 visualPrompt 再写进镜头：文字发型/服装会和照片打架
           if (char.referenceImage) return;
           const look = String(char.visualPrompt || char.coreFeatures || '').trim();
@@ -434,7 +820,7 @@ export const buildKeyframePrompt = (
   visualStyle: string,
   cameraMovement: string,
   frameType: 'start' | 'end',
-  propsInfo?: { name: string; description: string; hasImage: boolean }[],
+  propsInfo?: ShotPropPromptInfo[],
   promptTemplates?: PromptTemplateConfig,
   sceneFirst: boolean = false,
 ): string => {
@@ -488,7 +874,9 @@ export const buildKeyframePrompt = (
 
     // 有参考图的道具：要求严格遵循参考图
     if (propsWithImage.length > 0) {
-      const list = propsWithImage.map(p => `- ${p.name}: ${p.description}`).join('\n');
+      const list = propsWithImage
+        .map(p => `- ${p.name}: ${p.description}${p.presentationConstraint ? `\n  Presentation lock: ${p.presentationConstraint}` : ''}`)
+        .join('\n');
       sections.push(
         renderPromptTemplate(propWithImageTemplate, { propList: list })
       );
@@ -496,7 +884,9 @@ export const buildKeyframePrompt = (
 
     // 无参考图的道具：仅文字描述约束
     if (propsWithoutImage.length > 0) {
-      const list = propsWithoutImage.map(p => `- ${p.name}: ${p.description}`).join('\n');
+      const list = propsWithoutImage
+        .map(p => `- ${p.name}: ${p.description}${p.presentationConstraint ? `\n  Presentation lock: ${p.presentationConstraint}` : ''}`)
+        .join('\n');
       sections.push(
         renderPromptTemplate(propWithoutImageTemplate, { propList: list })
       );
@@ -545,7 +935,7 @@ export const buildKeyframePromptWithAI = async (
   cameraMovement: string,
   frameType: 'start' | 'end',
   enhanceWithAI: boolean = true,
-  propsInfo?: { name: string; description: string; hasImage: boolean }[],
+  propsInfo?: ShotPropPromptInfo[],
   promptTemplates?: PromptTemplateConfig,
   sceneFirst: boolean = false,
 ): Promise<string> => {
@@ -562,16 +952,16 @@ export const buildKeyframePromptWithAI = async (
   
   // 如果不需要AI增强,直接返回基础提示词
   if (!enhanceWithAI) {
-    return basicPrompt;
+    return appendLockedPropConstraints(basicPrompt, propsInfo);
   }
   
   // Use direct import from aiService; keep fallback behavior if enhancement fails.
   try {
     const enhanced = await enhanceKeyframePrompt(basicPrompt, visualStyle, cameraMovement, frameType, undefined, promptTemplates);
-    return enhanced;
+    return appendLockedPropConstraints(enhanced, propsInfo);
   } catch (error) {
     console.error('AI增强失败,使用基础提示词:', error);
-    return basicPrompt;
+    return appendLockedPropConstraints(basicPrompt, propsInfo);
   }
 };
 
@@ -759,7 +1149,31 @@ ${renderPromptTemplate(endFrameConstraintTemplate, {})}`
 
 ${renderPromptTemplate(ignoredEndFrameTemplate, {})}`
       : '';
-    return fitVideoPromptLength(`${prompt}${endFrameConstraint}${ignoredEndFrameNote}`);
+    const withCapabilityNotes = `${prompt}${endFrameConstraint}${ignoredEndFrameNote}`;
+    const selectedModel = getModelById(videoModel);
+    const policyBlock = buildVideoPromptPolicyBlock({
+      modelId: videoModel,
+      policyOverride:
+        selectedModel?.type === 'video' ? selectedModel.params.promptPolicy : undefined,
+      language,
+      hasEndFrame: !!context?.hasEndFrame,
+      hasStoryboardGrid: !!nineGrid,
+      panelCount: nineGrid?.panels?.length,
+      durationSeconds: videoDuration,
+    });
+    const policyAwarePrompt = hasVideoPromptPolicy(withCapabilityNotes)
+      ? withCapabilityNotes
+      : `${withCapabilityNotes}\n\n${policyBlock}`;
+    const withNativeAudio = isMiniMaxH3VideoModel(videoModel)
+      ? finalizeMiniMaxH3VideoPrompt(
+          policyAwarePrompt,
+          context?.nativeAudio,
+          language,
+        )
+      : policyAwarePrompt;
+    return fitVideoPromptLength(
+      withNativeAudio,
+    );
   };
 
   // 网格分镜模式：按总预算动态压缩每个 panel 描述，保留顺序与镜头意图
@@ -842,8 +1256,8 @@ ${renderPromptTemplate(ignoredEndFrameTemplate, {})}`
       .replace('{actionSummary}', compactActionSummary)
       .replace('{cameraMovement}', compactCameraMovement)
       .replace('{visualStyle}', visualStyleAnchor)
-      .replace('{duration}', String(totalDuration))
-      .replace('{midDuration}', midDuration);
+      .replace(/\{duration\}/g, String(totalDuration))
+      .replace(/\{midDuration\}/g, midDuration);
     return appendCapabilityNotes(routedPrompt);
   }
 
@@ -974,11 +1388,13 @@ export const createKeyframe = (
   type: 'start' | 'end',
   visualPrompt: string,
   imageUrl?: string,
-  status: 'pending' | 'generating' | 'completed' | 'failed' = 'pending'
+  status: 'pending' | 'generating' | 'completed' | 'failed' = 'pending',
+  generationId?: string,
 ): Keyframe => {
   return {
     id,
     type,
+    generationId,
     visualPrompt,
     imageUrl,
     status
@@ -1111,7 +1527,7 @@ export const buildPromptFromNineGridPanel = (
   actionSummary: string,
   visualStyle: string,
   cameraMovement: string,
-  propsInfo?: { name: string; description: string; hasImage: boolean }[],
+  propsInfo?: ShotPropPromptInfo[],
   layout?: NineGridData['layout'],
   promptTemplates?: PromptTemplateConfig
 ): string => {
@@ -1153,14 +1569,18 @@ export const buildPromptFromNineGridPanel = (
     let sections: string[] = [];
 
     if (propsWithImage.length > 0) {
-      const list = propsWithImage.map(p => `- ${p.name}: ${p.description}`).join('\n');
+      const list = propsWithImage
+        .map(p => `- ${p.name}: ${p.description}${p.presentationConstraint ? `\n  Presentation lock: ${p.presentationConstraint}` : ''}`)
+        .join('\n');
       sections.push(
         renderPromptTemplate(propWithImageTemplate, { propList: list })
       );
     }
 
     if (propsWithoutImage.length > 0) {
-      const list = propsWithoutImage.map(p => `- ${p.name}: ${p.description}`).join('\n');
+      const list = propsWithoutImage
+        .map(p => `- ${p.name}: ${p.description}${p.presentationConstraint ? `\n  Presentation lock: ${p.presentationConstraint}` : ''}`)
+        .join('\n');
       sections.push(
         renderPromptTemplate(propWithoutImageTemplate, { propList: list })
       );

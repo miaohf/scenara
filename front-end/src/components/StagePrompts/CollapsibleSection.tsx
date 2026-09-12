@@ -1,5 +1,6 @@
 import React from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface Props {
   title: string;
@@ -18,6 +19,7 @@ const CollapsibleSection: React.FC<Props> = ({
   onToggle,
   children
 }) => {
+  const { text } = useInterfaceLanguage();
   return (
     <section className="rounded-2xl border border-[var(--border-primary)] bg-[var(--bg-elevated)]/60 overflow-hidden">
       <button
@@ -28,7 +30,7 @@ const CollapsibleSection: React.FC<Props> = ({
           <div className="text-[var(--accent-text)] flex-shrink-0">{icon}</div>
           <div className="min-w-0">
             <h2 className="text-lg font-bold text-[var(--text-primary)]">{title}</h2>
-            <p className="text-xs text-[var(--text-tertiary)]">当前显示 {count} 条</p>
+            <p className="text-xs text-[var(--text-tertiary)]">{text(`当前显示 ${count} 条`, `${count} visible`)}</p>
           </div>
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">

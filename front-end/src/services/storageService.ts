@@ -6,6 +6,11 @@ import { sanitizePromptTemplateOverrides } from './promptTemplateService';
 import { normalizeChatModelId } from './modelIdUtils';
 import { getConfiguredChatModelId, resolveShotGenerationModel } from './modelRegistry';
 import {
+  inferCharacterWardrobe,
+  isWearableProp,
+  normalizeCharacterWardrobeInPrompt,
+} from './ai/promptConstants';
+import {
   isApiStorageMode,
   apiGetAllSeriesProjects,
   apiLoadSeriesProject,
@@ -103,12 +108,41 @@ const mergeByKey = <T>(
 };
 
 const normalizeEpisode = (ep: Episode): Episode => {
+  const rawProps = ep.scriptData?.props || [];
+  const normalizedProps = rawProps.map((prop) =>
+    isWearableProp(prop) ? { ...prop, isWearable: true } : prop
+  );
+  const normalizedCharacters = (ep.scriptData?.characters || []).map((character) => {
+    // 始终合并旧版服装道具；不能因已有部分 wardrobe 字段而跳过剩余服装。
+    const wardrobe = inferCharacterWardrobe(character, normalizedProps);
+    const normalizedCharacter = { ...character, wardrobe };
+    return {
+      ...normalizedCharacter,
+      visualPrompt: normalizeCharacterWardrobeInPrompt(
+        character.visualPrompt || '',
+        normalizedCharacter,
+      ),
+    };
+  });
   const scriptData = ep.scriptData
     ? {
         ...ep.scriptData,
-        props: ep.scriptData.props || [],
+        characters: normalizedCharacters,
+        props: normalizedProps,
       }
     : null;
+
+  if (scriptData) {
+    scriptData.props = scriptData.props.map((prop) => {
+      if (!prop.isWearable) return prop;
+      const owner = scriptData.characters.find((character) =>
+        `${prop.description || ''} ${prop.visualPrompt || ''}`.toLowerCase().includes(
+          `${String(character.name || '').toLowerCase()}'s`
+        ) || `${prop.description || ''} ${prop.visualPrompt || ''}`.includes(`${character.name}的`)
+      );
+      return owner ? { ...prop, wardrobeOwnerCharacterId: owner.id } : prop;
+    });
+  }
 
   const inferredCharacterRefs = (scriptData?.characters || [])
     .filter(c => !!c.libraryId)
@@ -328,7 +362,9 @@ export const saveEpisodePartial = async (
 };
 
 export const loadEpisode = async (id: string): Promise<Episode> => {
-  if (isApiStorageMode()) return apiLoadEpisode(id);
+  if (isApiStorageMode()) {
+    return normalizeEpisode(await apiLoadEpisode(id));
+  }
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(EP_STORE, 'readonly');
@@ -413,6 +449,7 @@ export const createNewEpisode = (projectId: string, seriesId: string, episodeNum
     targetDuration: '60s',
     language: '中文',
     visualStyle: '3d-animation',
+    aspectRatio: '16:9',
     shotGenerationModel: getConfiguredChatModelId(),
     scriptData: null,
     shots: [],
@@ -694,6 +731,7 @@ export const importIndexedDBData = async (
           createdAt: p.createdAt || Date.now(), lastModified: p.lastModified || Date.now(),
           stage: p.stage || 'script', rawScript: p.rawScript || '', targetDuration: p.targetDuration || '60s',
           language: p.language || '中文', visualStyle: p.visualStyle || '3d-animation',
+          aspectRatio: p.aspectRatio || '16:9',
           shotGenerationModel: normalizeStoredChatModel(p.shotGenerationModel),
           scriptData: p.scriptData
             ? {

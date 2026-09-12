@@ -112,14 +112,64 @@ export const getCharacterCastingNegativePrompt = (visualStyle: string): string =
 };
 
 export const listProjectPropNames = (
-  props?: Array<{ name?: string } | string> | null
+  props?: Array<{ name?: string; isWearable?: boolean } | string> | null
 ): string[] => {
   if (!props || props.length === 0) return [];
   const names = props
+    // Wearable entries are derived from the character wardrobe. They must stay
+    // in character prompts; only independent hero props should be stripped.
+    .filter((item) => typeof item === 'string' || !isWearableProp(item))
     .map((item) => (typeof item === 'string' ? item : item.name || ''))
     .map((name) => name.trim())
     .filter(Boolean);
   return Array.from(new Set(names));
+};
+
+const WEARABLE_PROP_NAME_RE =
+  /\b(coat|jacket|shirt|sweater|hoodie|trouser|trousers|pants|jeans|scarf|boot|boots|shoe|shoes|dress|skirt|hat|cap|glove|gloves|uniform|raincoat)\b|雨衣|外套|夹克|衬衫|毛衣|卫衣|裤|围巾|靴|鞋|裙|帽|手套|制服/i;
+
+/** 兼容旧项目：旧数据没有 isWearable 时，按服装名称识别可穿戴条目。 */
+export const isWearableProp = (prop: { name?: string; isWearable?: boolean } | string): boolean => {
+  if (typeof prop === 'string') return WEARABLE_PROP_NAME_RE.test(prop);
+  return prop.isWearable === true || WEARABLE_PROP_NAME_RE.test(prop.name || '');
+};
+
+/** 从旧项目的服装道具中恢复角色基础服装，供生成前兜底使用。 */
+export const inferCharacterWardrobe = (
+  character: CharacterSpeciesSource | undefined,
+  props?: Array<{ name?: string; isWearable?: boolean; description?: string } | string> | null
+): string => {
+  const explicit = character?.wardrobe?.trim() || '';
+  const name = character?.name?.trim();
+  const inferred = (props || [])
+    .filter((item) => isWearableProp(item))
+    .filter((item) => {
+      if (typeof item === 'string' || !name) return true;
+      const text = `${item.name || ''} ${item.description || ''}`;
+      return new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(text);
+    })
+    .map((item) => (typeof item === 'string' ? item.trim() : (item.name || '').trim()))
+    .filter(Boolean);
+
+  // 新数据以 character.wardrobe 为主；旧数据可能仍把服装保存在 props 中。
+  // 两者必须合并，否则 UI 虽然显示已绑定服装，生成提示词却会漏掉其中一部分。
+  return Array.from(new Set([explicit, ...inferred].filter(Boolean))).join('; ');
+};
+
+/** 将角色基础服装作为单一事实源写回定妆提示词，避免 LLM 或清理逻辑改色/换装。 */
+export const normalizeCharacterWardrobeInPrompt = (
+  prompt: string,
+  character?: CharacterSpeciesSource
+): string => {
+  const wardrobe = character?.wardrobe?.trim();
+  if (!prompt || !wardrobe) return prompt;
+
+  const attire = `Attire: ${wardrobe}`;
+  const attirePattern = /Attire:\s*.*?(?=,\s*Pose\s*&\s*Framing:|\n|$)/i;
+  if (attirePattern.test(prompt)) {
+    return prompt.replace(attirePattern, attire);
+  }
+  return `${prompt}\n\n${attire}. Preserve every garment, color, material, and silhouette exactly.`;
 };
 
 export const stripProjectPropsFromPrompt = (prompt: string, propNames: string[]): string => {
@@ -185,7 +235,8 @@ export const applyCharacterCastingPositivePrompt = (
   propNames: string[] = [],
   character?: CharacterSpeciesSource
 ): string => {
-  const stripped = stripProjectPropsFromPrompt(prompt, propNames);
+  const wardrobeLocked = normalizeCharacterWardrobeInPrompt(prompt, character);
+  const stripped = stripProjectPropsFromPrompt(wardrobeLocked, propNames);
   const lockHumanAttire = shouldLockHumanAttire(character);
   const lock = lockHumanAttire
     ? `${CHARACTER_CASTING_POSITIVE_LOCK}, ${CHARACTER_CASTING_HUMAN_ATTIRE_LOCK}`
@@ -206,11 +257,11 @@ export const mergeCharacterCastingNegativePrompt = (
   character?: CharacterSpeciesSource
 ): string => {
   const base = storedNegative?.trim() || getNegativePrompt(visualStyle);
-  if (base.includes('incomplete body') || base.includes('missing feet')) return base;
   const attireNegative = shouldLockHumanAttire(character)
-    ? `${CHARACTER_CASTING_HUMAN_ATTIRE_NEGATIVE}, `
+    ? `${CHARACTER_CASTING_HUMAN_ATTIRE_NEGATIVE}, wardrobe substitution, incorrect garment color, incorrect garment material, `
     : '';
-  return `${base}, ${attireNegative}${CHARACTER_CASTING_NEGATIVE}`;
+  const merged = `${base}, ${attireNegative}${CHARACTER_CASTING_NEGATIVE}`;
+  return merged.replace(/,\s*,+/g, ',').replace(/,\s*$/, '');
 };
 
 export type CharacterSpeciesKind = 'human' | 'animal' | 'creature';
@@ -226,6 +277,7 @@ export interface CharacterSpeciesSource {
   age?: string;
   personality?: string;
   visualPrompt?: string;
+  wardrobe?: string;
   coreFeatures?: string;
   species?: string;
 }

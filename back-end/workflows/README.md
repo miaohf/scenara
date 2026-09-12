@@ -73,7 +73,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python main.py --use-ck-attention
 官方模板导出的定妆文生图（API Format）。
 
 - 模型：`flux-2-klein-base-9b-fp8.safetensors` + `qwen_3_8b_fp8mixed` CLIP + Flux2 VAE
-- 默认画布 **1024×576（16:9）**，与资产定妆预览 `aspect-video`、项目默认比例一致；运行时仍可按请求覆盖为 9:16 / 1:1
+- 默认画布 **1344×768（16:9）**，与 MiniMax H3 的原生横屏画布一致；运行时仍可按请求覆盖为 9:16（768×1344）/ 1:1（768×768）
 - 默认 20 steps / CFG 5 / Euler（Base；非 Distilled 4-step）
 - 画布经 `PrimitiveInt` Width/Height → `EmptyFlux2LatentImage`
 - 项目配置：图片模型参数 `workflowName`（定妆）；关键帧 / 九宫格仍可独立配置

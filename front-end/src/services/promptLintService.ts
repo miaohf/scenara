@@ -25,6 +25,8 @@ export interface KeyframePreflightInput {
   referenceImageCount: number;
   aspectRatio: AspectRatio;
   supportedAspectRatios?: AspectRatio[];
+  productionIssues?: PromptLintIssue[];
+  expectedCharacterNames?: string[];
 }
 
 export interface VideoPreflightInput {
@@ -37,6 +39,8 @@ export interface VideoPreflightInput {
   supportedAspectRatios?: AspectRatio[];
   duration: VideoDuration;
   supportedDurations?: VideoDuration[];
+  productionIssues?: PromptLintIssue[];
+  requiresNativeAudioDirective?: boolean;
 }
 
 const HUMAN_EXCLUSION_TERMS = [
@@ -149,7 +153,8 @@ export const lintPromptText = (
 
 export const runKeyframePreflight = (input: KeyframePreflightInput): PromptLintResult => {
   const promptLint = lintPromptText(input.prompt);
-  const issues: PromptLintIssue[] = [...promptLint.issues];
+  const issues: PromptLintIssue[] = [...promptLint.issues, ...(input.productionIssues || [])];
+  const normalizedPrompt = normalizePrompt(input.prompt);
 
   if (
     input.supportedAspectRatios?.length &&
@@ -190,12 +195,32 @@ export const runKeyframePreflight = (input: KeyframePreflightInput): PromptLintR
     });
   }
 
+  if (input.expectedCharacterNames?.length === 1) {
+    if (!normalizedPrompt.includes('[LOCKED CHARACTER COUNT — DO NOT CHANGE]')) {
+      issues.push({
+        code: 'missing-single-character-lock',
+        severity: 'error',
+        message: 'Single-character shot is missing the deterministic character-count lock.',
+        suggestion: 'Regenerate the prompt so a rear or over-the-shoulder view cannot be reinterpreted as a duplicate character.',
+      });
+    }
+    const expectedName = input.expectedCharacterNames[0].trim();
+    if (expectedName && !normalizedPrompt.toLocaleLowerCase().includes(expectedName.toLocaleLowerCase())) {
+      issues.push({
+        code: 'missing-character-name',
+        severity: 'warning',
+        message: `Prompt does not explicitly name the only visible character (${expectedName}).`,
+        suggestion: 'Keep the named character in the composition lock and reference prompt.',
+      });
+    }
+  }
+
   return buildLintResult(issues);
 };
 
 export const runVideoPreflight = (input: VideoPreflightInput): PromptLintResult => {
   const promptLint = lintPromptText(input.prompt, { minLength: 20, maxLength: 2600 });
-  const issues: PromptLintIssue[] = [...promptLint.issues];
+  const issues: PromptLintIssue[] = [...promptLint.issues, ...(input.productionIssues || [])];
 
   if (!input.hasStartFrame) {
     issues.push({
@@ -238,6 +263,15 @@ export const runVideoPreflight = (input: VideoPreflightInput): PromptLintResult 
     });
   }
 
+  if (input.requiresNativeAudioDirective && !normalizePrompt(input.prompt).includes('[NATIVE_AUDIO_DIRECTIVE_V1]')) {
+    issues.push({
+      code: 'missing-native-audio-directive',
+      severity: 'error',
+      message: 'Native-audio video prompt is missing the H3 audio directive.',
+      suggestion: 'Regenerate the video prompt so dialogue, narration, or ambient-only audio is explicit.',
+    });
+  }
+
   return buildLintResult(issues);
 };
 
@@ -254,4 +288,3 @@ const buildLintResult = (issues: PromptLintIssue[]): PromptLintResult => {
     canProceed: errorCount === 0,
   };
 };
-

@@ -2,8 +2,8 @@
 export const STYLES = {
   // 容器样式
   mainContainer: "flex flex-col h-full bg-[var(--bg-secondary)] relative overflow-hidden",
-  header: "h-16 border-b border-[var(--border-primary)] bg-[var(--bg-elevated)] px-6 flex items-center justify-between shrink-0",
-  content: "flex-1 overflow-y-auto p-8 space-y-12",
+  header: "h-16 border-b border-[var(--border-primary)] bg-[var(--bg-primary)]/95 px-6 flex items-center justify-between shrink-0",
+  content: "flex-1 overflow-y-auto p-6 space-y-10",
   
   // 卡片样式
   card: "bg-[var(--bg-surface)] border border-[var(--border-primary)] rounded-xl overflow-hidden flex flex-col group hover:border-[var(--border-secondary)] transition-all hover:shadow-lg",
@@ -35,7 +35,8 @@ export const STYLES = {
 
 // 网格布局常量
 export const GRID_LAYOUTS = {
-  cards: "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6",
+  cards: "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5",
+  compactCards: "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4",
   twoColumn: "grid grid-cols-1 md:grid-cols-2 gap-8",
 };
 

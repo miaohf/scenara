@@ -17,6 +17,7 @@ import {
   setPromptTemplateOverride,
 } from '../../services/promptTemplateService';
 import CollapsibleSection from './CollapsibleSection';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface Props {
   templateConfig: PromptTemplateConfig;
@@ -37,6 +38,7 @@ const TemplateSection: React.FC<Props> = ({
   onToggle,
   onUpdateOverrides,
 }) => {
+  const { text } = useInterfaceLanguage();
   const [editingPath, setEditingPath] = useState<PromptTemplatePath | null>(null);
   const [draftValue, setDraftValue] = useState('');
 
@@ -91,7 +93,7 @@ const TemplateSection: React.FC<Props> = ({
 
   return (
     <CollapsibleSection
-      title="模板变量"
+      title={text('模板变量', 'Prompt Templates')}
       icon={<SlidersHorizontal className="w-5 h-5" />}
       count={filteredFields.length}
       isExpanded={isExpanded}
@@ -99,7 +101,7 @@ const TemplateSection: React.FC<Props> = ({
     >
       <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--border-primary)] bg-[var(--bg-surface)] px-3 py-2">
         <p className="text-xs text-[var(--text-tertiary)]">
-          当前运行会优先使用这里的自定义模板；恢复默认后自动回退到内置模板。
+          {text('当前运行会优先使用这里的自定义模板；恢复默认后自动回退到内置模板。', 'Custom templates take priority. Restoring defaults falls back to the built-in templates.')}
         </p>
         <button
           type="button"
@@ -108,20 +110,20 @@ const TemplateSection: React.FC<Props> = ({
           className="flex items-center gap-1 text-xs px-2.5 py-1 rounded border border-[var(--warning-border)] text-[var(--warning-text)] hover:bg-[var(--warning-bg)] disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <RotateCcw className="w-3 h-3" />
-          全部恢复默认
+          {text('全部恢复默认', 'Restore All Defaults')}
         </button>
       </div>
 
       {groupedFields.length === 0 && (
         <div className="rounded-lg border border-[var(--border-primary)] bg-[var(--bg-surface)] px-4 py-6 text-sm text-[var(--text-tertiary)] text-center">
-          当前筛选下没有匹配的模板
+          {text('当前筛选下没有匹配的模板', 'No templates match the current filters')}
         </div>
       )}
 
       {groupedFields.map((group) => (
         <div key={group.category} className="space-y-3">
           <div className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-            {getPromptTemplateCategoryLabel(group.category)}
+            {text(getPromptTemplateCategoryLabel(group.category), group.category === 'storyboard' ? 'STORYBOARD' : group.category === 'keyframe' ? 'KEYFRAMES' : group.category === 'nineGrid' ? 'SHOT GRID' : 'VIDEO')}
           </div>
 
           {group.items.map((field) => {
@@ -145,7 +147,7 @@ const TemplateSection: React.FC<Props> = ({
                             : 'border-[var(--border-primary)] text-[var(--text-muted)] bg-[var(--bg-base)]'
                         }`}
                       >
-                        {isOverridden ? '自定义' : '默认'}
+                        {isOverridden ? text('自定义', 'CUSTOM') : text('默认', 'DEFAULT')}
                       </span>
                     </div>
                     <p className="text-xs text-[var(--text-tertiary)] mt-1">{field.description}</p>
@@ -157,7 +159,7 @@ const TemplateSection: React.FC<Props> = ({
                       className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-[var(--accent-border)] text-[var(--accent-text)] hover:bg-[var(--accent-bg)]"
                     >
                       <Pencil className="w-3 h-3" />
-                      编辑
+                      {text('编辑', 'Edit')}
                     </button>
                     <button
                       type="button"
@@ -165,7 +167,7 @@ const TemplateSection: React.FC<Props> = ({
                       disabled={!isOverridden}
                       className="text-xs px-2 py-1 rounded border border-[var(--warning-border)] text-[var(--warning-text)] hover:bg-[var(--warning-bg)] disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                      恢复默认
+                      {text('恢复默认', 'Restore Default')}
                     </button>
                   </div>
                 </div>
@@ -196,14 +198,14 @@ const TemplateSection: React.FC<Props> = ({
                         onClick={handleSaveEdit}
                         className="text-xs px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-on)] hover:bg-[var(--accent-hover)]"
                       >
-                        保存
+                        {text('保存', 'Save')}
                       </button>
                       <button
                         type="button"
                         onClick={handleCancelEdit}
                         className="text-xs px-3 py-1.5 rounded border border-[var(--border-primary)] text-[var(--text-secondary)] hover:border-[var(--border-secondary)]"
                       >
-                        取消
+                        {text('取消', 'Cancel')}
                       </button>
                     </div>
                   </div>

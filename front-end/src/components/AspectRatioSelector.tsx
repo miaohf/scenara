@@ -1,6 +1,7 @@
 import React from 'react';
 import { Monitor, Smartphone, Square } from 'lucide-react';
 import { AspectRatio, VideoDuration } from '../types';
+import { useInterfaceLanguage } from '../contexts/InterfaceLanguageContext';
 
 interface AspectRatioSelectorProps {
   value: AspectRatio;
@@ -24,22 +25,23 @@ export const AspectRatioSelector: React.FC<AspectRatioSelectorProps> = ({
   compact = false,
   disabled = false
 }) => {
+  const { text } = useInterfaceLanguage();
   const options: { value: AspectRatio; label: string; icon: React.ReactNode; desc: string }[] = [
     { 
       value: '16:9', 
-      label: '横屏', 
+      label: text('横屏', 'Landscape'),
       icon: <Monitor className="w-4 h-4" />,
       desc: '1280x720'
     },
     { 
       value: '9:16', 
-      label: '竖屏', 
+      label: text('竖屏', 'Portrait'),
       icon: <Smartphone className="w-4 h-4" />,
       desc: '720x1280'
     },
     { 
       value: '1:1', 
-      label: '方形', 
+      label: text('方形', 'Square'),
       icon: <Square className="w-4 h-4" />,
       desc: '720x720'
     },
@@ -88,6 +90,7 @@ export const VideoDurationSelector: React.FC<VideoDurationSelectorProps> = ({
   onChange,
   disabled = false
 }) => {
+  const { text } = useInterfaceLanguage();
   const durations: VideoDuration[] = [4, 8, 12];
 
   return (
@@ -106,7 +109,7 @@ export const VideoDurationSelector: React.FC<VideoDurationSelectorProps> = ({
             ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
           `}
         >
-          {d}秒
+          {d}{text('秒', 's')}
         </button>
       ))}
     </div>
@@ -143,6 +146,7 @@ export const VideoSettingsPanel: React.FC<VideoSettingsPanelProps> = ({
   supportedDurations,
   recommendedDuration,
 }) => {
+  const { text } = useInterfaceLanguage();
   // 根据模型支持的比例过滤
   const allowSquare = supportedAspectRatios 
     ? supportedAspectRatios.includes('1:1')
@@ -159,7 +163,7 @@ export const VideoSettingsPanel: React.FC<VideoSettingsPanelProps> = ({
   return (
     <div className="flex items-center gap-4 flex-wrap">
       <div className="flex items-center gap-2">
-        <span className="text-[10px] text-[var(--text-tertiary)] uppercase">比例</span>
+        <span className="text-[10px] text-[var(--text-tertiary)] uppercase">{text('比例', 'RATIO')}</span>
         <AspectRatioSelector
           value={aspectRatio}
           onChange={onAspectRatioChange}
@@ -170,7 +174,7 @@ export const VideoSettingsPanel: React.FC<VideoSettingsPanelProps> = ({
       
       {showDuration && (
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-[var(--text-tertiary)] uppercase">时长</span>
+          <span className="text-[10px] text-[var(--text-tertiary)] uppercase">{text('时长', 'DURATION')}</span>
           <div className="flex gap-1">
             {availableDurations.map((d) => (
               <button
@@ -186,9 +190,9 @@ export const VideoSettingsPanel: React.FC<VideoSettingsPanelProps> = ({
                   ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
                 `}
               >
-                {d}秒
+                {d}{text('秒', 's')}
                 {recommendedDuration === d ? (
-                  <span className="ml-1 text-[9px] opacity-80">荐</span>
+                  <span className="ml-1 text-[9px] opacity-80">{text('荐', 'REC')}</span>
                 ) : null}
               </button>
             ))}

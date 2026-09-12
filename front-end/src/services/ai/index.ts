@@ -49,6 +49,9 @@ export {
   getNegativePrompt,
   getSceneNegativePrompt,
   getCharacterCastingNegativePrompt,
+  isWearableProp,
+  inferCharacterWardrobe,
+  normalizeCharacterWardrobeInPrompt,
   listProjectPropNames,
   stripProjectPropsFromPrompt,
   buildCharacterLookbookPromptRules,
@@ -83,6 +86,7 @@ export {
   CHARACTER_TURNAROUND_LAYOUT,
   generateCharacterTurnaroundPanels,
   generateCharacterTurnaroundImage,
+  generateCharacterThreeViewImage,
   resolveCharacterCastingAspectRatio,
 } from './visualService';
 

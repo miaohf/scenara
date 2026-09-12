@@ -225,6 +225,9 @@ const patchComfyVideoWorkflow = (
     aspectRatio?: AspectRatio;
     startImageName?: string;
     endImageName?: string;
+    referenceImageNames?: string[];
+    referenceVideoNames?: string[];
+    referenceAudioNames?: string[];
     audioName?: string;
   }
 ): any => {
@@ -365,6 +368,39 @@ const patchComfyVideoWorkflow = (
   const minimaxNode = Object.entries(nodes).find(([, node]: [string, any]) =>
     String(node?.class_type || '').toLowerCase() === 'minimaxh3imagetovideo'
   );
+  const ref2vNode = Object.entries(nodes).find(([, node]: [string, any]) =>
+    String(node?.class_type || '').toLowerCase() === 'minimaxh3referencetovideo'
+  );
+  if (ref2vNode && options.referenceImageNames) {
+    const refInputs = ((ref2vNode[1] as any).inputs || ((ref2vNode[1] as any).inputs = {}));
+    const refSlots = Object.keys(refInputs)
+      .filter((key) => /^ref_images\.ref_image_\d+$/.test(key))
+      .sort((a, b) => Number(a.split('_').pop()) - Number(b.split('_').pop()));
+    refSlots.forEach((slot, index) => {
+      const link = refInputs[slot];
+      const node = Array.isArray(link) ? nodes[link[0]] : undefined;
+      const imageName = options.referenceImageNames?.[index];
+      if (node?.inputs && imageName) node.inputs.image = imageName;
+      else delete refInputs[slot];
+    });
+  }
+  if (ref2vNode) {
+    const refInputs = ((ref2vNode[1] as any).inputs || ((ref2vNode[1] as any).inputs = {}));
+    const patchRefGroup = (prefix: string, names: string[], field: 'video' | 'audio') => {
+      Object.keys(refInputs)
+        .filter((key) => key.startsWith(prefix))
+        .sort((a, b) => Number(a.split('_').pop()) - Number(b.split('_').pop()))
+        .forEach((slot, index) => {
+          const link = refInputs[slot];
+          const node = Array.isArray(link) ? nodes[link[0]] : undefined;
+          const name = names[index];
+          if (node?.inputs && name) node.inputs[field] = name;
+          else delete refInputs[slot];
+        });
+    };
+    patchRefGroup('ref_videos.ref_video_', options.referenceVideoNames || [], 'video');
+    patchRefGroup('ref_audios.ref_audio_', options.referenceAudioNames || [], 'audio');
+  }
   const lastLoader = Object.entries(nodes).find(([, node]: [string, any]) =>
     String(node?.class_type || '').toLowerCase() === 'loadimage' &&
     String(node?._meta?.title || '').toLowerCase().includes('last')
@@ -412,8 +448,12 @@ const callComfyVideoApi = async (
       ? getMiniMaxH3Size(aspectRatio)
       : getSizeFromAspectRatio(aspectRatio);
     console.info('[ComfyUI Video] Start generation:', { apiBase, workflowName });
-    if (!options.startImage) {
+    const isRef2V = workflowName.toLowerCase().includes('r2v');
+    if (!options.startImage && !isRef2V) {
       throw new Error('ComfyUI 图生视频工作流需要参考图（首帧），请先生成或选择关键帧图片。');
+    }
+    if (isRef2V && !(options.referenceImages || []).length) {
+      throw new Error('MiniMax H3 Ref2VA 至少需要一张角色、场景或道具参考图。');
     }
     const workflow = await loadComfyWorkflowTemplate(workflowName);
     const startImageName = options.startImage
@@ -422,6 +462,21 @@ const callComfyVideoApi = async (
     const endImageName = options.endImage
       ? await uploadComfyImage(apiBase, options.endImage, `bigbanana-end-${Date.now()}.png`)
       : undefined;
+    const referenceImages = Array.from(new Set([
+      ...(isRef2V ? [] : [options.startImage, options.endImage]),
+      ...(options.referenceImages || []),
+    ].filter((image): image is string => !!image))).slice(0, model.params.maxReferenceImages || 9);
+    const referenceImageNames = await Promise.all(
+      referenceImages.map((image, index) =>
+        uploadComfyImage(apiBase, image, `bigbanana-ref-${index + 1}-${Date.now()}.png`)
+      )
+    );
+    const referenceVideoNames = await Promise.all((options.referenceVideos || []).slice(0, 3).map((video, index) =>
+      uploadComfyInputFile(apiBase, video, `bigbanana-ref-video-${index + 1}-${Date.now()}.mp4`)
+    ));
+    const referenceAudioNames = await Promise.all((options.referenceAudios || []).slice(0, 3).map((audio, index) =>
+      uploadComfyAudio(apiBase, audio, `bigbanana-ref-audio-${index + 1}-${Date.now()}.wav`)
+    ));
     let audioName: string | undefined;
     if (options.audioUrl) {
       const audioMatch = options.audioUrl.match(/^data:([a-zA-Z0-9.+/-]+);base64,/);
@@ -440,18 +495,21 @@ const callComfyVideoApi = async (
       width,
       height,
       seed,
-      steps: model.params.steps || 20,
+      steps: options.steps || model.params.steps || 20,
       duration,
       aspectRatio,
       startImageName,
       endImageName,
+      referenceImageNames,
+      referenceVideoNames,
+      referenceAudioNames,
       audioName,
     });
     console.info('[ComfyUI Video] Workflow patched:', {
       width,
       height,
       seed,
-      steps: model.params.steps || 20,
+      steps: options.steps || model.params.steps || 20,
       duration,
       hasEndFrame: !!endImageName,
       hasAudio: !!audioName,

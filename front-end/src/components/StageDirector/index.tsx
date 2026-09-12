@@ -15,6 +15,7 @@ import { generateImage, generateVideo, generateActionSuggestion, optimizeKeyfram
 import { 
   getRefImagesForShot, 
   getPropsInfoForShot,
+  appendLockedPropConstraints,
   buildShotScriptContext,
   pickPrimaryCharacterReference,
   buildKeyframePrompt,
@@ -32,10 +33,16 @@ import {
   buildPromptFromNineGridPanel,
   cropPanelFromNineGrid,
   ensureNineGridVideoPromptGuardrails,
+  isMiniMaxH3VideoModel,
   resolveVideoModelRouting,
   resolveEffectiveVideoModelId,
   routeVideoFrameInputs,
   finalizeComfyUiVideoWorkflowPrompt,
+  finalizeMiniMaxH3VideoPrompt,
+  appendCharacterCompositionConstraints,
+  buildShotNativeAudioContext,
+  isVoiceCharacter,
+  resolveShotVoiceSpeakerName,
   isQwenEditKeyframeWorkflow,
 } from './utils';
 import { DEFAULTS, resolveStoryboardGridLayout } from './constants';
@@ -47,9 +54,12 @@ import { findSceneByIdCompat } from '../../services/storyboardIdUtils';
 import NineGridPreview from './NineGridPreview';
 import { useAlert } from '../GlobalAlert';
 import { AspectRatioSelector } from '../AspectRatioSelector';
-import { getUserAspectRatio, setUserAspectRatio, getModelById, getActiveChatModel, getActiveImageModel, getActiveAudioModel, getActiveVideoModel, resolveShotGenerationModel } from '../../services/modelRegistry';
+import { getUserAspectRatio, getModelById, getActiveChatModel, getActiveImageModel, getActiveAudioModel, getActiveVideoModel, resolveShotGenerationModel } from '../../services/modelRegistry';
+import BilingualLabel from '../BilingualLabel';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 import { persistVideoReference } from '../../services/videoStorageService';
 import { runKeyframePreflight, runVideoPreflight, formatLintIssues } from '../../services/promptLintService';
+import { inspectShotProductionConflicts } from '../../services/productionConflictService';
 import { assessShotQuality, getProjectAverageQualityScore } from '../../services/qualityAssessmentService';
 import { assessShotQualityWithLLM } from '../../services/qualityAssessmentV2Service';
 import { updatePromptWithVersion } from '../../services/promptVersionService';
@@ -57,6 +67,10 @@ import { resolvePromptTemplateConfig } from '../../services/promptTemplateServic
 import { toFriendlyAiError } from '../../services/errorMessageService';
 import { cancelJobsForTarget, isJobCancelled } from '../../services/aiApiAdapter';
 import { useGenerationQueue } from '../../contexts/GenerationQueueContext';
+import {
+  buildReferenceImagePack,
+  describeReferencePack,
+} from '../../services/referenceImagePack';
 
 interface Props {
   project: ProjectState;
@@ -66,9 +80,10 @@ interface Props {
 }
 
 const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError, onGeneratingChange }) => {
+  const { language, text } = useInterfaceLanguage();
   const { showAlert } = useAlert();
   const { upsertJob } = useGenerationQueue();
-  const [activeShotId, setActiveShotId] = useState<string | null>(null);
+  const [activeShotId, setActiveShotId] = useState<string | null>(() => project.shots[0]?.id ?? null);
   const [batchProgress, setBatchProgress] = useState<{current: number, total: number, message: string} | null>(null);
   const [previewImage, setPreviewImage] = useState<{url: string, title: string} | null>(null);
   const [isAIGenerating, setIsAIGenerating] = useState(false);
@@ -80,14 +95,20 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
   const [showNineGrid, setShowNineGrid] = useState(false); // 是否显示九宫格预览弹窗
   const [toastMessage, setToastMessage] = useState('');
   
-  // 关键帧生成使用的横竖屏比例（从持久化配置读取）
-  const [keyframeAspectRatio, setKeyframeAspectRatioState] = useState<AspectRatio>(() => getUserAspectRatio());
+  // 关键帧生成使用的横竖屏比例：优先读取当前项目，旧项目回退到模型默认配置。
+  const [keyframeAspectRatio, setKeyframeAspectRatioState] = useState<AspectRatio>(
+    () => project.aspectRatio || getUserAspectRatio()
+  );
   
-  // 包装 setKeyframeAspectRatio，同时持久化到模型配置
+  // 包装 setKeyframeAspectRatio，同时持久化到当前项目。
   const setKeyframeAspectRatio = (ratio: AspectRatio) => {
     setKeyframeAspectRatioState(ratio);
-    setUserAspectRatio(ratio);
+    updateProject({ aspectRatio: ratio });
   };
+
+  useEffect(() => {
+    setKeyframeAspectRatioState(project.aspectRatio || getUserAspectRatio());
+  }, [project.projectId, project.aspectRatio]);
   
   // 统一的编辑状态
   const [editModal, setEditModal] = useState<{
@@ -194,6 +215,20 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         const prop = scriptData.props?.find(p => String(p.id) === String(propId));
         pushPrompt(prop?.negativePrompt);
       });
+    }
+
+    // 只对存在明确携带关系的道具追加排除项，避免把静态道具的提示词复杂化。
+    getPropsInfoForShot(shot, scriptData).forEach((prop) => {
+      pushPrompt(prop.presentationNegativePrompt);
+    });
+
+    // 单角色镜头的“越肩/背后”描述很容易被模型拆成两个相同角色；
+    // 负面词与正面构图锁同时生效，且不会污染多角色镜头。
+    const visibleCharacters = (shot.characters || [])
+      .map((charId) => scriptData.characters.find(c => String(c.id) === String(charId)))
+      .filter(Boolean);
+    if (visibleCharacters.length === 1) {
+      pushPrompt('duplicate character, cloned person, second copy, mirrored duplicate, reflection of the same person, extra person, double exposure, split screen');
     }
 
     const deduped: string[] = [];
@@ -345,6 +380,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
   ) => {
     const existingKf = shot.keyframes?.find(k => k.type === type);
     const kfId = existingKf?.id || generateId(`kf-${shot.id}-${type}`);
+    const generationId = generateId(`gen-${shot.id}-${type}`);
     const startKf = shot.keyframes?.find(k => k.type === 'start');
     
     const visualStyle = project.visualStyle || project.scriptData?.visualStyle || '3d-animation';
@@ -362,6 +398,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     const basePrompt = continuityHint && !rawBasePrompt.includes('【连贯性约束】')
       ? `${rawBasePrompt}\n\n${continuityHint}`
       : rawBasePrompt;
+    // 在 AI 改写前就注入角色数量锁；生成后还会再次校验，防止改写模型删除约束。
+    const guardedBasePrompt = appendCharacterCompositionConstraints(basePrompt, shot, project.scriptData);
     const negativePrompt = buildShotNegativePrompt(shot, visualStyle);
     const imageParams = (getActiveImageModel() as any)?.params || {};
     const keyframeWorkflowName = imageParams.keyframeWorkflowName as string | undefined;
@@ -377,7 +415,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     if (useAIEnhancement) {
       try {
         prompt = await buildKeyframePromptWithAI(
-          basePrompt,
+          guardedBasePrompt,
           visualStyle,
           shot.cameraMovement,
           type,
@@ -389,7 +427,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       } catch (error) {
         console.error('AI增强失败,使用基础提示词:', error);
         prompt = buildKeyframePrompt(
-          basePrompt,
+          guardedBasePrompt,
           visualStyle,
           shot.cameraMovement,
           type,
@@ -400,7 +438,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       }
     } else {
       prompt = buildKeyframePrompt(
-        basePrompt,
+        guardedBasePrompt,
         visualStyle,
         shot.cameraMovement,
         type,
@@ -409,24 +447,23 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         sceneFirst,
       );
     }
+    prompt = appendCharacterCompositionConstraints(prompt, shot, project.scriptData);
 
     const refResult = getRefImagesForShot(shot, project.scriptData, { sceneFirst });
-    const referenceImages = [...refResult.images];
-    const continuityReferenceImage =
-      type === 'end' && startKf?.imageUrl && !referenceImages.includes(startKf.imageUrl)
+    const requestedContinuityReference =
+      type === 'end' && startKf?.imageUrl && !refResult.images.includes(startKf.imageUrl)
         ? startKf.imageUrl
         : undefined;
-    const dedupedReferenceCount = new Set(
-      [...referenceImages, continuityReferenceImage]
-        .filter((img): img is string => !!img)
-        .map((img) => img.trim())
-        .filter(Boolean)
-    ).size;
-    const effectiveReferenceCount = Math.min(5, dedupedReferenceCount);
-    if (dedupedReferenceCount > 5) {
-      const limitNote = continuityReferenceImage ? '（含连贯性参考图）' : '';
-      setToastMessage(`参考图数量 ${dedupedReferenceCount} 超过模型上限，已自动限制为 5 张${limitNote}。`);
-    }
+    const maxReferenceCount = isQwenEditKeyframeWorkflow(keyframeWorkflowName) ? 3 : 5;
+    const referencePack = await buildReferenceImagePack(refResult.entries, {
+      maxReferenceImages: maxReferenceCount,
+      continuityReferenceImage: requestedContinuityReference,
+    });
+    const referenceImages = referencePack.referenceImages;
+    const continuityReferenceImage = referencePack.continuityReferenceImage;
+    const effectiveReferenceCount = referencePack.effectiveReferenceCount;
+    const packNotice = describeReferencePack(referencePack, language);
+    if (packNotice) setToastMessage(packNotice);
 
     const activeImageModel = getActiveImageModel() as any;
     const preflightResult = runKeyframePreflight({
@@ -438,6 +475,10 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       referenceImageCount: effectiveReferenceCount,
       aspectRatio: keyframeAspectRatio,
       supportedAspectRatios: activeImageModel?.params?.supportedAspectRatios,
+      expectedCharacterNames: (shot.characters || [])
+        .map((charId) => project.scriptData?.characters.find((character) => String(character.id) === String(charId))?.name)
+        .filter((name): name is string => !!name),
+      productionIssues: inspectShotProductionConflicts(shot, project.scriptData, language),
     });
 
     if (!preflightResult.canProceed) {
@@ -450,6 +491,46 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       setToastMessage(`关键帧预检提醒：\n${formatLintIssues(nonErrorIssues)}`);
     }
 
+    const summarizeReferenceImage = (image: string): string => {
+      if (image.startsWith('data:')) {
+        const mime = image.slice(5, image.indexOf(';') > 0 ? image.indexOf(';') : 40);
+        return `data:${mime} (${Math.ceil(image.length / 1024)} KiB)`;
+      }
+      try {
+        const parsed = new URL(image, window.location.origin);
+        return `${parsed.origin}${parsed.pathname}`;
+      } catch {
+        return image.length > 180 ? `${image.slice(0, 180)}…` : image;
+      }
+    };
+    const referenceLog = {
+      shotId: shot.id,
+      frameType: type,
+      workflowName: keyframeWorkflowName,
+      maxReferences: maxReferenceCount,
+      requestedCount: referencePack.requestedReferenceCount,
+      compositeGroups: referencePack.compositeGroups.map((group) => ({
+        type: group.type,
+        sourceCount: group.count,
+        labels: group.entry.includedLabels,
+      })),
+      slots: [
+        ...referencePack.entries.map((entry) => ({ image: entry.image, role: `${entry.type}:${entry.label}` })),
+        ...(continuityReferenceImage
+          ? [{ image: continuityReferenceImage, role: 'continuity:start-frame' }]
+          : []),
+      ].map((slot, index) => ({
+        slot: index + 1,
+        role: slot.role,
+        image: summarizeReferenceImage(slot.image),
+      })),
+      dropped: referencePack.droppedEntries.map((entry) => ({
+        role: `${entry.type}:${entry.label}`,
+        image: summarizeReferenceImage(entry.image),
+      })),
+    };
+    console.info('[Keyframe References]\n' + JSON.stringify(referenceLog, null, 2));
+
     const promptVersions = updatePromptWithVersion(
       existingKf?.visualPrompt,
       prompt,
@@ -461,7 +542,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     // 进入生成中，但保留已有预览图；批量入队不挂结果回写，空掉会导致灰卡片。
     updateShot(shot.id, (s) => {
       const generatingKeyframe = {
-        ...createKeyframe(kfId, type, prompt, existingKf?.imageUrl, 'generating'),
+        ...createKeyframe(kfId, type, prompt, existingKf?.imageUrl, 'generating', generationId),
         promptVersions,
       };
       return updateKeyframeInShot(s, type, generatingKeyframe);
@@ -490,7 +571,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
             characterReferenceImage,
             workflowName: keyframeWorkflowName,
             steps: keyframeSteps,
-            target: { kind: 'keyframe', shotId: shot.id, type },
+            referenceAnnotations: referencePack.referenceAnnotations,
+            target: { kind: 'keyframe', shotId: shot.id, type, generationId },
             onJobCreated: upsertJob,
             waitForResult: options?.enqueueOnly ? false : undefined,
           }
@@ -499,8 +581,10 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         if (options?.enqueueOnly) return;
 
         updateShot(shot.id, (s) => {
+          const current = s.keyframes?.find((frame) => frame.type === type);
+          if (current?.generationId !== generationId) return s;
           const completedKeyframe = {
-            ...createKeyframe(kfId, type, prompt, url, 'completed'),
+            ...createKeyframe(kfId, type, prompt, url, 'completed', generationId),
             promptVersions,
           };
           return updateKeyframeInShot(s, type, completedKeyframe);
@@ -510,6 +594,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         if (isJobCancelled(e)) {
           updateShot(shot.id, (s) => {
             const current = s.keyframes?.find((frame) => frame.type === type);
+            if (current?.generationId !== generationId) return s;
             const restoredUrl = current?.imageUrl || existingKf?.imageUrl;
             const restored = {
               ...createKeyframe(
@@ -518,6 +603,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
                 existingKf?.visualPrompt || prompt,
                 restoredUrl,
                 restoredUrl ? 'completed' : 'pending',
+                generationId,
               ),
               promptVersions: existingKf?.promptVersions || promptVersions,
             };
@@ -527,11 +613,12 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         }
         updateShot(shot.id, (s) => {
           const current = s.keyframes?.find((frame) => frame.type === type);
+          if (current?.generationId !== generationId) return s;
           if (current?.imageUrl) {
             return updateKeyframeInShot(s, type, { ...current, status: 'completed' });
           }
           const failedKeyframe = {
-            ...createKeyframe(kfId, type, prompt, existingKf?.imageUrl, 'failed'),
+            ...createKeyframe(kfId, type, prompt, existingKf?.imageUrl, 'failed', generationId),
             promptVersions,
           };
           return updateKeyframeInShot(s, type, failedKeyframe);
@@ -586,11 +673,13 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         const base64Url = await convertImageToBase64(file);
         const existingKf = shot.keyframes?.find(k => k.type === type);
         const kfId = existingKf?.id || generateId(`kf-${shot.id}-${type}`);
+        const generationId = generateId(`manual-${shot.id}-${type}`);
+        void cancelJobsForTarget({ kind: 'keyframe', shotId: shot.id, type }).catch(() => undefined);
         
         updateShot(shot.id, (s) => {
           const visualPrompt = existingKf?.visualPrompt || shot.actionSummary;
           const uploadedKeyframe = {
-            ...createKeyframe(kfId, type, visualPrompt, base64Url, 'completed'),
+            ...createKeyframe(kfId, type, visualPrompt, base64Url, 'completed', generationId),
             promptVersions: existingKf?.promptVersions,
           };
           return updateKeyframeInShot(s, type, uploadedKeyframe);
@@ -610,7 +699,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
   * @param duration - 视频时长（仅异步模型有效）
    * @param modelId - 视频模型 ID
    */
-  const handleGenerateVideo = async (shot: Shot, aspectRatio: AspectRatio = '16:9', duration: VideoDuration = 8, modelId?: string) => {
+  const handleGenerateVideo = async (shot: Shot, aspectRatio: AspectRatio = '16:9', duration: VideoDuration = 8, modelId?: string, quality: 'standard' | 'turbo' = 'standard') => {
     const sKf = shot.keyframes?.find(k => k.type === 'start');
     const eKf = shot.keyframes?.find(k => k.type === 'end');
     
@@ -618,15 +707,21 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     const selectedModelInput: string = modelId || getActiveVideoModel()?.id || shot.videoModel || DEFAULTS.videoModel;
     const selectedModelRouting = resolveVideoModelRouting(selectedModelInput);
     const selectedModel = selectedModelRouting.normalizedModelId;
+    const isR2VModel = selectedModel.toLowerCase().includes('r2v');
+    const steps = isMiniMaxH3VideoModel(selectedModel)
+      ? quality === 'turbo' ? (isR2VModel ? 4 : 8) : 20
+      : undefined;
     // 规范化模型名称：旧模型名 -> 现行可用模型
 
-    // 必须有起始帧
-    if (!sKf?.imageUrl) {
+    // FLF2V 必须有首帧；R2V 直接使用角色/场景/道具参考图。
+    if (!isR2VModel && !sKf?.imageUrl) {
       return showAlert("请先生成起始帧！", { type: 'warning' });
     }
     
     const projectLanguage = project.language || project.scriptData?.language || '中文';
     const visualStyle = project.visualStyle || project.scriptData?.visualStyle || 'live-action';
+    const selectedModelConfig = (getModelById(selectedModelInput) || getModelById(selectedModel)) as any;
+    const nativeAudioContext = buildShotNativeAudioContext(shot, project.scriptData);
     
     const videoInputMode = shot.videoInputMode || getRecommendedVideoInputMode(selectedModel);
     // 检测是否为网格分镜模式：必须显式选择网格模式 + 首帧使用整张网格图
@@ -643,7 +738,10 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       eKf?.imageUrl,
       videoInputMode
     );
-    const routedEndKeyframeId = routedFrames.endImage ? (eKf?.id || '') : '';
+    const generationFrames = isR2VModel
+      ? { ...routedFrames, startImage: undefined, endImage: undefined, ignoredEndFrame: false }
+      : routedFrames;
+    const routedEndKeyframeId = isR2VModel ? '' : (routedFrames.endImage ? (eKf?.id || '') : '');
 
     if (routedFrames.ignoredEndFrame) {
       if (videoInputMode === 'storyboard-grid' && !!eKf?.imageUrl) {
@@ -669,9 +767,10 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         isNineGridMode ? shot.nineGrid : undefined,
         duration,
         {
-          hasStartFrame: !!routedFrames.startImage,
-          hasEndFrame: !!routedFrames.endImage,
+        hasStartFrame: !!generationFrames.startImage,
+        hasEndFrame: !!generationFrames.endImage,
           dialogue: shot.dialogue,
+          nativeAudio: nativeAudioContext,
         },
         promptTemplates
       );
@@ -698,21 +797,24 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       }
     }
 
-    if (selectedModelRouting.family === 'comfyui-ltx') {
+    if (isMiniMaxH3VideoModel(selectedModel)) {
+      videoPrompt = finalizeMiniMaxH3VideoPrompt(videoPrompt, nativeAudioContext, projectLanguage, duration);
+    } else if (selectedModelRouting.family === 'comfyui-ltx') {
       videoPrompt = finalizeComfyUiVideoWorkflowPrompt(videoPrompt, shot.dialogue, projectLanguage);
     }
 
-    const selectedModelConfig = (getModelById(selectedModelInput) || getModelById(selectedModel)) as any;
     const preflightResult = runVideoPreflight({
       prompt: videoPrompt,
-      hasStartFrame: !!routedFrames.startImage,
-      hasEndFrame: !!routedFrames.endImage,
+      hasStartFrame: !!generationFrames.startImage,
+      hasEndFrame: !!generationFrames.endImage,
       modelId: selectedModel,
       supportsEndFrame: selectedModelRouting.supportsEndFrame,
       aspectRatio,
       supportedAspectRatios: selectedModelConfig?.params?.supportedAspectRatios,
       duration,
       supportedDurations: selectedModelConfig?.params?.supportedDurations,
+      requiresNativeAudioDirective: isMiniMaxH3VideoModel(selectedModel),
+      productionIssues: inspectShotProductionConflicts(shot, project.scriptData, language),
     });
 
     if (!preflightResult.canProceed) {
@@ -738,12 +840,14 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     updateShot(shot.id, (s) => ({
       ...s,
       videoModel: selectedModel as any,
-      interval: s.interval ? { ...s.interval, status: 'generating', videoPrompt, promptVersions: intervalPromptVersions } : {
+      interval: s.interval ? { ...s.interval, status: 'generating', videoPrompt, promptVersions: intervalPromptVersions, aspectRatio, videoQuality: quality } : {
         id: intervalId,
-        startKeyframeId: sKf?.id || '',
+        startKeyframeId: isR2VModel ? '' : (sKf?.id || ''),
         endKeyframeId: routedEndKeyframeId,
         duration: duration,
         motionStrength: 5,
+        aspectRatio,
+        videoQuality: quality,
         videoPrompt,
         promptVersions: intervalPromptVersions,
         status: 'generating'
@@ -751,17 +855,42 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     }));
     
     try {
+      // H3 原生音频由 prompt + 图片联合生成，不要把 TTS 文件误当成 H3 参考音频上传。
+      // 只有明确声明支持外部音频注入的工作流才传 audioUrl。
+      const isNativeAudioModel =
+        !!selectedModelConfig?.params?.supportsNativeAudio || isMiniMaxH3VideoModel(selectedModel);
       const dubbingAudioUrl =
-        shot.dubbing?.status === 'completed' ? shot.dubbing.audioUrl : undefined;
+        isNativeAudioModel
+          ? undefined
+          : selectedModelConfig?.params?.supportsAudio && shot.dubbing?.status === 'completed'
+            ? shot.dubbing.audioUrl
+            : undefined;
+      console.info('[Video Audio Routing]', {
+        modelId: selectedModel,
+        nativeAudio: isNativeAudioModel,
+        externalAudio: !!dubbingAudioUrl,
+        mode: nativeAudioContext?.mode || 'ambient-only',
+        speaker: nativeAudioContext?.speakerName,
+      });
       const videoUrl = await generateVideo(
         videoPrompt, 
-        routedFrames.startImage,
-        routedFrames.endImage,
+      generationFrames.startImage,
+      generationFrames.endImage,
         selectedModel,
         aspectRatio,
         duration,
         dubbingAudioUrl,
-        { target: { kind: 'video', shotId: shot.id }, onJobCreated: upsertJob }
+        {
+          target: { kind: 'video', shotId: shot.id },
+          onJobCreated: upsertJob,
+          steps,
+          referenceImages: isR2VModel
+            ? Array.from(new Set(getRefImagesForShot(shot, project.scriptData).images))
+            : undefined,
+          referenceAudios: selectedModel.toLowerCase().includes('r2v') && shot.dubbing?.audioUrl
+            ? [shot.dubbing.audioUrl]
+            : undefined,
+        }
       );
       const persistedVideoUrl = await persistVideoReference(videoUrl, {
         projectId: project.projectId || project.id,
@@ -771,12 +900,14 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
 
       updateShot(shot.id, (s) => ({
         ...s,
-        interval: s.interval ? { ...s.interval, videoUrl: persistedVideoUrl, status: 'completed', promptVersions: intervalPromptVersions } : {
+        interval: s.interval ? { ...s.interval, videoUrl: persistedVideoUrl, status: 'completed', promptVersions: intervalPromptVersions, aspectRatio, videoQuality: quality } : {
           id: intervalId,
-          startKeyframeId: sKf?.id || '',
+          startKeyframeId: isR2VModel ? '' : (sKf?.id || ''),
           endKeyframeId: routedEndKeyframeId,
           duration: duration,
           motionStrength: 5,
+          aspectRatio,
+          videoQuality: quality,
           videoPrompt,
           promptVersions: intervalPromptVersions,
           videoUrl: persistedVideoUrl,
@@ -802,7 +933,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         ...s,
         interval: s.interval ? { ...s.interval, status: 'failed', promptVersions: intervalPromptVersions } : {
           id: intervalId,
-          startKeyframeId: sKf?.id || '',
+          startKeyframeId: isR2VModel ? '' : (sKf?.id || ''),
           endKeyframeId: routedEndKeyframeId,
           duration: duration,
           motionStrength: 5,
@@ -839,7 +970,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     shot: Shot,
     mode: DubbingMode,
     text: string,
-    modelId?: string
+    modelId?: string,
+    speakerId?: string,
   ) => {
     const cleanText = (text || '').trim();
     if (!cleanText) {
@@ -848,6 +980,10 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     }
 
     const selectedModelId = modelId || shot.dubbing?.modelId || getActiveAudioModel()?.id || 'gpt-audio-1.5';
+    const speaker = speakerId
+      ? project.scriptData?.characters.find((character) => String(character.id) === String(speakerId))
+      : undefined;
+    const speakerName = speaker?.name || shot.dubbing?.speakerName || resolveShotVoiceSpeakerName(shot, project.scriptData, cleanText);
 
     updateShot(shot.id, (s) => ({
       ...s,
@@ -855,6 +991,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         mode,
         text: cleanText,
         modelId: selectedModelId,
+        speakerId: speaker?.id,
+        speakerName,
         status: 'generating',
       },
     }));
@@ -873,6 +1011,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           mode,
           text: cleanText,
           modelId: selectedModelId,
+          speakerId: speaker?.id,
+          speakerName,
           voice: result.usedVoice,
           outputFormat: result.usedFormat,
           transcript: result.transcript,
@@ -892,6 +1032,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           mode,
           text: cleanText,
           modelId: selectedModelId,
+          speakerId: speaker?.id,
+          speakerName,
           status: 'failed',
           error: formatUserFriendlyError(e, '配音生成失败，请稍后重试。'),
         },
@@ -918,12 +1060,14 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     
     const existingStartKf = activeShot.keyframes?.find(k => k.type === 'start');
     const newStartKfId = existingStartKf?.id || generateId(`kf-${activeShot.id}-start`);
+    const generationId = generateId(`manual-${activeShot.id}-start`);
+    void cancelJobsForTarget({ kind: 'keyframe', shotId: activeShot.id, type: 'start' }).catch(() => undefined);
     
     updateShot(activeShot.id, (s) => {
       return updateKeyframeInShot(
         s, 
         'start', 
-        createKeyframe(newStartKfId, 'start', previousEndKf.visualPrompt, previousEndKf.imageUrl, 'completed')
+        createKeyframe(newStartKfId, 'start', previousEndKf.visualPrompt, previousEndKf.imageUrl, 'completed', generationId)
       );
     });
   };
@@ -944,12 +1088,14 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     
     const existingEndKf = activeShot.keyframes?.find(k => k.type === 'end');
     const newEndKfId = existingEndKf?.id || generateId(`kf-${activeShot.id}-end`);
+    const generationId = generateId(`manual-${activeShot.id}-end`);
+    void cancelJobsForTarget({ kind: 'keyframe', shotId: activeShot.id, type: 'end' }).catch(() => undefined);
     
     updateShot(activeShot.id, (s) => {
       return updateKeyframeInShot(
         s, 
         'end', 
-        createKeyframe(newEndKfId, 'end', nextStartKf.visualPrompt, nextStartKf.imageUrl, 'completed')
+        createKeyframe(newEndKfId, 'end', nextStartKf.visualPrompt, nextStartKf.imageUrl, 'completed', generationId)
       );
     });
   };
@@ -1051,7 +1197,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           ...s,
           interval: s.interval ? {
             ...s.interval,
-            videoPrompt: editModal.value,
+          videoPrompt: editModal.value,
+            aspectRatio: project.aspectRatio || '16:9',
             promptVersions: updatePromptWithVersion(
               s.interval.videoPrompt,
               editModal.value,
@@ -1063,10 +1210,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
             id: generateId(`int-${s.id}`),
             startKeyframeId: s.keyframes?.find((kf) => kf.type === 'start')?.id || '',
             endKeyframeId: s.keyframes?.find((kf) => kf.type === 'end')?.id || '',
-            duration:
-              Number(s.interval?.duration) ||
-              getModelDefaultDuration(s.videoModel || DEFAULTS.videoModel),
-            motionStrength: s.interval?.motionStrength ?? 5,
+            duration: getModelDefaultDuration(s.videoModel || DEFAULTS.videoModel),
+            motionStrength: 5,
             videoPrompt: editModal.value,
             promptVersions: updatePromptWithVersion(
               undefined,
@@ -1075,7 +1220,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
               'manual-edit',
               'Manual video prompt edit'
             ),
-            status: s.interval?.status || 'pending',
+            status: 'pending',
           }
         }));
         break;
@@ -1164,6 +1309,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       const visualStyle = project.visualStyle || project.scriptData?.visualStyle || 'live-action';
       const actionSummary = activeShot.actionSummary || '未定义的动作';
       const cameraMovement = activeShot.cameraMovement || '平移';
+      const shotPropsInfo = getPropsInfoForShot(activeShot, project.scriptData);
       
       const optimizedPrompt = await optimizeKeyframePrompt(
         type,
@@ -1188,7 +1334,16 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         return updateKeyframeInShot(
           s,
           type,
-          createKeyframe(kfId, type, optimizedPrompt, existingKf?.imageUrl, existingKf?.status || 'pending')
+          createKeyframe(
+            kfId,
+            type,
+            appendLockedPropConstraints(
+              appendCharacterCompositionConstraints(optimizedPrompt, activeShot, project.scriptData),
+              shotPropsInfo,
+            ),
+            existingKf?.imageUrl,
+            existingKf?.status || 'pending',
+          )
         );
       });
       
@@ -1229,6 +1384,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       const visualStyle = project.visualStyle || project.scriptData?.visualStyle || 'live-action';
       const actionSummary = activeShot.actionSummary || '未定义的动作';
       const cameraMovement = activeShot.cameraMovement || '平移';
+      const shotPropsInfo = getPropsInfoForShot(activeShot, project.scriptData);
       
       const result = await optimizeBothKeyframes(
         actionSummary,
@@ -1254,12 +1410,30 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         let updated = updateKeyframeInShot(
           s,
           'start',
-          createKeyframe(startKfId, 'start', result.startPrompt, startKf?.imageUrl, startKf?.status || 'pending')
+          createKeyframe(
+            startKfId,
+            'start',
+            appendLockedPropConstraints(
+              appendCharacterCompositionConstraints(result.startPrompt, activeShot, project.scriptData),
+              shotPropsInfo,
+            ),
+            startKf?.imageUrl,
+            startKf?.status || 'pending',
+          )
         );
         updated = updateKeyframeInShot(
           updated,
           'end',
-          createKeyframe(endKfId, 'end', result.endPrompt, endKf?.imageUrl, endKf?.status || 'pending')
+          createKeyframe(
+            endKfId,
+            'end',
+            appendLockedPropConstraints(
+              appendCharacterCompositionConstraints(result.endPrompt, activeShot, project.scriptData),
+              shotPropsInfo,
+            ),
+            endKf?.imageUrl,
+            endKf?.status || 'pending',
+          )
         );
         return updated;
       });
@@ -1487,26 +1661,31 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     try {
       // 2. 基于最新 shot 快照收集参考图片，避免重试时引用过期闭包数据
       const refResult = getRefImagesForShot(shot, project.scriptData);
-      const dedupedRefCount = new Set(
-        refResult.images.map((img) => String(img || '').trim()).filter(Boolean)
-      ).size;
-      if (dedupedRefCount > 5) {
-        setToastMessage(`参考图数量 ${dedupedRefCount} 超过模型上限，已自动限制为 5 张。`);
-      }
-      if (refResult.images.length === 0) {
+      const imageParams = (getActiveImageModel() as any)?.params || {};
+      const gridWorkflowName = imageParams.keyframeWorkflowName as string | undefined;
+      const maxReferences = isQwenEditKeyframeWorkflow(gridWorkflowName) ? 3 : 5;
+      const referencePack = await buildReferenceImagePack(refResult.entries, {
+        maxReferenceImages: maxReferences,
+        reservedReferenceSlots: 1,
+        alwaysCompositeTypes: ['character', 'prop'],
+      });
+      const packNotice = describeReferencePack(referencePack, language);
+      if (packNotice) setToastMessage(packNotice);
+      if (referencePack.referenceImages.length === 0) {
         console.warn(`[NineGrid] shot=${shotId} 没有可用参考图，将仅按文案生成。`);
       }
 
       // 3. 生成九宫格图片
       const imageUrl = await generateNineGridImage(
         confirmedPanels,
-        refResult.images,
+        referencePack.referenceImages,
         visualStyle,
         keyframeAspectRatio,
         {
           hasTurnaround: refResult.hasTurnaround,
           panelCount: layout.panelCount,
           promptTemplates,
+          referenceAnnotations: referencePack.referenceAnnotations,
           target: { kind: 'nineGrid', shotId },
         }
       );
@@ -1706,6 +1885,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     
     const existingKf = activeShot.keyframes?.find(k => k.type === 'start');
     const kfId = existingKf?.id || generateId(`kf-${activeShot.id}-start`);
+    const generationId = generateId(`manual-${activeShot.id}-start`);
+    void cancelJobsForTarget({ kind: 'keyframe', shotId: activeShot.id, type: 'start' }).catch(() => undefined);
     
     try {
       // 2. 从九宫格图片中裁剪出选中的面板
@@ -1720,7 +1901,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         return updateKeyframeInShot(
           s,
           'start',
-          createKeyframe(kfId, 'start', prompt, croppedImageUrl, 'completed')
+          createKeyframe(kfId, 'start', prompt, croppedImageUrl, 'completed', generationId)
         );
       });
       
@@ -1741,6 +1922,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     
     const existingKf = activeShot.keyframes?.find(k => k.type === 'start');
     const kfId = existingKf?.id || generateId(`kf-${activeShot.id}-start`);
+    const generationId = generateId(`manual-${activeShot.id}-start`);
+    void cancelJobsForTarget({ kind: 'keyframe', shotId: activeShot.id, type: 'start' }).catch(() => undefined);
     const layout = resolveStoryboardGridLayout(
       activeShot.nineGrid?.layout?.panelCount,
       activeShot.nineGrid?.panels?.length
@@ -1751,7 +1934,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       return updateKeyframeInShot(
         s,
         'start',
-        createKeyframe(kfId, 'start', prompt, activeShot.nineGrid!.imageUrl!, 'completed')
+        createKeyframe(kfId, 'start', prompt, activeShot.nineGrid!.imageUrl!, 'completed', generationId)
       );
     });
     
@@ -1779,21 +1962,18 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       )}
 
       {/* Toolbar */}
-      <div className="h-16 border-b border-[var(--border-primary)] bg-[var(--bg-elevated)] px-6 flex items-center justify-between shrink-0">
+      <div className="h-16 border-b border-[var(--border-primary)] bg-[var(--bg-primary)]/95 px-6 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-4">
           <h2 className="text-lg font-bold text-[var(--text-primary)] flex items-center gap-3">
             <LayoutGrid className="w-5 h-5 text-[var(--accent)]" />
-            导演工作台
-            <span className="text-xs text-[var(--text-muted)] font-mono font-normal uppercase tracking-wider bg-[var(--bg-base)]/30 px-2 py-1 rounded">
-              Director Workbench
-            </span>
+            <BilingualLabel primary="镜头设计" secondary="SHOT DESIGN" mode="badge" />
           </h2>
         </div>
 
         <div className="flex items-center gap-3">
           {/* 横竖屏选择 */}
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-[var(--text-tertiary)] uppercase">比例</span>
+            <span className="text-[10px] text-[var(--text-tertiary)] uppercase">{text('比例', 'RATIO')}</span>
             <AspectRatioSelector
               value={keyframeAspectRatio}
               onChange={setKeyframeAspectRatio}
@@ -1806,7 +1986,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-[var(--bg-base)]/30 border border-[var(--border-primary)]">
             <Sparkles className={`w-3.5 h-3.5 ${useAIEnhancement ? 'text-[var(--accent-text)]' : 'text-[var(--text-muted)]'}`} />
             <label className="flex items-center gap-2 cursor-pointer">
-              <span className="text-xs text-[var(--text-tertiary)]">AI增强提示词</span>
+              <span className="text-xs text-[var(--text-tertiary)]">{text('AI 增强', 'AI ENHANCE')}</span>
               <input
                 type="checkbox"
                 checked={useAIEnhancement}
@@ -1823,10 +2003,10 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
                 ? 'text-amber-300 border-amber-500/40 bg-amber-500/10'
                 : 'text-rose-300 border-rose-500/40 bg-rose-500/10'
           }`}>
-            质检分 {projectQualityScore}
+            {text('就绪度', 'READINESS')} {projectQualityScore}
           </span>
           <span className="text-xs text-[var(--text-tertiary)] mr-4 font-mono">
-            {project.shots.filter(s => s.interval?.videoUrl).length} / {project.shots.length} 完成
+            {text('视频', 'VIDEOS')} {project.shots.filter(s => s.interval?.videoUrl).length}/{project.shots.length}
           </span>
           <button 
             onClick={handleBatchGenerateImages}
@@ -1839,8 +2019,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           >
             {batchProgress ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
             {batchProgress
-              ? `提交 ${batchProgress.current}/${batchProgress.total}`
-              : allStartFramesGenerated ? '重新生成所有首帧' : '批量生成首帧'}
+              ? text(`提交 ${batchProgress.current}/${batchProgress.total}`, `SUBMITTING ${batchProgress.current}/${batchProgress.total}`)
+              : allStartFramesGenerated ? text('重新生成所有首帧', 'REGENERATE ALL START FRAMES') : text('批量生成首帧', 'GENERATE START FRAMES')}
           </button>
         </div>
       </div>
@@ -1878,6 +2058,8 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
             shotIndex={activeShotIndex}
             totalShots={project.shots.length}
             scriptData={project.scriptData}
+            projectAspectRatio={project.aspectRatio || '16:9'}
+            voiceCharacters={(project.scriptData?.characters || []).filter(isVoiceCharacter).map(({ id, name }) => ({ id, name }))}
             currentVideoModelId={resolveEffectiveVideoModelId(activeShot.videoModel)}
             nextShotHasStartFrame={!!project.shots[activeShotIndex + 1]?.keyframes?.find(k => k.type === 'start')?.imageUrl}
             isAIOptimizing={isAIGenerating}
@@ -1921,10 +2103,10 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
             onCopyNextStartFrame={handleCopyNextStartFrame}
             useAIEnhancement={useAIEnhancement}
             onToggleAIEnhancement={() => setUseAIEnhancement(!useAIEnhancement)}
-            onGenerateVideo={(aspectRatio, duration, modelId) => handleGenerateVideo(activeShot, aspectRatio, duration, modelId)}
+          onGenerateVideo={(aspectRatio, duration, modelId, quality) => handleGenerateVideo(activeShot, aspectRatio, duration, modelId, quality)}
             onCancelVideo={() => handleCancelVideo(activeShot)}
             onCancelKeyframe={(type) => handleCancelKeyframe(activeShot, type)}
-            onGenerateDubbing={(mode, text, modelId) => handleGenerateDubbing(activeShot, mode, text, modelId)}
+            onGenerateDubbing={(mode, text, modelId, speakerId) => handleGenerateDubbing(activeShot, mode, text, modelId, speakerId)}
             onClearDubbing={() =>
               updateShot(activeShot.id, (s) => ({
                 ...s,
@@ -1991,11 +2173,17 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
                     hasStartFrame: !!routedFrames.startImage,
                     hasEndFrame: !!routedFrames.endImage,
                     dialogue: activeShot.dialogue,
+                    nativeAudio: buildShotNativeAudioContext(activeShot, project.scriptData),
                   },
                   promptTemplates
                 );
               }
               const editProjectLanguage = project.language || project.scriptData?.language || '中文';
+              const promptDuration =
+                Number(activeShot.interval?.duration) ||
+                getModelDefaultDuration(activeShot.videoModel || DEFAULTS.videoModel) ||
+                Number(project.scriptData?.planningShotDuration) ||
+                8;
               const editStartKf = activeShot.keyframes?.find(k => k.type === 'start');
               const editVideoInputMode = activeShot.videoInputMode || getRecommendedVideoInputMode(activeShot.videoModel || DEFAULTS.videoModel);
               const editIsNineGridMode = (
@@ -2009,7 +2197,14 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
                 promptValue = ensureNineGridVideoPromptGuardrails(promptValue, panelCountForGuard, editProjectLanguage, promptTemplates);
               }
               const editModelRouting = resolveVideoModelRouting(activeShot.videoModel || DEFAULTS.videoModel);
-              if (editModelRouting.family === 'comfyui-ltx' && promptValue) {
+              if (isMiniMaxH3VideoModel(editModelRouting.normalizedModelId) && promptValue) {
+                promptValue = finalizeMiniMaxH3VideoPrompt(
+                  promptValue,
+                  buildShotNativeAudioContext(activeShot, project.scriptData),
+                  editProjectLanguage,
+                  promptDuration,
+                );
+              } else if (editModelRouting.family === 'comfyui-ltx' && promptValue) {
                 promptValue = finalizeComfyUiVideoWorkflowPrompt(promptValue, activeShot.dialogue, editProjectLanguage);
               }
               setEditModal({

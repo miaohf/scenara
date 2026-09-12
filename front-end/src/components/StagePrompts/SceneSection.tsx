@@ -4,6 +4,7 @@ import { Scene, PromptVersion } from '../../types';
 import { EditingPrompt, STYLES } from './constants';
 import CollapsibleSection from './CollapsibleSection';
 import PromptEditor from './PromptEditor';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface Props {
   scenes: Scene[];
@@ -30,11 +31,12 @@ const SceneSection: React.FC<Props> = ({
   onPromptChange,
   onRollbackVersion
 }) => {
+  const { text } = useInterfaceLanguage();
   if (scenes.length === 0) return null;
 
   return (
     <CollapsibleSection
-      title="场景"
+      title={text('场景', 'Locations')}
       icon={<MapPin className="w-5 h-5" />}
       count={scenes.length}
       isExpanded={isExpanded}
@@ -53,7 +55,7 @@ const SceneSection: React.FC<Props> = ({
               onClick={() => onStartEdit('scene', scene.id, scene.visualPrompt || '')}
               className={STYLES.button.edit}
             >
-              编辑
+              {text('编辑', 'Edit')}
             </button>
           </div>
 
@@ -69,7 +71,7 @@ const SceneSection: React.FC<Props> = ({
             />
           ) : (
             <p className={STYLES.display.base}>
-              {scene.visualPrompt || '未设置提示词'}
+              {scene.visualPrompt || text('未设置提示词', 'No prompt set')}
             </p>
           )}
         </div>

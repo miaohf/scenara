@@ -122,6 +122,7 @@ export function episodeFromApi(ep: ApiEpisode): Episode {
     targetDuration: (payload.targetDuration as string) || "60s",
     language: (payload.language as string) || "中文",
     visualStyle: (payload.visualStyle as string) || "",
+    aspectRatio: payload.aspectRatio as Episode["aspectRatio"],
     shotGenerationModel: (payload.shotGenerationModel as string) || "",
     scriptData: (payload.scriptData as Episode["scriptData"]) ?? null,
     shots: (payload.shots as Episode["shots"]) || [],

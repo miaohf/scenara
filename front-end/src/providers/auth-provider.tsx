@@ -17,6 +17,7 @@ import type { User } from "@/lib/types";
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
+  authError: string | null;
   login: (username: string, password: string) => Promise<void>;
   register: (email: string, username: string, password: string) => Promise<void>;
   logout: () => void;
@@ -29,21 +30,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   const refreshUser = useCallback(async () => {
     if (!isAuthenticated()) {
       setUser(null);
+      setAuthError(null);
       return;
     }
     try {
       const me = await authApi.me();
       setUser(me);
+      setAuthError(null);
       void import("@/services/modelRegistry").then(({ hydrateRegistryFromServer }) =>
         hydrateRegistryFromServer(),
       );
-    } catch {
-      clearTokens();
-      setUser(null);
+    } catch (error) {
+      const status =
+        typeof error === "object" && error !== null && "status" in error
+          ? Number((error as { status?: unknown }).status)
+          : undefined;
+
+      if (status === 401) {
+        clearTokens();
+        setUser(null);
+        setAuthError(null);
+        return;
+      }
+
+      // Keep the token on transient API failures.  Clearing it here used to
+      // send users to /login after any timeout, restart, or brief network loss.
+      console.warn("[Auth] Unable to validate the current session; keeping it for retry.", error);
+      setAuthError("Unable to verify the session. Check the API connection and retry.");
     }
   }, []);
 
@@ -56,6 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (!isAuthenticated()) {
       setUser(null);
+      setAuthError(null);
       finish();
       return;
     }
@@ -91,12 +110,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(() => {
     clearTokens();
     setUser(null);
+    setAuthError(null);
     router.push("/login");
   }, [router]);
 
   const value = useMemo(
-    () => ({ user, loading, login, register, logout, refreshUser }),
-    [user, loading, login, register, logout, refreshUser],
+    () => ({ user, loading, authError, login, register, logout, refreshUser }),
+    [user, loading, authError, login, register, logout, refreshUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -109,7 +129,7 @@ export function useAuth() {
 }
 
 export function RequireAuth({ children }: { children: ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, loading, authError, refreshUser } = useAuth();
   const router = useRouter();
   const [mounted, setMounted] = useState(false);
 
@@ -125,10 +145,10 @@ export function RequireAuth({ children }: { children: ReactNode }) {
       return;
     }
 
-    if (!loading && !user) {
+    if (!loading && !user && !authError) {
       router.replace("/login");
     }
-  }, [mounted, loading, user, router]);
+  }, [mounted, loading, user, authError, router]);
 
   if (!mounted) {
     return (
@@ -146,6 +166,21 @@ export function RequireAuth({ children }: { children: ReactNode }) {
     return (
       <div className="flex min-h-screen items-center justify-center text-muted-foreground">
         加载中...
+      </div>
+    );
+  }
+
+  if (!user && authError) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-3 px-6 text-center text-muted-foreground">
+        <p>{authError}</p>
+        <button
+          type="button"
+          onClick={() => void refreshUser()}
+          className="rounded border border-border px-3 py-2 text-sm text-foreground hover:bg-muted"
+        >
+          Retry
+        </button>
       </div>
     );
   }

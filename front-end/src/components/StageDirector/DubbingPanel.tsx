@@ -1,16 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Mic, Loader2, Trash2 } from 'lucide-react';
-import { Shot, DubbingMode } from '../../types';
+import { Character, Shot, DubbingMode } from '../../types';
 import { getAudioModels, getActiveAudioModel } from '../../services/modelRegistry';
 import { AudioModelDefinition } from '../../types/model';
 
 interface DubbingPanelProps {
   shot: Shot;
-  onGenerateDubbing: (mode: DubbingMode, text: string, modelId?: string) => void;
+  voiceCharacters?: Pick<Character, 'id' | 'name'>[];
+  onGenerateDubbing: (mode: DubbingMode, text: string, modelId?: string, speakerId?: string) => void;
   onClearDubbing: () => void;
 }
 
-const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, onGenerateDubbing, onClearDubbing }) => {
+const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [], onGenerateDubbing, onClearDubbing }) => {
   const audioModels = getAudioModels().filter((m) => m.isEnabled);
   const activeAudioModel = getActiveAudioModel();
 
@@ -19,6 +20,7 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, onGenerateDubbing, on
     shot.dubbing?.modelId || activeAudioModel?.id || audioModels[0]?.id || 'gpt-audio-1.5'
   );
   const [dubbingText, setDubbingText] = useState<string>(shot.dubbing?.text || '');
+  const [selectedSpeakerId, setSelectedSpeakerId] = useState<string>(shot.dubbing?.speakerId || '');
 
   const isGeneratingDubbing = shot.dubbing?.status === 'generating';
   const hasDubbingAudio = !!shot.dubbing?.audioUrl;
@@ -36,11 +38,12 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, onGenerateDubbing, on
     setDubbingMode(initialMode);
     setSelectedAudioModelId(initialModelId);
     setDubbingText(initialText);
-  }, [shot.id, activeAudioModel?.id]);
+    setSelectedSpeakerId(shot.dubbing?.speakerId || '');
+  }, [shot.id, shot.dubbing?.speakerId, activeAudioModel?.id]);
 
   const handleGenerateDubbing = () => {
     if (!canGenerateDubbing) return;
-    onGenerateDubbing(dubbingMode, dubbingText.trim(), selectedAudioModelId);
+    onGenerateDubbing(dubbingMode, dubbingText.trim(), selectedAudioModelId, selectedSpeakerId || undefined);
   };
 
   return (
@@ -93,6 +96,29 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, onGenerateDubbing, on
       </div>
 
       <div className="space-y-2">
+        {dubbingMode === 'dialogue' && voiceCharacters.length > 0 && (
+          <>
+            <label className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-widest block">
+              说话角色
+            </label>
+            <select
+              value={selectedSpeakerId}
+              onChange={(e) => setSelectedSpeakerId(e.target.value)}
+              className="w-full bg-[var(--bg-surface)] border border-[var(--border-primary)] text-[var(--text-primary)] text-xs rounded-lg px-3 py-2 outline-none focus:border-[var(--accent)]"
+              disabled={isGeneratingDubbing}
+            >
+              <option value="">自动识别声音角色</option>
+              {voiceCharacters.map((character) => (
+                <option key={character.id} value={character.id}>
+                  {character.name}
+                </option>
+              ))}
+            </select>
+            <p className="text-[9px] text-[var(--text-muted)]">
+              该角色名会写入 H3 原生音频提示词；不会作为画面角色加入参考图。
+            </p>
+          </>
+        )}
         <label className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-widest block">
           选择配音模型
         </label>
@@ -181,4 +207,3 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, onGenerateDubbing, on
 };
 
 export default DubbingPanel;
-
