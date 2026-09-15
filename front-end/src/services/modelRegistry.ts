@@ -20,6 +20,7 @@ import {
   DEFAULT_IMAGE_PARAMS_COMFYUI,
   DEFAULT_IMAGE_WORKFLOW_NAME,
   DEFAULT_VIDEO_WORKFLOW_NAME,
+  MINIMAX_H3_R2V_WORKFLOW_NAME,
   ImageModelParams,
   AspectRatio,
   VideoDuration,
@@ -79,16 +80,16 @@ export const loadRegistry = (): ModelRegistryState => {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
-      const parsed = JSON.parse(stored) as Partial<ModelRegistryState>;
-      if (!Array.isArray(parsed.models)) {
-        parsed.models = [];
-      }
-      if (!Array.isArray(parsed.providers)) {
-        parsed.providers = [];
-      }
-      parsed.activeModels = {
+      const raw = JSON.parse(stored) as Partial<ModelRegistryState>;
+      const parsed: ModelRegistryState = {
+        ...getDefaultState(),
+        ...raw,
+        models: Array.isArray(raw.models) ? raw.models : [],
+        providers: Array.isArray(raw.providers) ? raw.providers : [],
+        activeModels: {
         ...DEFAULT_ACTIVE_MODELS,
-        ...(parsed.activeModels || {}),
+          ...(raw.activeModels || {}),
+        },
       };
       const deprecatedVideoModelIds = [
         'veo',
@@ -103,6 +104,20 @@ export const loadRegistry = (): ModelRegistryState => {
       ];
 
       let chatModelAliasMigrated = false;
+      // 旧版本的两个 GPT Image 卡片统一迁移为 NewAPI 的 gpt-image-2，
+      // 避免设置页同时出现旧模型，并保留原卡片的 API Key/Base URL。
+      const legacyGptImage = parsed.models.find((model) => model.id === 'gpt-image-1.5')
+        || parsed.models.find((model) => model.id === 'gpt-image-1-mini');
+      if (legacyGptImage && !parsed.models.some((model) => model.id === 'gpt-image-2')) {
+        parsed.models = parsed.models.map((model) => model.id === legacyGptImage.id
+          ? { ...model, id: 'gpt-image-2', apiModel: 'gpt-image-2', name: 'GPT Image 2' }
+          : model);
+        parsed.activeModels.image = parsed.activeModels.image === 'gpt-image-1.5'
+          || parsed.activeModels.image === 'gpt-image-1-mini'
+          ? 'gpt-image-2'
+          : parsed.activeModels.image;
+        chatModelAliasMigrated = true;
+      }
       const hasBuiltinGpt54 = parsed.models.some(m => m.type === 'chat' && m.id === 'gpt-5.4');
       parsed.models = parsed.models.flatMap((model) => {
         if (!(model.type === 'chat' && model.id === 'gpt-41')) {
@@ -133,12 +148,16 @@ export const loadRegistry = (): ModelRegistryState => {
         chatModelAliasMigrated = true;
       }
 
-      // 只补齐空的 Comfy 工作流；前端已填写的名称一律保留
+      // 只补齐空的 Comfy 工作流；内置 MiniMax H3 R2V 的旧默认值迁移到多参考图工作流。
+      // 其他已填写的自定义工作流一律保留。
       parsed.models = parsed.models.map((model) => {
         if (model.type === 'video') {
           const videoModel = model as VideoModelDefinition;
           const nextParams = { ...videoModel.params };
-          if (!nextParams.workflowName) {
+          const workflowName = String(nextParams.workflowName || '').trim();
+          const isLegacyMinimaxR2V = model.id === 'comfyui-minimax-h3-r2v'
+            && workflowName.replace(/\.json$/i, '') === 'video_minimax_h3_r2v';
+          if (!workflowName || isLegacyMinimaxR2V) {
             const builtin = ALL_BUILTIN_MODELS.find((item) => item.id === model.id) as
               | VideoModelDefinition
               | undefined;
@@ -180,6 +199,15 @@ export const loadRegistry = (): ModelRegistryState => {
         if (!nextParams.keyframeWorkflowName && fallback.keyframeWorkflowName) {
           nextParams.keyframeWorkflowName = fallback.keyframeWorkflowName;
           nextParams.keyframeSteps = nextParams.keyframeSteps || fallback.keyframeSteps;
+          changed = true;
+        }
+        // 参考图定妆默认从 Lightning 4-step 升级为完整 40-step 路径。
+        // 该迁移仅命中本应用内置的 Qwen Edit 工作流，避免改动其他自定义工作流。
+        if (
+          nextParams.referenceWorkflowName === 'image_qwen_image_edit_2511_20260908' &&
+          Number(nextParams.referenceSteps) <= 8
+        ) {
+          nextParams.referenceSteps = 40;
           changed = true;
         }
         if (changed) {
@@ -269,11 +297,14 @@ export const loadRegistry = (): ModelRegistryState => {
           // 结构性参数（supportedAspectRatios, supportedDurations, mode 等）始终从代码同步
           const USER_PREF_KEYS = [
             'defaultAspectRatio',
+            'outputResolution',
             'temperature',
             'maxTokens',
             'defaultDuration',
             'workflowName',
             'steps',
+            'referenceWorkflowName',
+            'referenceSteps',
             'keyframeWorkflowName',
             'keyframeSteps',
             'turnaroundWorkflowName',
@@ -281,6 +312,7 @@ export const loadRegistry = (): ModelRegistryState => {
           ];
           const WORKFLOW_PREF_KEYS = new Set([
             'workflowName',
+            'referenceWorkflowName',
             'keyframeWorkflowName',
             'turnaroundWorkflowName',
           ]);
@@ -361,6 +393,24 @@ export const loadRegistry = (): ModelRegistryState => {
           };
         }
         return model;
+      });
+
+      // 历史上手动添加的 Qwen 2512 文生图模型没有区分“带参考图”的编辑工作流。
+      // 为这类安全可识别的配置补齐 2511 Edit，避免上传参考图后仍被 2512 T2I 忽略。
+      parsed.models = parsed.models.map((model) => {
+        const params = (model.params || {}) as unknown as Record<string, unknown>;
+        const isQwen2512TextWorkflow = model.type === 'image'
+          && params.apiFormat === 'comfyui'
+          && ['default_image_generate', 'image_qwen_image_2512'].includes(String(params.workflowName || ''));
+        if (!isQwen2512TextWorkflow || String(params.referenceWorkflowName || '').trim()) return model;
+        return {
+          ...model,
+          params: {
+            ...params,
+            referenceWorkflowName: 'image_qwen_image_edit_2511_20260908',
+            referenceSteps: params.referenceSteps ?? 40,
+          } as any,
+        };
       });
 
       // 清理旧的已废弃视频模型

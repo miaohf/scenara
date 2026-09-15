@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Edit3, Save, AlertCircle, Camera, RefreshCw } from 'lucide-react';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
@@ -26,8 +27,54 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
   const resolvedPlaceholder = placeholder || text('输入视觉描述...', 'Enter a visual description...');
   const [isEditing, setIsEditing] = useState(false);
   const [editedPrompt, setEditedPrompt] = useState(prompt);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [previewPosition, setPreviewPosition] = useState({ left: 16, top: 16, width: 640 });
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearPreviewTimer = () => {
+    if (previewTimer.current) {
+      clearTimeout(previewTimer.current);
+      previewTimer.current = null;
+    }
+  };
+
+  const closePreviewSoon = () => {
+    clearPreviewTimer();
+    previewTimer.current = setTimeout(() => setIsPreviewOpen(false), 120);
+  };
+
+  const openPreviewSoon = (element: HTMLElement) => {
+    if (!prompt || isEditing) return;
+    clearPreviewTimer();
+    const rect = element.getBoundingClientRect();
+    const viewportPadding = 16;
+    const width = Math.min(680, window.innerWidth - viewportPadding * 2);
+    const left = Math.min(
+      Math.max(viewportPadding, rect.left),
+      window.innerWidth - width - viewportPadding,
+    );
+    const estimatedHeight = Math.min(460, window.innerHeight * 0.6);
+    const top = rect.bottom + 10 + estimatedHeight <= window.innerHeight - viewportPadding
+      ? rect.bottom + 10
+      : Math.max(viewportPadding, rect.top - estimatedHeight - 10);
+    setPreviewPosition({ left, top, width });
+    previewTimer.current = setTimeout(() => setIsPreviewOpen(true), 1200);
+  };
+
+  useEffect(() => () => clearPreviewTimer(), []);
+
+  useEffect(() => {
+    if (!isPreviewOpen) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsPreviewOpen(false);
+    };
+    window.addEventListener('keydown', handleEscape);
+    return () => window.removeEventListener('keydown', handleEscape);
+  }, [isPreviewOpen]);
 
   const handleStartEdit = () => {
+    clearPreviewTimer();
+    setIsPreviewOpen(false);
     setIsEditing(true);
     setEditedPrompt(prompt || '');
   };
@@ -101,9 +148,17 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
           </div>
         </div>
       ) : (
-        <div className={`flex-1 bg-[var(--nav-hover-bg)] border border-[var(--border-primary)] rounded-lg p-3 overflow-y-auto ${maxHeight}`}>
+        <div
+          className={`relative flex-1 bg-[var(--nav-hover-bg)] border border-[var(--border-primary)] rounded-lg p-3 overflow-y-auto ${maxHeight}`}
+          onMouseEnter={(event) => openPreviewSoon(event.currentTarget)}
+          onMouseLeave={closePreviewSoon}
+          onFocus={(event) => openPreviewSoon(event.currentTarget)}
+          onBlur={closePreviewSoon}
+          tabIndex={prompt ? 0 : -1}
+          aria-label={prompt ? text('悬停查看大号提示词预览', 'Hover to preview prompt') : undefined}
+        >
           {prompt ? (
-            <p className="text-[11px] text-[var(--text-tertiary)] leading-relaxed font-mono">
+            <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed font-mono">
               {prompt}
             </p>
           ) : (
@@ -115,6 +170,36 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
             </div>
           )}
         </div>
+      )}
+
+      {isPreviewOpen && prompt && typeof document !== 'undefined' && createPortal(
+        <div
+          className="fixed z-[100] rounded-xl border border-[var(--border-secondary)] border-t-2 border-t-[var(--accent)] bg-[var(--bg-deep)] shadow-2xl"
+          style={{ left: previewPosition.left, top: previewPosition.top, width: previewPosition.width }}
+          onMouseEnter={clearPreviewTimer}
+          onMouseLeave={closePreviewSoon}
+          role="dialog"
+          aria-label={resolvedLabel}
+        >
+          <div className="flex items-center justify-between gap-3 border-b border-[var(--border-secondary)] bg-[var(--bg-elevated)] px-4 py-2.5">
+            <span className="text-xs font-bold uppercase tracking-widest text-[var(--accent-text)]">
+              {resolvedLabel}
+            </span>
+            <button
+              type="button"
+              onClick={handleStartEdit}
+              className="rounded-md px-2.5 py-1 text-xs font-bold text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+            >
+              {text('编辑', 'Edit')}
+            </button>
+          </div>
+          <div className="max-h-[60vh] overflow-y-auto px-4 py-3">
+            <p className="whitespace-pre-wrap break-words text-sm leading-7 text-[var(--text-primary)] font-mono">
+              {prompt}
+            </p>
+          </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

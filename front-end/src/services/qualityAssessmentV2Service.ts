@@ -8,13 +8,15 @@ import { assessShotQuality } from './qualityAssessmentService';
 import { findSceneByIdCompat } from './storyboardIdUtils';
 import { getConfiguredChatModelApiName } from './modelRegistry';
 
-const QUALITY_SCHEMA_VERSION = 2;
+const QUALITY_SCHEMA_VERSION = 3;
 
 const CHECK_DEFINITIONS = [
-  { key: 'prompt-readiness', label: 'Prompt Readiness', weight: 30 },
-  { key: 'asset-coverage', label: 'Asset Coverage', weight: 20 },
-  { key: 'keyframe-execution', label: 'Keyframe Execution', weight: 30 },
-  { key: 'video-execution', label: 'Video Execution', weight: 20 },
+  { key: 'prompt-readiness', label: 'Prompt Readiness', weight: 15 },
+  { key: 'asset-coverage', label: 'Asset Coverage', weight: 10 },
+  { key: 'keyframe-execution', label: 'Keyframe Execution', weight: 10 },
+  { key: 'visual-semantics', label: 'Visual Semantics', weight: 30 },
+  { key: 'adjacent-similarity', label: 'Adjacent-shot Difference', weight: 15 },
+  { key: 'video-execution', label: 'Video Execution', weight: 10 },
   { key: 'continuity-risk', label: 'Continuity Risk', weight: 10 },
 ] as const;
 
@@ -146,6 +148,7 @@ const buildShotAssessmentContext = (shot: Shot, scriptData?: ScriptData | null) 
         promptLength: (endFrame?.visualPrompt || '').trim().length,
         promptExcerpt: truncateText(endFrame?.visualPrompt, 220),
       },
+      visualReview: (startFrame?.imageUrl ? startFrame : endFrame)?.visualReview || null,
     },
     interval: shot.interval
       ? {
@@ -178,12 +181,14 @@ const buildPrompt = (shot: Shot, scriptData?: ScriptData | null): string => {
     '    {"key":"prompt-readiness","score":0-100,"passed":true/false,"details":"中文说明"},',
     '    {"key":"asset-coverage","score":0-100,"passed":true/false,"details":"中文说明"},',
     '    {"key":"keyframe-execution","score":0-100,"passed":true/false,"details":"中文说明"},',
+    '    {"key":"visual-semantics","score":0-100,"passed":true/false,"details":"构图、人物、道具、场景和运动空间的画面审核结果"},',
+    '    {"key":"adjacent-similarity","score":0-100,"passed":true/false,"details":"相邻镜头是否有足够视觉与叙事差异"},',
     '    {"key":"video-execution","score":0-100,"passed":true/false,"details":"中文说明"},',
     '    {"key":"continuity-risk","score":0-100,"passed":true/false,"details":"中文说明"}',
     '  ]',
     '}',
     '',
-    `要求：checks 必须且只能包含这 5 个 key，顺序不限：${checks}`,
+    `要求：checks 必须且只能包含这 7 个 key，顺序不限：${checks}`,
     '要求：details 必须说明“评分依据 + 风险点 + 建议动作”，中文输出，2-4句。',
     '要求：信息不足时要明确写“信息不足”，并保守给分。',
     '禁止输出 markdown、代码块、额外字段说明。',
@@ -232,12 +237,49 @@ const fallbackAssessment = (
   };
 };
 
-const resolveAssessment = (parsed: LLMRawResponse): ShotQualityAssessment => {
-  const checks = normalizeChecks(parsed.checks);
+const resolveAssessment = (parsed: LLMRawResponse, shot: Shot): ShotQualityAssessment => {
+  let checks = normalizeChecks(parsed.checks);
+  const reviewedFrame = shot.keyframes?.find((frame) => frame.type === 'start' && frame.imageUrl)
+    || shot.keyframes?.find((frame) => frame.type === 'end' && frame.imageUrl);
+  const review = reviewedFrame?.visualReview;
+  const visualDetails = review
+    ? review.status === 'error'
+      ? `视觉审核失败：${review.error || '未知错误'}`
+      : review.issues.map((issue) => `${issue.severity}: ${issue.message}`).join('；') || '画面语义审核通过。'
+    : '尚未执行画面语义审核。';
+  checks = checks.map((check) => {
+    if (check.key === 'visual-semantics') {
+      return {
+        ...check,
+        score: review?.score || 0,
+        passed: Boolean(review?.passed && review.status === 'passed' && review.reviewedImageUrl === reviewedFrame?.imageUrl),
+        details: truncateText(visualDetails, 420),
+      };
+    }
+    if (check.key === 'adjacent-similarity') {
+      const similarity = review?.previousShotSimilarity;
+      const duplicateIssue = review?.issues.some((issue) => issue.type === 'adjacent_similarity');
+      return {
+        ...check,
+        score: similarity === undefined ? 100 : clamp(Math.round((1 - similarity) * 160), 0, 100),
+        passed: !duplicateIssue,
+        details: similarity === undefined
+          ? '首镜或缺少上一镜头，无需相邻重复检测。'
+          : `与上一镜头感知相似度 ${Math.round(similarity * 100)}%${duplicateIssue ? '，且镜头意图不同，判定重复。' : '。'}`,
+      };
+    }
+    return check;
+  });
   const weighted = weightedScore(checks);
-  const score = toSafeScore(parsed.score, weighted);
-  const grade = isGrade(parsed.grade) ? parsed.grade : resolveGrade(score);
-  const summary = truncateText(parsed.summary, 260) || buildSummary(checks, grade);
+  const visualGatePassed = checks.find((check) => check.key === 'visual-semantics')?.passed === true
+    && checks.find((check) => check.key === 'adjacent-similarity')?.passed === true;
+  const score = visualGatePassed ? weighted : Math.min(weighted, 59);
+  const grade = visualGatePassed
+    ? (isGrade(parsed.grade) ? parsed.grade : resolveGrade(score))
+    : 'fail';
+  const summary = visualGatePassed
+    ? (truncateText(parsed.summary, 260) || buildSummary(checks, grade))
+    : buildSummary(checks, grade);
 
   return {
     version: QUALITY_SCHEMA_VERSION,
@@ -275,7 +317,7 @@ export const assessShotQualityWithLLM = async (
     );
 
     const parsed = safeJsonParse(responseText);
-    return resolveAssessment(parsed);
+    return resolveAssessment(parsed, shot);
   } catch (error: any) {
     console.warn('[quality-v2] LLM scoring failed, fallback to V1.', error);
     return fallbackAssessment(shot, scriptData, error?.message);

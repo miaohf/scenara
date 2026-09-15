@@ -24,6 +24,19 @@ from app.workers.tasks import SessionLocal, run_ai_job
 router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
 
 
+def _task_queue(job_type: str) -> str:
+    """Route ComfyUI jobs to independent execution lanes.
+
+    Non-ComfyUI/legacy jobs remain on the default queue so existing workers and
+    already-published tasks are not stranded during rollout.
+    """
+    if job_type in {"video", "comfyui_video"}:
+        return "video"
+    if job_type == "comfyui_image":
+        return "image"
+    return "celery"
+
+
 def _job_to_response(
     job: Job,
     *,
@@ -129,6 +142,7 @@ async def create_job(
     run_ai_job.apply_async(
         args=[job.id, current_user.id, body.job_type, payload],
         task_id=job.id,
+        queue=_task_queue(body.job_type),
     )
     return _job_to_response(job)
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Users, Sparkles, RefreshCw, Loader2, MapPin, Archive, X, Search, Trash2, Package, Link2 } from 'lucide-react';
 import { ProjectState, CharacterVariation, Character, Scene, Prop, AspectRatio, AssetLibraryItem, CharacterTurnaroundPanel, PropPresentationMode } from '../../types';
+import type { ImageModelParams } from '../../types/model';
 import { generateImage, generateVisualPrompts, generateArtDirection, generateCharacterTurnaroundPanels, generateCharacterTurnaroundImage, generateCharacterThreeViewImage, resolveCharacterCastingAspectRatio, applyCharacterCastingPositivePrompt, buildLookbookRegenerateVariation, listProjectPropNames, inferCharacterWardrobe, isWearableProp, normalizeCharacterWardrobeInPrompt, mergeCharacterCastingNegativePrompt, CHARACTER_IDENTITY_LOCK } from '../../services/aiService';
 import { 
   getRegionalPrefix, 
@@ -23,7 +24,7 @@ import { useAlert } from '../GlobalAlert';
 import { getAllAssetLibraryItems, saveAssetToLibrary, deleteAssetFromLibrary } from '../../services/storageService';
 import { applyLibraryItemToProject, createLibraryItemFromCharacter, createLibraryItemFromScene, createLibraryItemFromProp, cloneCharacterForProject } from '../../services/assetLibraryService';
 import { AspectRatioSelector } from '../AspectRatioSelector';
-import { getUserAspectRatio, getActiveImageModel, resolveShotGenerationModel } from '../../services/modelRegistry';
+import { getActiveImageModel, resolveShotGenerationModel } from '../../services/modelRegistry';
 import { updatePromptWithVersion } from '../../services/promptVersionService';
 import CharacterLibraryPickerModal from './CharacterLibraryPicker';
 import ProjectAssetPicker from './ProjectAssetPicker';
@@ -45,7 +46,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   const { text } = useInterfaceLanguage();
   const [batchProgress, setBatchProgress] = useState<{current: number, total: number} | null>(null);
   const [selectedCharId, setSelectedCharId] = useState<string | null>(null);
-  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ url: string; imageUrls?: string[] } | null>(null);
+  const openImagePreview = (url: string, imageUrls?: string[]) => setPreviewImage({ url, imageUrls });
   const [showLibraryModal, setShowLibraryModal] = useState(false);
   const [libraryItems, setLibraryItems] = useState<AssetLibraryItem[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
@@ -60,6 +62,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   const [showPropLibraryPicker, setShowPropLibraryPicker] = useState(false);
   const [pickerProject, setPickerProject] = useState<SeriesProject | null>(null);
   const [regeneratingPromptIds, setRegeneratingPromptIds] = useState<Set<string>>(new Set());
+  const activeImageParams = (getActiveImageModel()?.params || {}) as Partial<ImageModelParams>;
 
   const markPromptRegenerating = (id: string, active: boolean) => {
     setRegeneratingPromptIds(prev => {
@@ -184,7 +187,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
 
   // 横竖屏选择状态：优先读取当前项目，旧项目回退到模型默认配置。
   const [aspectRatio, setAspectRatioState] = useState<AspectRatio>(
-    () => project.aspectRatio || getUserAspectRatio()
+    // 项目未明确设置时，资产页的项目视频画幅默认横屏；不继承其他项目的用户偏好。
+    () => project.aspectRatio || '16:9'
   );
   
   // 包装 setAspectRatio，同时持久化到当前项目。
@@ -194,7 +198,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   };
 
   useEffect(() => {
-    setAspectRatioState(project.aspectRatio || getUserAspectRatio());
+    setAspectRatioState(project.aspectRatio || '16:9');
   }, [project.projectId, project.aspectRatio]);
   
 
@@ -441,7 +445,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         enhancedPrompt += `\n\n${buildLookbookRegenerateVariation()}`;
       }
 
-      // 生成图片（角色定妆固定竖构图；场景沿用页面比例）
+      // 资产构图与成片画幅解耦：角色定妆固定竖构图，环境场景固定横构图。
+      // 场景图是后续横向视频/镜头构图的空间锚点，不能因项目当前选择竖屏而被压成竖图。
       if (type === 'character' && characterReferenceImages.length > 0 && !shapeReferenceImage) {
         enhancedPrompt += `\n\n${CHARACTER_IDENTITY_LOCK}`;
         if (characterHasTurnaroundReference) {
@@ -457,7 +462,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       const imageUrl = await generateImage(
         enhancedPrompt,
         referenceImagesForGeneration,
-        type === 'character' ? resolveCharacterCastingAspectRatio() : aspectRatio,
+        type === 'character' ? resolveCharacterCastingAspectRatio() : '16:9',
         false,
         type === 'character' && !shapeReferenceImage ? characterHasTurnaroundReference : false,
         negativePrompt,
@@ -1270,7 +1275,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       const imageUrl = await generateImage(
         prompt,
         shapeReferenceImage ? [shapeReferenceImage] : [],
-        aspectRatio,
+        '16:9',
         false,
         false,
         negativePrompt,
@@ -1835,7 +1840,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       
       {/* Image Preview Modal */}
       <ImagePreviewModal 
-        imageUrl={previewImage} 
+        imageUrl={previewImage?.url || null}
+        imageUrls={previewImage?.imageUrls}
         onClose={() => setPreviewImage(null)} 
       />
 
@@ -1866,7 +1872,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           onDeleteVariation={handleDeleteVariation}
           onGenerateVariation={handleGenerateVariation}
           onUploadVariation={handleUploadVariationImage}
-          onImageClick={setPreviewImage}
+          onImageClick={openImagePreview}
         />
       )}
 
@@ -1882,7 +1888,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
             onUpdatePanel={handleUpdateTurnaroundPanel}
             onRegenerate={handleRegenerateTurnaround}
             onRegenerateImage={handleRegenerateTurnaroundImage}
-            onImageClick={setPreviewImage}
+          onImageClick={openImagePreview}
           />
         ) : null;
       })()}
@@ -1894,7 +1900,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
             character={threeViewChar}
             onClose={() => setThreeViewCharId(null)}
             onGenerate={handleGenerateThreeView}
-            onImageClick={setPreviewImage}
+          onImageClick={openImagePreview}
           />
         ) : null;
       })()}
@@ -2069,9 +2075,9 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
             <Archive className="w-4 h-4" />
             {text('资产库', 'Asset Library')}
           </button>
-          {/* 横竖屏选择：场景/道具；角色定妆固定竖构图 */}
+          {/* 项目视频画幅；角色定妆、场景和道具资产使用各自固定的参考构图。 */}
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-[var(--text-tertiary)] uppercase">{text('场景比例', 'SCENE RATIO')}</span>
+            <span className="text-[10px] text-[var(--text-tertiary)] uppercase">{text('项目视频比例', 'VIDEO RATIO')}</span>
             <AspectRatioSelector
               value={aspectRatio}
               onChange={setAspectRatio}
@@ -2151,13 +2157,15 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
             </div>
           </div>
 
-          <div className={GRID_LAYOUTS.cards}>
+          <div className={GRID_LAYOUTS.characterCards}>
             {project.scriptData.characters.map((char) => (
               <CharacterCard
                 key={char.id}
                 character={char}
                 isGenerating={char.status === 'generating'}
                 shapeReferenceImage={char.shapeReferenceImage}
+                referenceWorkflowName={activeImageParams.referenceWorkflowName}
+                referenceSteps={activeImageParams.referenceSteps}
                 onGenerate={() => handleRegenerateCharacterView(char)}
                 onUpload={(file) => handleUploadCharacterImage(char.id, file)}
                 onUploadShapeReference={(file) => handleUploadShapeReferenceImage('character', char.id, file)}
@@ -2168,7 +2176,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 onOpenWardrobe={() => setSelectedCharId(char.id)}
                 onOpenTurnaround={() => handleOpenCharacterView(char.id, 'turnaround')}
                 onOpenThreeView={() => handleOpenCharacterView(char.id, 'threeView')}
-                onImageClick={setPreviewImage}
+                onImageClick={openImagePreview}
                 onDelete={() => handleDeleteCharacter(char.id)}
                 onUpdateInfo={(updates) => handleUpdateCharacterInfo(char.id, updates)}
                 onAddToLibrary={() => handleAddCharacterToLibrary(char)}
@@ -2241,7 +2249,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 onPromptSave={(newPrompt) => handleSaveScenePrompt(scene.id, newPrompt)}
                 onRegeneratePrompt={() => handleRegenerateAssetPrompt('scene', scene.id)}
                 isRegeneratingPrompt={regeneratingPromptIds.has(`scene:${scene.id}`)}
-                onImageClick={setPreviewImage}
+                onImageClick={openImagePreview}
                 onDelete={() => handleDeleteScene(scene.id)}
                 onUpdateInfo={(updates) => handleUpdateSceneInfo(scene.id, updates)}
                 onAddToLibrary={() => handleAddSceneToLibrary(scene)}
@@ -2319,7 +2327,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                   onPromptSave={(newPrompt) => handleSavePropPrompt(prop.id, newPrompt)}
                   onRegeneratePrompt={() => handleRegenerateAssetPrompt('prop', prop.id)}
                   isRegeneratingPrompt={regeneratingPromptIds.has(`prop:${prop.id}`)}
-                  onImageClick={setPreviewImage}
+                onImageClick={openImagePreview}
                   onDelete={() => handleDeleteProp(prop.id)}
                   onUpdateInfo={(updates) => handleUpdatePropInfo(prop.id, updates)}
                   onAddToLibrary={() => handleAddPropToLibrary(prop)}

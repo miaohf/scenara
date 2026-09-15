@@ -32,6 +32,8 @@ export interface KeyframePreflightInput {
 export interface VideoPreflightInput {
   prompt: string;
   hasStartFrame: boolean;
+  /** FLF2V 需要首帧；R2V 等参考图工作流不需要首帧。 */
+  requiresStartFrame?: boolean;
   hasEndFrame: boolean;
   modelId: string;
   supportsEndFrame: boolean;
@@ -222,7 +224,7 @@ export const runVideoPreflight = (input: VideoPreflightInput): PromptLintResult 
   const promptLint = lintPromptText(input.prompt, { minLength: 20, maxLength: 2600 });
   const issues: PromptLintIssue[] = [...promptLint.issues, ...(input.productionIssues || [])];
 
-  if (!input.hasStartFrame) {
+  if (input.requiresStartFrame !== false && !input.hasStartFrame) {
     issues.push({
       code: 'missing-start-frame',
       severity: 'error',

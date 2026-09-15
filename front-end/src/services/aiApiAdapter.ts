@@ -34,9 +34,11 @@ export async function apiCallChat(
   const timeoutMs = options.timeout || 600000;
   const data = await apiFetch<{ content: string }>("/v1/ai/chat", {
     method: "POST",
+    signal: options.abortSignal,
     body: JSON.stringify({
       prompt: options.prompt,
       system_prompt: options.systemPrompt,
+      image_urls: options.imageUrls || [],
       model_id: model?.id,
       response_format: options.responseFormat,
       timeout: Math.min(Math.floor(timeoutMs / 1000), 600),
@@ -53,6 +55,7 @@ export async function apiCallImage(options: ImageGenerateOptions): Promise<strin
       prompt: options.prompt,
       aspect_ratio: options.aspectRatio || "16:9",
       reference_images: options.referenceImages || [],
+      reference_annotations: options.referenceAnnotations || [],
     }),
   });
   return resolveImageResult(data);
@@ -226,6 +229,9 @@ export async function listEpisodeJobs(
 
 /** 没有任何任务在跑、自己又排在队首时，才认为 Worker 可能掉线（约 2 分钟）。 */
 const STALLED_QUEUE_ATTEMPTS = 40;
+const JOB_NETWORK_RETRY_LOG_EVERY = 10;
+const JOB_MAX_POLL_ATTEMPTS_IMAGE = 2400;
+const JOB_MAX_POLL_ATTEMPTS_VIDEO = 2400;
 
 export function extractJobMedia(
   job: JobStatus,
@@ -265,16 +271,16 @@ async function waitForJobViaStream(
   }
 
   const reader = response.body.getReader();
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
   let buffer = "";
   let latest: JobStatus | undefined;
 
   const consume = (chunk: string) => {
-    const blocks = chunk.split("\n\n");
+    const blocks = chunk.split(/\r?\n\r?\n/);
     buffer = blocks.pop() || "";
     for (const block of blocks) {
       const dataLine = block
-        .split("\n")
+        .split(/\r?\n/)
         .find((line) => line.startsWith("data:"));
       if (!dataLine) continue;
       try {
@@ -300,20 +306,36 @@ async function waitForJobViaStream(
       return latest;
     }
   }
-  consume(buffer);
+  consume(buffer + decoder.decode() + "\n\n");
   if (latest) return latest;
   throw new Error("任务推送结束但没有收到状态");
 }
 
 async function pollJobResult(
   jobId: string,
-  maxAttempts = 600,
+  maxAttempts = 2400,
   onProgress?: (job: JobStatus) => void,
 ): Promise<JobStatus> {
   let stalledAttempts = 0;
+  let networkErrorStreak = 0;
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((r) => setTimeout(r, 3000));
-    const job = await fetchJob(jobId);
+    let job: JobStatus;
+    try {
+      job = await fetchJob(jobId);
+      networkErrorStreak = 0;
+    } catch (error) {
+      // 浏览器与后端短暂断开时，任务仍可能在 Celery/ComfyUI 中继续执行。
+      // 不把一次轮询失败转换为任务失败，保留轮询窗口并在恢复后继续拿状态。
+      networkErrorStreak += 1;
+      if (networkErrorStreak === 1 || networkErrorStreak % JOB_NETWORK_RETRY_LOG_EVERY === 0) {
+        console.warn(
+          `[Job ${jobId}] 状态查询暂时失败，继续重试 (${networkErrorStreak}):`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+      continue;
+    }
     onProgress?.(job);
 
     if (job.status === "running" || job.status === "pending") {
@@ -350,10 +372,14 @@ async function waitForJobResult(
   };
   let job: JobStatus;
   try {
-    job = await waitForJobViaStream(jobId, trackProgress);
+  job = await waitForJobViaStream(jobId, trackProgress);
   } catch (error) {
     console.warn("[Job] SSE 不可用，回退轮询:", error instanceof Error ? error.message : error);
-    job = await pollJobResult(jobId, kind === "image" ? 1200 : 180, trackProgress);
+    job = await pollJobResult(
+      jobId,
+      kind === "image" ? JOB_MAX_POLL_ATTEMPTS_IMAGE : JOB_MAX_POLL_ATTEMPTS_VIDEO,
+      trackProgress,
+    );
   }
 
   if (job.status === "cancelled") throw new JobCancelledError(job.error || "任务已取消");

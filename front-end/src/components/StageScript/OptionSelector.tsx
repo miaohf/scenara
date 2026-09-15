@@ -56,10 +56,6 @@ const OptionSelector: React.FC<Props> = ({
   const activePreviewOption = selectedPreviewOption || (isPreviewingOther ? null : valuePreviewOption);
   const hasAnyPreview = options.some((item) => !!item.previewImage);
   const showPreviewImage = !!activePreviewOption?.previewImage && !previewFailed;
-  const appliedOption = useMemo(
-    () => options.find((item) => item.value === value) || null,
-    [options, value]
-  );
 
   useEffect(() => {
     setPreviewValue(value);
@@ -81,11 +77,6 @@ const OptionSelector: React.FC<Props> = ({
       <label className={`${STYLES.label} flex items-center gap-2`}>
         {icon}
         {label}
-        {previewOnly && appliedOption && (
-          <span className="ml-auto rounded bg-[var(--accent-bg-hover)] px-1.5 py-0.5 text-[9px] font-semibold normal-case tracking-normal text-[var(--text-primary)]">
-            当前 {appliedOption.label}
-          </span>
-        )}
       </label>
       <div className={`grid grid-cols-${gridCols} gap-2`}>
         {options.map((opt) => (
@@ -103,9 +94,9 @@ const OptionSelector: React.FC<Props> = ({
           >
             <span className="block">{opt.label}</span>
             {previewOnly && value === opt.value ? (
-              <span className="mt-0.5 block text-[9px] font-normal opacity-80">当前项目</span>
+              <span className="mt-0.5 block text-[9px] font-normal opacity-80">当前</span>
             ) : previewOnly && previewValue === opt.value ? (
-              <span className="mt-0.5 block text-[9px] font-normal opacity-80">仅预览</span>
+              <span className="mt-0.5 block text-[9px] font-normal opacity-80">预览</span>
             ) : null}
           </button>
         ))}
@@ -113,33 +104,24 @@ const OptionSelector: React.FC<Props> = ({
       {hasAnyPreview && (
         <div className="min-h-[156px] overflow-hidden rounded-lg border border-[var(--border-primary)] bg-[var(--bg-surface)]">
           {showPreviewImage && activePreviewOption?.previewImage ? (
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setIsPreviewOpen(true)}
-                className="group relative block w-full"
-                title="点击放大"
-              >
-                <img
-                  src={activePreviewOption.previewImage}
-                  alt={`${activePreviewOption.label} reference`}
-                  className="h-[156px] w-full object-cover"
-                  loading="lazy"
-                  onError={() => setPreviewFailed(true)}
-                />
-                <div className="absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/12" />
-                <div className="absolute right-2 top-2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
-                  点击放大
-                </div>
-                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/65 to-transparent px-2 py-1.5">
-                  <p className="text-[10px] font-semibold text-white">
-                    {previewOnly && isPreviewingOther
-                      ? `预览 · ${activePreviewOption.label}（未应用）`
-                      : `当前 · ${activePreviewOption.label}`}
-                  </p>
-                </div>
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setIsPreviewOpen(true)}
+              className="group relative block w-full"
+              aria-label={`放大查看 ${activePreviewOption.label} 参考图`}
+            >
+              <img
+                src={activePreviewOption.previewImage}
+                alt={`${activePreviewOption.label} reference`}
+                className="h-[156px] w-full object-cover"
+                loading="lazy"
+                onError={() => setPreviewFailed(true)}
+              />
+              <div className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/12" />
+              <div className="pointer-events-none absolute right-2 top-2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
+                点击放大
+              </div>
+            </button>
           ) : (
             <div className="flex h-[156px] items-center justify-center px-3 text-center text-[10px] text-[var(--text-muted)]">
               点击风格按钮可查看参考图
@@ -150,8 +132,8 @@ const OptionSelector: React.FC<Props> = ({
       {previewOnly && (
         <p className="text-[10px] leading-relaxed text-[var(--text-muted)]">
           {isPreviewingOther
-            ? `正在预览「${options.find((item) => item.value === previewValue)?.label || previewValue}」，当前项目风格仍为「${appliedOption?.label || value}」。点击「生成分镜脚本」后才会切换。`
-            : `当前项目风格是「${appliedOption?.label || value}」。点击其他风格只换参考图，点「生成分镜脚本」后才会写入分镜。`}
+            ? '切换风格仅预览参考图，点「生成分镜脚本」后才会写入分镜。'
+            : '点击其他风格可预览参考图；生成分镜脚本时才会写入。'}
         </p>
       )}
 

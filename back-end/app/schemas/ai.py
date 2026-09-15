@@ -15,6 +15,7 @@ class SettingsUpdate(BaseModel):
 class ChatRequest(BaseModel):
     prompt: str
     system_prompt: str | None = None
+    image_urls: list[str] = Field(default_factory=list)
     model_id: str | None = None
     response_format: str | None = None  # "json" | None
     timeout: int = 600
@@ -29,6 +30,7 @@ class ImageRequest(BaseModel):
     model_id: str | None = None
     aspect_ratio: str = "16:9"
     reference_images: list[str] = Field(default_factory=list)
+    reference_annotations: list[str] = Field(default_factory=list)
 
 
 class ImageResponse(BaseModel):
@@ -44,10 +46,10 @@ class ComfyImageRequest(BaseModel):
     negative_prompt: str | None = None
     model_id: str | None = None
     aspect_ratio: str = "16:9"
+    reference_images: list[str] = Field(default_factory=list)
     continuity_reference_image: str | None = None
     character_reference_image: str | None = None
     img2img_denoise: float | None = None
-    seed: int | None = None
     steps: int | None = None
     workflow_name: str | None = None
 
@@ -57,9 +59,15 @@ class ComfyVideoRequest(BaseModel):
     model_id: str | None = None
     aspect_ratio: str = "16:9"
     duration: float = 5
-    start_image: str
+    start_image: str | None = None
     end_image: str | None = None
+    reference_images: list[str] = Field(default_factory=list)
+    reference_videos: list[str] = Field(default_factory=list)
+    reference_audios: list[str] = Field(default_factory=list)
     audio_url: str | None = None
+    seed: int | None = None
+    steps: int | None = None
+    workflow_name: str | None = None
 
 
 class VideoResponse(BaseModel):

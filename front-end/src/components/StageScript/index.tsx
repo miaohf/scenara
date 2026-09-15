@@ -1,14 +1,14 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { ProjectState, ScriptData, ScriptGenerationCheckpoint, ScriptGenerationStep, Shot } from '../../types';
 import { useAlert } from '../GlobalAlert';
 import {
   parseScriptStructure,
+  developScriptForProduction,
   enrichScriptDataVisuals,
   generateShotList,
   continueScript,
   continueScriptStream,
-  rewriteScript,
-  rewriteScriptStream,
+  runScriptRewriteAgent,
   rewriteScriptSegment,
   rewriteScriptSegmentStream,
   setScriptLogCallback,
@@ -25,10 +25,17 @@ import ConfigPanel from './ConfigPanel';
 import ScriptEditor from './ScriptEditor';
 import SceneBreakdown from './SceneBreakdown';
 import AssetMatchDialog from './AssetMatchDialog';
+import AgentActivityPanel from './AgentActivityPanel';
+import type {
+  AgentTraceEntryStatus,
+  AgentTraceRunStatus,
+  AgentTraceSession,
+} from './AgentActivityPanel';
 import { findAssetMatches, applyAssetMatches, AssetMatchResult } from '../../services/assetMatchService';
-import { loadSeriesProject } from '../../services/storageService';
+import { loadSeriesProject, saveEpisodePartial } from '../../services/storageService';
 import { resolvePromptTemplateConfig } from '../../services/promptTemplateService';
 import { updatePromptWithVersion } from '../../services/promptVersionService';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 import {
   filterBySceneIdCompat,
   getNextMainShotId,
@@ -49,7 +56,62 @@ interface Props {
 type TabMode = 'story' | 'script';
 type AnalyzeRunStep = ScriptGenerationStep | 'done';
 
+const inferTracePhase = (message: string): string => {
+  if (/编剧 Agent/i.test(message)) return '编剧 Agent';
+  if (/导演 Agent/i.test(message)) return '导演 Agent';
+  if (/审片 Agent|质量校验|自动修复/i.test(message)) return '审片 Agent';
+  if (/视觉|美术|角色|场景|道具/i.test(message)) return '视觉 Agent';
+  if (/分镜/i.test(message)) return '分镜 Agent';
+  if (/解析|结构/i.test(message)) return '结构 Agent';
+  if (/模型|风格|配置/i.test(message)) return '运行配置';
+  return 'Agent 工作流';
+};
+
+const inferTraceStatus = (message: string): AgentTraceEntryStatus => {
+  if (/失败|错误/i.test(message)) return 'error';
+  if (/降级|兜底|警告|取消|缺失/i.test(message)) return 'warning';
+  if (/完成|已锁定|已复用|跳过|命中/i.test(message)) return 'success';
+  if (/正在|开始|启动|生成中/i.test(message)) return 'running';
+  return 'info';
+};
+
+const summarizeCreativeDevelopment = (scriptData: ScriptData): string => {
+  const development = scriptData.creativeDevelopment;
+  if (!development) return '未返回独立创作意图，后续流程将使用结构化剧本继续。';
+  return [
+    development.hook ? `钩子：${development.hook}` : '',
+    development.centralConflict ? `核心冲突：${development.centralConflict}` : '',
+    development.climax ? `高潮：${development.climax}` : '',
+    development.payoff ? `结尾回报：${development.payoff}` : '',
+  ].filter(Boolean).join('\n').slice(0, 1200);
+};
+
+const summarizeRewriteValidation = (
+  originalScript: string,
+  rewrittenScript: string,
+  hardLimit: number,
+): { status: AgentTraceEntryStatus; message: string; detail: string } => {
+  const originalScenes = (originalScript.match(/^#{1,3}\s+.+$/gm) || []).length;
+  const rewrittenScenes = (rewrittenScript.match(/^#{1,3}\s+.+$/gm) || []).length;
+  const warnings: string[] = [];
+  if (rewrittenScript.length > hardLimit) warnings.push('输出超过单集字符上限');
+  if (rewrittenScript.includes('\uFFFD')) warnings.push('输出包含 Unicode 替换字符（乱码）');
+  if (originalScenes > 0 && rewrittenScenes === 0) warnings.push('未检测到原有 Markdown 场次标题');
+  if (rewrittenScript.length < Math.max(80, originalScript.length * 0.25)) warnings.push('输出长度明显短于原稿');
+
+  return {
+    status: warnings.length > 0 ? 'warning' : 'success',
+    message: warnings.length > 0 ? '基础完整性检查发现需注意项' : '基础完整性检查通过',
+    detail: [
+      `原稿 ${originalScript.length} 字 → 改写 ${rewrittenScript.length} 字`,
+      `结构标题 ${originalScenes} → ${rewrittenScenes}`,
+      warnings.length > 0 ? `注意：${warnings.join('；')}` : '非空、长度和剧本结构格式检查正常',
+    ].join('\n'),
+  };
+};
+
 const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfig, onGeneratingChange }) => {
+  const { text } = useInterfaceLanguage();
   const { showAlert } = useAlert();
   const promptTemplates = useMemo(
     () => resolvePromptTemplateConfig(project.promptTemplateOverrides),
@@ -80,7 +142,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     enableQualityCheck: boolean;
   }): string => {
     const raw = JSON.stringify(input);
-    return `v1-${hashRaw(raw)}`;
+    return `v2-${hashRaw(raw)}`;
   };
 
   const buildStepKey = (step: ScriptGenerationStep, payload: Record<string, unknown>): string => {
@@ -331,6 +393,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   const [error, setError] = useState<string | null>(null);
   const [processingMessage, setProcessingMessage] = useState('');
   const [processingLogs, setProcessingLogs] = useState<string[]>([]);
+  const [agentTraceSession, setAgentTraceSession] = useState<AgentTraceSession | null>(null);
 
   // Asset match state
   const [pendingParseResult, setPendingParseResult] = useState<{
@@ -351,6 +414,64 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   const [editingShotDialogueText, setEditingShotDialogueText] = useState('');
   const [lastRewriteSnapshot, setLastRewriteSnapshot] = useState<string | null>(null);
   const analyzeAbortControllerRef = useRef<AbortController | null>(null);
+  const rewriteAbortControllerRef = useRef<AbortController | null>(null);
+  const agentTraceCounterRef = useRef(0);
+
+  const startAgentTrace = useCallback((title: string, subtitle?: string) => {
+    const startedAt = Date.now();
+    agentTraceCounterRef.current += 1;
+    setAgentTraceSession({
+      id: `agent-trace-${startedAt}-${agentTraceCounterRef.current}`,
+      title,
+      subtitle,
+      status: 'running',
+      startedAt,
+      entries: [],
+    });
+  }, []);
+
+  const appendAgentTrace = useCallback((
+    phase: string,
+    message: string,
+    status: AgentTraceEntryStatus = 'info',
+    detail?: string,
+    stableId?: string,
+  ) => {
+    const timestamp = Date.now();
+    agentTraceCounterRef.current += 1;
+    const id = stableId || `agent-entry-${timestamp}-${agentTraceCounterRef.current}`;
+    setAgentTraceSession((session) => {
+      if (!session) return session;
+      const existingIndex = stableId
+        ? session.entries.findIndex((entry) => entry.id === stableId)
+        : -1;
+      const entry = { id, phase, message, status, detail, timestamp };
+      const entries = existingIndex >= 0
+        ? [...session.entries.filter((current) => current.id !== stableId), entry].slice(-120)
+        : [...session.entries, entry].slice(-120);
+      return { ...session, entries };
+    });
+  }, []);
+
+  const finishAgentTrace = useCallback((status: AgentTraceRunStatus) => {
+    const completedAt = Date.now();
+    setAgentTraceSession((session) => {
+      if (!session) return session;
+      const entryStatus: AgentTraceEntryStatus = status === 'error'
+        ? 'error'
+        : status === 'cancelled'
+          ? 'warning'
+          : 'success';
+      return {
+        ...session,
+        status,
+        completedAt: status === 'waiting' ? undefined : completedAt,
+        entries: session.entries.map((entry) => (
+          entry.status === 'running' ? { ...entry, status: entryStatus } : entry
+        )),
+      };
+    });
+  }, []);
 
   useEffect(() => {
     setLocalScript(project.rawScript);
@@ -365,6 +486,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     setSelectionRange(null);
     setLastRewriteSnapshot(null);
     setIsInferringVisualStyle(false);
+    setAgentTraceSession(null);
   }, [project.id]);
 
   // 上报生成状态给父组件，用于导航锁定
@@ -377,6 +499,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   useEffect(() => {
     return () => {
       analyzeAbortControllerRef.current?.abort();
+      rewriteAbortControllerRef.current?.abort();
       onGeneratingChange?.(false);
     };
   }, []);
@@ -385,12 +508,17 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     setScriptLogCallback((message) => {
       setProcessingLogs(prev => {
         const next = [...prev, message];
-        return next.slice(-8);
+        return next.slice(-30);
       });
+      appendAgentTrace(
+        inferTracePhase(message),
+        message,
+        inferTraceStatus(message),
+      );
     });
 
     return () => clearScriptLogCallback();
-  }, []);
+  }, [appendAgentTrace]);
 
   useEffect(() => {
     if (isProcessing || isContinuing || isRewriting) return;
@@ -489,7 +617,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     let artDirection = project.scriptData.artDirection;
 
     setIsProcessing(true);
-    setProcessingMessage('正在按新风格重新生成资产提示词...');
+    setProcessingMessage(text('正在按新风格生成资产提示词…', 'Generating asset prompts for the new style…'));
     setError(null);
 
     try {
@@ -738,8 +866,14 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       script: localScript,
       language: localLanguage
     });
-    const visualsKey = buildStepKey('visuals', {
+    const developmentKey = buildStepKey('development', {
       structureKey,
+      model: finalModel,
+      targetDuration: finalDuration,
+      language: localLanguage
+    });
+    const visualsKey = buildStepKey('visuals', {
+      developmentKey,
       language: localLanguage,
       model: finalModel,
       visualStyle: finalVisualStyle
@@ -779,6 +913,8 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
         nextStep = 'structure';
       } else if (meta.structureKey !== structureKey) {
         nextStep = 'structure';
+      } else if (meta.developmentKey !== developmentKey) {
+        nextStep = 'development';
       } else if (meta.visualsKey !== visualsKey) {
         nextStep = 'visuals';
       } else if (meta.shotsKey !== shotsKey || previousShots.length === 0) {
@@ -798,6 +934,9 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     if (nextStep === 'done') {
       setError(null);
       setProcessingLogs([]);
+      startAgentTrace('分镜 Agent 工作流', `${finalModel} · ${finalDuration} · ${getStyleOptionLabel(finalVisualStyle)}`);
+      appendAgentTrace('断点检查', '配置未变化，已复用现有分镜结果。', 'success');
+      finishAgentTrace('completed');
       logScriptProgress('配置未变化，已复用现有分镜结果。');
       showAlert('未检测到变更，已复用现有分镜结果。', { type: 'success' });
       setActiveTab('script');
@@ -813,6 +952,12 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     const controller = new AbortController();
     analyzeAbortControllerRef.current = controller;
 
+    setIsProcessing(true);
+    setProcessingMessage(text('正在准备生成流程…', 'Preparing generation…'));
+    setProcessingLogs([]);
+    setError(null);
+    startAgentTrace('分镜 Agent 工作流', `${finalModel} · ${finalDuration} · ${getStyleOptionLabel(finalVisualStyle)}`);
+
     console.log('📌 用户选择的模型:', localModel);
     console.log('📌 最终使用的模型:', finalModel);
     console.log('🎨 视觉风格:', finalVisualStyle);
@@ -823,13 +968,27 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       logScriptProgress(`检测到断点，将从 ${resumeCheckpoint.step} 步骤继续`);
     }
 
-    setIsProcessing(true);
-    setProcessingMessage('正在准备生成流程...');
-    setProcessingLogs([]);
-    setError(null);
+    // 分镜仍由前端编排，但每个阶段/场景都立即写入服务端。
+    // 这样 Fast Refresh 或页面重新挂载最多只会中断当前请求，不会丢掉已完成结果。
+    let generationPersistQueue: Promise<void> = Promise.resolve();
+    const persistGenerationState = (updates: Partial<ProjectState>): Promise<void> => {
+      updateProject(updates);
+      const changedKeys = Object.keys(updates) as (keyof ProjectState)[];
+      const snapshot: ProjectState = { ...project, ...updates };
+      generationPersistQueue = generationPersistQueue
+        .catch(() => undefined)
+        .then(async () => {
+          try {
+            await saveEpisodePartial(snapshot, changedKeys);
+          } catch (error) {
+            console.warn('保存分镜生成断点失败，将由自动保存再次尝试。', error);
+          }
+        });
+      return generationPersistQueue;
+    };
 
     try {
-      updateProject({
+      await persistGenerationState({
         title: localTitle,
         rawScript: localScript,
         targetDuration: finalDuration,
@@ -841,7 +1000,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       });
 
       if (nextStep === 'structure' || !workingScriptData) {
-        setProcessingMessage('正在解析剧本结构...');
+        setProcessingMessage(text('正在解析剧本结构…', 'Parsing script structure…'));
         logScriptProgress('开始解析剧本结构...');
         const structured = await parseScriptStructure(
           localScript,
@@ -863,9 +1022,51 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           previousScriptData.shotGenerationModel === finalModel;
         workingScriptData = reuseVisualDataFromPrevious(hydrated, previousScriptData, canReuseVisualData);
         workingScriptData = attachGenerationMeta(workingScriptData, { structureKey });
+        appendAgentTrace(
+          '结构 Agent',
+          '剧本结构解析完成',
+          'success',
+          `识别角色 ${workingScriptData.characters.length} 个 · 场景 ${workingScriptData.scenes.length} 个 · 道具 ${workingScriptData.props.length} 个`,
+        );
         shouldGenerateOnlyMissingVisuals = canReuseVisualData;
+        nextStep = 'development';
+        await persistGenerationState({
+          scriptData: workingScriptData,
+          isParsingScript: true,
+          scriptGenerationCheckpoint: createAnalyzeCheckpoint(nextStep, analyzeConfigKey, workingScriptData)
+        });
+      }
+
+      if (nextStep === 'development') {
+        setProcessingMessage(text('编剧 Agent 正在深化剧情、角色表演与场景转折…', 'Writer agent is deepening plot, performances, and story turns…'));
+        logScriptProgress('启动编剧 Agent 创作开发阶段...');
+        const developed = await developScriptForProduction(
+          workingScriptData!,
+          finalModel,
+          controller.signal
+        );
+        workingScriptData = attachGenerationMeta(
+          hydrateScriptDataMeta(developed, {
+            targetDuration: finalDuration,
+            language: localLanguage,
+            visualStyle: finalVisualStyle,
+            model: finalModel,
+            localTitle
+          }),
+          { structureKey, developmentKey }
+        );
+        appendAgentTrace(
+          '编剧 Agent',
+          workingScriptData.creativeDevelopment?.status === 'generated'
+            ? '全片创作意图与角色表演方向已锁定'
+            : '创作开发已使用可追踪兜底方案完成',
+          workingScriptData.creativeDevelopment?.status === 'generated' ? 'success' : 'warning',
+          summarizeCreativeDevelopment(workingScriptData),
+        );
+        shouldGenerateOnlyMissingVisuals = false;
+        reuseUnchangedScenes = false;
         nextStep = 'visuals';
-        updateProject({
+        await persistGenerationState({
           scriptData: workingScriptData,
           isParsingScript: true,
           scriptGenerationCheckpoint: createAnalyzeCheckpoint(nextStep, analyzeConfigKey, workingScriptData)
@@ -874,7 +1075,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
 
       if (nextStep === 'visuals') {
         const visualPassMode = shouldGenerateOnlyMissingVisuals ? '增量补全' : '全量重建';
-        setProcessingMessage(`正在生成角色/场景/道具视觉提示词（${visualPassMode}）...`);
+        setProcessingMessage(text(`正在生成角色/场景/道具视觉提示词（${visualPassMode}）…`, `Generating visual prompts for characters, locations, and props (${visualPassMode === '增量补全' ? 'incremental' : 'full'})…`));
         logScriptProgress(`开始生成视觉提示词（${visualPassMode}）...`);
         if (!shouldGenerateOnlyMissingVisuals) {
           reuseUnchangedScenes = false;
@@ -896,18 +1097,47 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           model: finalModel,
           localTitle
         });
-        workingScriptData = attachGenerationMeta(hydrated, { structureKey, visualsKey });
+        workingScriptData = attachGenerationMeta(hydrated, { structureKey, developmentKey, visualsKey });
+        appendAgentTrace(
+          '视觉 Agent',
+          `视觉提示词${visualPassMode === '增量补全' ? '补全' : '生成'}完成`,
+          'success',
+          `角色 ${workingScriptData.characters.length} 个 · 场景 ${workingScriptData.scenes.length} 个 · 道具 ${workingScriptData.props.length} 个`,
+        );
         nextStep = 'shots';
-        updateProject({
+        await persistGenerationState({
           scriptData: workingScriptData,
           isParsingScript: true,
           scriptGenerationCheckpoint: createAnalyzeCheckpoint(nextStep, analyzeConfigKey, workingScriptData)
         });
       } else {
-        workingScriptData = attachGenerationMeta(workingScriptData!, { structureKey, visualsKey });
+        workingScriptData = attachGenerationMeta(workingScriptData!, { structureKey, developmentKey, visualsKey });
       }
 
-      setProcessingMessage('正在生成分镜...');
+      setProcessingMessage(text('正在生成分镜…', 'Generating storyboard shots…'));
+      const isResumingShots = resumeCheckpoint?.step === 'shots';
+      // 新一轮生成先清空旧镜头；否则刷新后会把“尚未处理的旧镜头”误判为本次已完成结果。
+      // 只有明确处于 shots 断点时，才把数据库里的镜头当作可恢复的已完成场景。
+      const resumableShots = isResumingShots ? previousShots : [];
+      const partialShotsByScene = new Map<string, Shot[]>();
+      for (const scene of workingScriptData!.scenes) {
+        const completedForScene = filterBySceneIdCompat(resumableShots, scene.id);
+        if (completedForScene.length > 0) {
+          partialShotsByScene.set(String(scene.id), completedForScene);
+        }
+      }
+      const getOrderedPartialShots = (): Shot[] =>
+        workingScriptData!.scenes.flatMap((scene) => partialShotsByScene.get(String(scene.id)) || []);
+
+      if (!isResumingShots) {
+        await persistGenerationState({
+          scriptData: workingScriptData!,
+          shots: [],
+          isParsingScript: true,
+          scriptGenerationCheckpoint: createAnalyzeCheckpoint('shots', analyzeConfigKey, workingScriptData)
+        });
+      }
+
       logScriptProgress(
         reuseUnchangedScenes
           ? '开始生成分镜（启用未变场景复用）...'
@@ -921,6 +1151,20 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
         reuseUnchangedScenes,
         enableQualityCheck,
         promptTemplates,
+        onSceneComplete: async ({ scene, shots: completedShots, mode }) => {
+          const targetScene = workingScriptData!.scenes.find((candidate) =>
+            sceneIdsMatch(candidate.id, scene.id)
+          );
+          partialShotsByScene.set(String(targetScene?.id || scene.id), completedShots);
+          const partialShots = getOrderedPartialShots();
+          await persistGenerationState({
+            scriptData: workingScriptData!,
+            shots: partialShots,
+            isParsingScript: true,
+            scriptGenerationCheckpoint: createAnalyzeCheckpoint('shots', analyzeConfigKey, workingScriptData)
+          });
+          logScriptProgress(`已保存场景 ${scene.location || '未命名场景'} 的 ${completedShots.length} 条${mode === 'reused' ? '复用' : ''}分镜断点。`);
+        },
       });
       workingScriptData = attachGenerationMeta(
         hydrateScriptDataMeta(workingScriptData!, {
@@ -930,7 +1174,18 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           model: finalModel,
           localTitle
         }),
-        { structureKey, visualsKey, shotsKey }
+        { structureKey, developmentKey, visualsKey, shotsKey }
+      );
+      const reviewedShots = shots.filter((shot) => !!shot.agent?.semanticReview);
+      const repairedShots = reviewedShots.filter((shot) => shot.agent?.semanticReview?.repaired);
+      const warningShots = reviewedShots.filter((shot) => shot.agent?.semanticReview?.verdict !== 'pass');
+      appendAgentTrace(
+        '审片 Agent',
+        `分镜生成与审查完成，共 ${shots.length} 镜`,
+        warningShots.length > 0 ? 'warning' : 'success',
+        enableQualityCheck
+          ? `已审查 ${reviewedShots.length} 镜 · 自动修复 ${repairedShots.length} 镜 · 仍需注意 ${warningShots.length} 镜`
+          : '质量校验已关闭，仅完成分镜生成',
       );
 
       if (project.projectId) {
@@ -951,6 +1206,8 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
               });
               setIsProcessing(false);
               setProcessingMessage('');
+              appendAgentTrace('资产匹配', '检测到可复用资产，等待用户确认匹配结果。', 'info');
+              finishAgentTrace('waiting');
               return;
             }
           }
@@ -960,7 +1217,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       }
 
       const rebuiltRefs = rebuildAssetRefsFromScriptData(workingScriptData!);
-      updateProject({
+      await persistGenerationState({
         scriptData: workingScriptData!,
         shots,
         characterRefs: rebuiltRefs.characterRefs,
@@ -971,16 +1228,22 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
         scriptGenerationCheckpoint: null
       });
 
+      appendAgentTrace('Agent 工作流', '结构、创作开发、视觉提示词和分镜已写入项目。', 'success');
+      finishAgentTrace(workingScriptData.storyboardAgentRun?.status === 'degraded' ? 'warning' : 'completed');
       setActiveTab('script');
     } catch (err: any) {
       console.error(err);
       if (isAbortError(err, controller.signal)) {
         setError('已取消生成，可点击“继续生成分镜脚本”从断点继续。');
         logScriptProgress('生成已取消，可点击继续按钮从断点续跑。');
+        appendAgentTrace('Agent 工作流', '生成已取消，当前断点已经保留。', 'warning');
+        finishAgentTrace('cancelled');
       } else {
         setError(`错误: ${err.message || 'AI 连接失败'}`);
+        appendAgentTrace('Agent 工作流', '生成流程中断。', 'error', String(err.message || 'AI 连接失败'));
+        finishAgentTrace('error');
       }
-      updateProject({ isParsingScript: false });
+      await persistGenerationState({ isParsingScript: false });
     } finally {
       if (analyzeAbortControllerRef.current === controller) {
         analyzeAbortControllerRef.current = null;
@@ -993,7 +1256,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   const handleCancelAnalyze = () => {
     if (!isProcessing) return;
     analyzeAbortControllerRef.current?.abort();
-    setProcessingMessage('正在取消生成...');
+    setProcessingMessage(text('正在取消生成…', 'Cancelling generation…'));
     logScriptProgress('正在取消当前生成流程...');
   };
 
@@ -1014,6 +1277,8 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     });
 
     setPendingParseResult(null);
+    appendAgentTrace('资产匹配', '资产匹配已确认，分镜结果已写入项目。', 'success');
+    finishAgentTrace('completed');
     setActiveTab('script');
   };
 
@@ -1034,6 +1299,8 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     });
 
     setPendingParseResult(null);
+    appendAgentTrace('资产匹配', '已跳过资产匹配，保留本次新生成的资产与分镜。', 'success');
+    finishAgentTrace('completed');
     setActiveTab('script');
   };
 
@@ -1059,7 +1326,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     }
 
     setIsContinuing(true);
-    setProcessingMessage('AI续写中...');
+    setProcessingMessage(text('AI续写中…', 'AI continuation in progress…'));
     setProcessingLogs([]);
     setError(null);
     let streamed = '';
@@ -1136,6 +1403,11 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   const handleRewriteScript = async () => {
     const finalModel = getConfiguredModelForRequest();
     const baseScript = localScript;
+    const rewriteTargetDuration = getDraftValue(
+      localDuration,
+      customDurationInput,
+      project.targetDuration || DEFAULTS.duration,
+    );
     
     if (!baseScript.trim()) {
       setError("请先输入剧本内容。");
@@ -1146,33 +1418,82 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       return;
     }
 
+    rewriteAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    rewriteAbortControllerRef.current = controller;
+
     setIsRewriting(true);
-    setProcessingMessage('AI改写中...');
+    setProcessingMessage(text('策划 Agent 正在分析原稿…', 'Planning agent is analyzing the draft…'));
     setProcessingLogs([]);
     setError(null);
-    let streamed = '';
-    let wasTruncated = false;
+    startAgentTrace('多阶段剧本改写 Agent', `${finalModel} · ${baseScript.length} 字`);
+    appendAgentTrace(
+      '输入分析',
+      '已读取原稿并锁定改写约束',
+      'success',
+      `输出语言：${localLanguage}\n目标时长：${rewriteTargetDuration}\n字符上限：${SCRIPT_HARD_LIMIT}\n用户要求：${rewriteInstruction.trim() || '使用默认的结构、冲突、对白和节奏优化策略'}`,
+    );
+
+    let activeDraftStage: 'rewriting' | 'repairing' = 'rewriting';
+    let lastTraceLength = 0;
+    let lastTraceAt = 0;
+
     try {
-      const rewrittenContent = await rewriteScriptStream(
+      const result = await runScriptRewriteAgent(
         baseScript,
         localLanguage,
         finalModel,
-        (delta) => {
-          streamed += delta;
-          const safeStreamed = streamed.slice(0, SCRIPT_HARD_LIMIT);
-          if (safeStreamed.length < streamed.length) {
-            wasTruncated = true;
-          }
-          setLocalScript(safeStreamed);
-        },
         {
           maxOutputChars: SCRIPT_HARD_LIMIT,
-          instruction: rewriteInstruction.trim() || undefined
-        }
+          instruction: rewriteInstruction.trim() || undefined,
+          targetDuration: rewriteTargetDuration,
+          abortSignal: controller.signal,
+          onEvent: (event) => {
+            const phaseByStage = {
+              planning: '策划 Agent',
+              rewriting: '改写 Agent',
+              reviewing: '审稿 Agent',
+              repairing: '修稿 Agent',
+              verifying: '终稿复核 Agent',
+              completed: 'Agent 工作流',
+            } as const;
+            appendAgentTrace(
+              phaseByStage[event.stage],
+              event.title,
+              event.status,
+              event.detail,
+              event.stableId,
+            );
+            setProcessingMessage(event.title);
+            setProcessingLogs((previous) => [...previous, event.title].slice(-30));
+          },
+          onDraftUpdate: (draft, stage) => {
+            const safeDraft = draft.slice(0, SCRIPT_HARD_LIMIT);
+            setLocalScript(safeDraft);
+            const now = Date.now();
+            if (stage !== activeDraftStage) {
+              activeDraftStage = stage;
+              lastTraceLength = 0;
+              lastTraceAt = 0;
+            }
+            if (safeDraft.length - lastTraceLength >= 120 || now - lastTraceAt >= 700) {
+              lastTraceLength = safeDraft.length;
+              lastTraceAt = now;
+              appendAgentTrace(
+                stage === 'rewriting' ? '改写 Agent' : '修稿 Agent',
+                stage === 'rewriting' ? '正在流式生成完整改写稿' : '正在流式生成修订终稿',
+                'running',
+                `已接收 ${safeDraft.length} 字 · 编辑器正在同步更新`,
+                stage === 'rewriting' ? 'rewriting-draft' : 'rewrite-repair',
+              );
+            }
+          },
+        },
       );
-      const finalContent = (rewrittenContent || streamed).trim().slice(0, SCRIPT_HARD_LIMIT);
+
+      const finalContent = result.script.trim().slice(0, SCRIPT_HARD_LIMIT);
       if (!finalContent) {
-        throw new Error('AI 未返回改写内容');
+        throw new Error('改写 Agent 未返回剧本内容');
       }
       if (finalContent !== baseScript) {
         setLastRewriteSnapshot(baseScript);
@@ -1180,44 +1501,46 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       setLocalScript(finalContent);
       updateProject({ rawScript: finalContent });
       setSelectionRange(null);
-      if (wasTruncated || rewrittenContent.length > SCRIPT_HARD_LIMIT) {
-        showAlert(`改写结果已按单集上限自动截断（最大 ${SCRIPT_HARD_LIMIT} 字符）。`, { type: 'warning' });
+      const validation = summarizeRewriteValidation(baseScript, finalContent, SCRIPT_HARD_LIMIT);
+      appendAgentTrace('结果校验', validation.message, validation.status, validation.detail);
+      appendAgentTrace(
+        '项目写回',
+        'Agent 终稿已写入编辑器并自动保存，可使用“撤回”恢复原稿。',
+        'success',
+        `终审评分 ${result.review.overallScore}/100${result.repaired ? ` · 已修复 ${result.repairedIssueCount} 项` : ''}`,
+      );
+      finishAgentTrace(result.degraded || validation.status === 'warning' ? 'warning' : 'completed');
+      if (result.degraded) {
+        showAlert('多阶段改写已完成，但部分阶段使用了降级策略；详情见 Agent 执行轨迹。', { type: 'warning' });
       }
-    } catch (streamErr: any) {
-      console.error(streamErr);
-      try {
-        const rewrittenContent = await rewriteScript(
-          baseScript,
-          localLanguage,
-          finalModel,
-          {
-            maxOutputChars: SCRIPT_HARD_LIMIT,
-            instruction: rewriteInstruction.trim() || undefined
-          }
-        );
-        const safeRewrittenContent = rewrittenContent.trim().slice(0, SCRIPT_HARD_LIMIT);
-        if (!safeRewrittenContent.trim()) {
-          throw new Error('AI 未返回改写内容');
-        }
-        if (safeRewrittenContent !== baseScript) {
-          setLastRewriteSnapshot(baseScript);
-        }
-        if (safeRewrittenContent.length < rewrittenContent.length) {
-          showAlert(`改写结果已按单集上限自动截断（最大 ${SCRIPT_HARD_LIMIT} 字符）。`, { type: 'warning' });
-        }
-        setLocalScript(safeRewrittenContent);
-        updateProject({ rawScript: safeRewrittenContent });
-        setSelectionRange(null);
-      } catch (fallbackErr: any) {
-        console.error(fallbackErr);
-        setLocalScript(baseScript);
-        updateProject({ rawScript: baseScript });
-        setError(`AI改写失败，已恢复原稿: ${fallbackErr.message || streamErr?.message || "连接失败"}`);
+    } catch (agentError: unknown) {
+      console.error(agentError);
+      setLocalScript(baseScript);
+      updateProject({ rawScript: baseScript });
+      if (isAbortError(agentError, controller.signal)) {
+        setError('已取消 AI 改写，原稿已恢复。');
+        appendAgentTrace('Agent 工作流', '改写已取消，原稿未被覆盖。', 'warning');
+        finishAgentTrace('cancelled');
+      } else {
+        const message = agentError instanceof Error ? agentError.message : '连接失败';
+        setError(`AI改写失败，已恢复原稿: ${message}`);
+        appendAgentTrace('Agent 工作流', '多阶段改写未完成，已恢复原稿。', 'error', message);
+        finishAgentTrace('error');
       }
     } finally {
+      if (rewriteAbortControllerRef.current === controller) {
+        rewriteAbortControllerRef.current = null;
+      }
       setIsRewriting(false);
       setProcessingMessage('');
     }
+  };
+
+  const handleCancelRewrite = () => {
+    if (!isRewriting) return;
+    rewriteAbortControllerRef.current?.abort();
+    setProcessingMessage(text('正在取消 AI 改写…', 'Cancelling AI rewrite…'));
+    appendAgentTrace('Agent 工作流', '正在取消当前改写任务…', 'warning');
   };
 
   const handleSelectionChange = (start: number, end: number) => {
@@ -1266,11 +1589,27 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     const suffix = baseScript.slice(currentSelection.end);
 
     setIsRewriting(true);
-    setProcessingMessage('AI选段改写中...');
+    setProcessingMessage(text('AI选段改写中…', 'Rewriting selected passage…'));
     setProcessingLogs([]);
     setError(null);
+    startAgentTrace('AI 选段改写', `${finalModel} · 已选 ${selectedSegment.length} 字`);
+    appendAgentTrace(
+      '输入分析',
+      '已锁定改写范围与前后文',
+      'success',
+      `仅替换选中片段，不改动其余内容\n改写要求：${trimmedInstruction}`,
+    );
+    appendAgentTrace(
+      '改写模型',
+      '正在流式生成选段改写',
+      'running',
+      '等待模型返回首批文本…',
+      'segment-rewrite-stream',
+    );
 
     let streamed = '';
+    let lastTraceLength = 0;
+    let lastTraceAt = 0;
 
     try {
       const rewrittenSegment = await rewriteScriptSegmentStream(
@@ -1284,6 +1623,18 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           const nextScript = prefix + streamed + suffix;
           setLocalScript(nextScript);
           updateProject({ rawScript: nextScript });
+          const now = Date.now();
+          if (streamed.length - lastTraceLength >= 80 || now - lastTraceAt >= 700) {
+            lastTraceLength = streamed.length;
+            lastTraceAt = now;
+            appendAgentTrace(
+              '改写模型',
+              '正在流式生成选段改写',
+              'running',
+              `已接收 ${streamed.length} 字 · 编辑器正在同步替换选区`,
+              'segment-rewrite-stream',
+            );
+          }
         }
       );
 
@@ -1298,9 +1649,28 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
         start: currentSelection.start,
         end: currentSelection.start + finalSegment.length,
       });
+      appendAgentTrace(
+        '改写模型',
+        '选段改写接收完毕',
+        'success',
+        `原片段 ${selectedSegment.length} 字 → 改写 ${finalSegment.length} 字`,
+        'segment-rewrite-stream',
+      );
+      const validation = summarizeRewriteValidation(selectedSegment, finalSegment, SCRIPT_HARD_LIMIT);
+      appendAgentTrace('结果校验', validation.message, validation.status, validation.detail);
+      appendAgentTrace('项目写回', '仅选中范围已替换并自动保存，可使用“撤回”恢复。', 'success');
+      finishAgentTrace(validation.status === 'warning' ? 'warning' : 'completed');
     } catch (err: any) {
       console.error(err);
       setError(`AI选段改写失败: ${err.message || '连接失败'}`);
+      appendAgentTrace(
+        '改写模型',
+        '流式生成失败，正在切换为普通请求重试',
+        'warning',
+        String(err?.message || '连接失败'),
+        'segment-rewrite-stream',
+      );
+      appendAgentTrace('恢复策略', '正在重新生成选中片段', 'running', undefined, 'segment-rewrite-fallback');
       try {
         const rewrittenSegment = await rewriteScriptSegment(
           baseScript,
@@ -1315,12 +1685,32 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
         }
         setLocalScript(nextScript);
         updateProject({ rawScript: nextScript });
+        setError(null);
         setSelectionRange({
           start: currentSelection.start,
           end: currentSelection.start + rewrittenSegment.length,
         });
+        appendAgentTrace(
+          '恢复策略',
+          '普通请求重试成功',
+          'success',
+          `原片段 ${selectedSegment.length} 字 → 改写 ${rewrittenSegment.length} 字`,
+          'segment-rewrite-fallback',
+        );
+        const validation = summarizeRewriteValidation(selectedSegment, rewrittenSegment, SCRIPT_HARD_LIMIT);
+        appendAgentTrace('结果校验', validation.message, validation.status, validation.detail);
+        appendAgentTrace('项目写回', '仅选中范围已替换并自动保存，可使用“撤回”恢复。', 'success');
+        finishAgentTrace('warning');
       } catch (fallbackErr: any) {
         console.error(fallbackErr);
+        appendAgentTrace(
+          '恢复策略',
+          '普通请求重试失败，原稿未被覆盖',
+          'error',
+          String(fallbackErr?.message || err?.message || '连接失败'),
+          'segment-rewrite-fallback',
+        );
+        finishAgentTrace('error');
       }
     } finally {
       setIsRewriting(false);
@@ -1365,6 +1755,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       : '生成分镜脚本';
 
   const showProcessingToast = isProcessing || isContinuing || isRewriting;
+  const canCancelRewrite = isRewriting && agentTraceSession?.title === '多阶段剧本改写 Agent';
   const toastMessage = processingMessage || (isProcessing
     ? '正在生成剧本...'
     : isContinuing
@@ -1645,27 +2036,28 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
             <div className="text-sm text-white">{toastMessage}</div>
           </div>
           {processingLogs.length > 0 && (
-            <div className="mt-2 max-h-40 space-y-1 overflow-auto text-xs text-zinc-300">
-              {processingLogs.map((line, index) => (
-                <div key={`${line}-${index}`} className="truncate">
-                  {line}
-                </div>
-              ))}
+            <div className="mt-2 truncate text-xs text-zinc-300">
+              {processingLogs[processingLogs.length - 1]}
             </div>
           )}
-          {isProcessing && (
+          {(isProcessing || canCancelRewrite) && (
             <div className="mt-3 flex justify-end">
               <button
                 type="button"
-                onClick={handleCancelAnalyze}
+                onClick={isProcessing ? handleCancelAnalyze : handleCancelRewrite}
                 className="rounded border border-zinc-400/60 px-2 py-1 text-[11px] text-white/90 transition-colors hover:border-white hover:text-white"
               >
-                取消生成
+                {isProcessing ? '取消生成' : '取消改写'}
               </button>
             </div>
           )}
         </div>
       )}
+      <AgentActivityPanel
+        key={agentTraceSession?.id || 'agent-trace-empty'}
+        session={agentTraceSession}
+        onClear={() => setAgentTraceSession(null)}
+      />
       {activeTab === 'story' ? (
         <div className="flex h-full bg-[var(--bg-base)] text-[var(--text-secondary)]">
           <ConfigPanel

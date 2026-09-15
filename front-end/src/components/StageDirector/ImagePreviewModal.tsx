@@ -1,5 +1,6 @@
 import React from 'react';
 import { X } from 'lucide-react';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface ImagePreviewModalProps {
   imageUrl: string | null;
@@ -8,6 +9,7 @@ interface ImagePreviewModalProps {
 }
 
 const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ imageUrl, title, onClose }) => {
+  const { text } = useInterfaceLanguage();
   if (!imageUrl) return null;
 
   return (
@@ -42,7 +44,7 @@ const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ imageUrl, title, 
       
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10">
         <div className="bg-[var(--overlay-medium)] backdrop-blur-sm px-4 py-2 rounded-full border border-[var(--overlay-border)]">
-          <p className="text-[var(--text-primary)]/60 text-xs">点击任意位置关闭</p>
+          <p className="text-[var(--text-primary)]/60 text-xs">{text('点击空白处关闭', 'Click outside to close')}</p>
         </div>
       </div>
     </div>

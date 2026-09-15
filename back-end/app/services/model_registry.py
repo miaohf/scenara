@@ -19,8 +19,11 @@ INVALID_CHAT_PROVIDER_IDS = frozenset({"comfyui-local"})
 DEPRECATED_PROVIDER_IDS = frozenset({"ollama-local"})
 
 # 代码内置默认工作流名（不含 .json）；账号/前端已填写则不覆盖
-DEFAULT_IMAGE_WORKFLOW_NAME = "default_image_generate"
+DEFAULT_IMAGE_WORKFLOW_NAME = "image_qwen_image_2512"
 DEFAULT_VIDEO_WORKFLOW_NAME = "default_video_generate"
+MINIMAX_H3_R2V_WORKFLOW_NAME = "MiniMax_H3_Ref2VA_High-Quality_Multi-Reference.json"
+NANO_BANANA_T2I_WORKFLOW_NAME = "api_google_nano_banana2_text_to_image.json"
+NANO_BANANA_EDIT_WORKFLOW_NAME = "api_google_nano_banana2_image_edit.json"
 
 
 def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
@@ -85,7 +88,7 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
             "name": "ComfyUI FLUX.2 Klein 9B (本地)",
             "type": "image",
             "providerId": "comfyui-local",
-            "description": "默认定妆：FLUX.2 Klein 9B T2I；关键帧：FLUX.2 Klein 9B Image Edit（最多 4 张参考）；造型九宫格：Qwen Edit turnaround",
+            "description": "默认定妆：Qwen Image 2512 T2I；带参考图定妆：Qwen Image Edit 2511（最多 3 张）；关键帧：FLUX.2 Klein 9B Image Edit（最多 4 张参考）；造型九宫格：Qwen Edit turnaround",
             "isBuiltIn": True,
             "isEnabled": True,
             "params": {
@@ -94,6 +97,8 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
                 "apiFormat": "comfyui",
                 "workflowName": DEFAULT_IMAGE_WORKFLOW_NAME,
                 "steps": 20,
+                "referenceWorkflowName": "image_qwen_image_edit_2511_20260908",
+                "referenceSteps": 40,
                 "keyframeWorkflowName": "image_flux2_klein_image_edit_9b_base",
                 "keyframeSteps": 20,
                 "turnaroundWorkflowName": "qwen_image_edit_2511_fp8_character_turnaround",
@@ -106,7 +111,7 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
             "name": "ComfyUI Flux Dev1 FP8 (本地·备用)",
             "type": "image",
             "providerId": "comfyui-local",
-            "description": "Flux1-Dev FP8 文生图（定妆）；关键帧走 Qwen Image Edit 2511；九宫格走 Qwen Edit turnaround",
+            "description": "Qwen Image 2512 文生图（定妆）；带参考图与关键帧走 Qwen Image Edit 2511；九宫格走 Qwen Edit turnaround",
             "isBuiltIn": True,
             "isEnabled": False,
             "params": {
@@ -115,6 +120,8 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
                 "apiFormat": "comfyui",
                 "workflowName": DEFAULT_IMAGE_WORKFLOW_NAME,
                 "steps": 20,
+                "referenceWorkflowName": "image_qwen_image_edit_2511_20260908",
+                "referenceSteps": 40,
                 "keyframeWorkflowName": "image_qwen_image_edit_2511_20260908",
                 "keyframeSteps": 40,
                 "turnaroundWorkflowName": "qwen_image_edit_2511_fp8_character_turnaround",
@@ -144,6 +151,24 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
             },
         },
         {
+            "id": "comfyui-nano-banana-2",
+            "apiModel": "nano-banana-2",
+            "name": "ComfyUI Nano Banana 2（本地）",
+            "type": "image",
+            "providerId": "comfyui-local",
+            "description": "Nano Banana 2 文生图与参考图编辑；角色定妆、场景、道具及分镜参考修改",
+            "isBuiltIn": True,
+            "isEnabled": True,
+            "params": {
+                "defaultAspectRatio": "16:9",
+                "supportedAspectRatios": ["16:9", "9:16", "1:1"],
+                "apiFormat": "comfyui",
+                "workflowName": NANO_BANANA_T2I_WORKFLOW_NAME,
+                "referenceWorkflowName": NANO_BANANA_EDIT_WORKFLOW_NAME,
+                "referenceSteps": 1,
+            },
+        },
+        {
             "id": "comfyui-minimax-h3-r2v",
             "apiModel": "video_minimax_h3_r2v",
             "name": "ComfyUI MiniMax H3 Ref2VA（本地）",
@@ -158,7 +183,7 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
                 "supportedAspectRatios": ["16:9", "9:16", "1:1"],
                 "defaultDuration": 5,
                 "supportedDurations": [5, 10, 15],
-                "workflowName": "video_minimax_h3_r2v",
+                "workflowName": MINIMAX_H3_R2V_WORKFLOW_NAME,
                 "steps": 4,
                 "supportsEndFrame": False,
                 "supportsAudio": False,
@@ -369,15 +394,44 @@ def sanitize_registry(
             changed = True
             continue
 
-        # 只补空工作流；前端已填写的名称一律保留
+        # 只补空工作流；内置 MiniMax H3 R2V 的旧默认值迁移到多参考图工作流。
+        # 其他已填写的自定义工作流一律保留。
         if model.get("type") == "image":
             fallback = dict((default_models.get(mid) or {}).get("params") or {})
             params = dict(model.get("params") or {})
             filled = False
+            if not params.get("outputResolution"):
+                params["outputResolution"] = fallback.get("outputResolution") or "1K"
+                filled = True
             if not params.get("workflowName"):
                 params["workflowName"] = fallback.get("workflowName") or DEFAULT_IMAGE_WORKFLOW_NAME
                 if not params.get("steps") and fallback.get("steps"):
                     params["steps"] = fallback["steps"]
+                filled = True
+            if not params.get("referenceWorkflowName") and fallback.get("referenceWorkflowName"):
+                params["referenceWorkflowName"] = fallback["referenceWorkflowName"]
+                if params.get("referenceSteps") is None:
+                    params["referenceSteps"] = fallback.get("referenceSteps")
+                filled = True
+            # 兼容用户此前手动添加的 Qwen 2512 文生图模型：为其补齐可实际消费参考图的 Edit 工作流。
+            if (
+                not params.get("referenceWorkflowName")
+                and params.get("workflowName") in {"default_image_generate", "image_qwen_image_2512"}
+            ):
+                params["referenceWorkflowName"] = "image_qwen_image_edit_2511_20260908"
+                if params.get("referenceSteps") is None:
+                    params["referenceSteps"] = 40
+                filled = True
+            # 内置 Qwen Edit 参考图工作流曾默认 Lightning 4-step；质量优先时统一走完整 40-step 分支。
+            try:
+                reference_steps = int(params.get("referenceSteps") or 0)
+            except (TypeError, ValueError):
+                reference_steps = 0
+            if (
+                params.get("referenceWorkflowName") == "image_qwen_image_edit_2511_20260908"
+                and reference_steps <= 8
+            ):
+                params["referenceSteps"] = 40
                 filled = True
             if not params.get("turnaroundWorkflowName") and fallback.get("turnaroundWorkflowName"):
                 params["turnaroundWorkflowName"] = fallback["turnaroundWorkflowName"]
@@ -395,7 +449,12 @@ def sanitize_registry(
         if model.get("type") == "video":
             fallback = dict((default_models.get(mid) or {}).get("params") or {})
             params = dict(model.get("params") or {})
-            if not params.get("workflowName"):
+            workflow_name = str(params.get("workflowName") or "").strip()
+            is_legacy_minimax_r2v = (
+                mid == "comfyui-minimax-h3-r2v"
+                and workflow_name.removesuffix(".json") == "video_minimax_h3_r2v"
+            )
+            if not workflow_name or is_legacy_minimax_r2v:
                 params["workflowName"] = fallback.get("workflowName") or DEFAULT_VIDEO_WORKFLOW_NAME
                 model = {**model, "params": params}
                 changed = True

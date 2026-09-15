@@ -3,8 +3,17 @@
  * 包含美术指导文档生成、角色/场景视觉提示词生成、图像生成
  */
 
-import { Character, Scene, Prop, AspectRatio, ArtDirection, CharacterTurnaroundPanel } from "../../types";
-import type { GenerationJobStatus, GenerationTarget } from "../../types/model";
+import {
+  Character,
+  Scene,
+  Prop,
+  AspectRatio,
+  ArtDirection,
+  CharacterTurnaroundPanel,
+  CreativeCharacterDirection,
+  CreativeSceneDirection,
+} from "../../types";
+import type { GenerationJobStatus, GenerationTarget, ImageModelParams } from "../../types/model";
 import { addRenderLogWithTokens } from '../renderLogService';
 import {
   retryOperation,
@@ -49,8 +58,8 @@ export const generateArtDirection = async (
   title: string,
   genre: string,
   logline: string,
-  characters: { name: string; gender: string; age: string; personality: string; species?: string }[],
-  scenes: { location: string; time: string; atmosphere: string }[],
+  characters: { name: string; gender: string; age: string; personality: string; species?: string; creativeDirection?: CreativeCharacterDirection }[],
+  scenes: { location: string; time: string; atmosphere: string; creativeDirection?: CreativeSceneDirection }[],
   visualStyle: string,
   language: string = '中文',
   model: string = getActiveChatModelName(),
@@ -72,10 +81,10 @@ Your job is to create a unified Art Direction Brief that will guide ALL visual p
 - Language: ${language}
 
 ## Characters
-${characters.map((c, i) => `${i + 1}. ${c.name} (${c.species || 'species unspecified'}, ${c.gender}, ${c.age}, ${c.personality})`).join('\n')}
+${characters.map((c, i) => `${i + 1}. ${c.name} (${c.species || 'species unspecified'}, ${c.gender}, ${c.age}, ${c.personality})${c.creativeDirection ? `\n   Creative direction: ${JSON.stringify(c.creativeDirection)}` : ''}`).join('\n')}
 
 ## Scenes
-${scenes.map((s, i) => `${i + 1}. ${s.location} - ${s.time} - ${s.atmosphere}`).join('\n')}
+${scenes.map((s, i) => `${i + 1}. ${s.location} - ${s.time} - ${s.atmosphere}${s.creativeDirection ? `\n   Creative direction: ${JSON.stringify(s.creativeDirection)}` : ''}`).join('\n')}
 
 ## Your Task
 Create a comprehensive Art Direction Brief in JSON format. This brief will be injected into EVERY subsequent visual prompt to ensure all characters and scenes share a unified look and feel.
@@ -194,6 +203,7 @@ export const generateAllCharacterPrompts = async (
   - Gender: ${c.gender}
   - Age: ${c.age}
   - Personality: ${c.personality}
+  - Creative Direction: ${c.creativeDirection ? JSON.stringify(c.creativeDirection) : '[follow established personality]'}
   - Base Wardrobe (EXACT SCRIPT WORDING; MUST NOT be changed): ${c.wardrobe || '[not specified]'}
   - Later Costume Variants (context only; do not apply to base look): ${costumeVariants || '[none]'}`;
   }).join('\n\n');
@@ -232,7 +242,7 @@ ${characterList}
 ## REQUIRED PROMPT STRUCTURE (for EACH character, output in ${language}):
 Describe the subject as given in the character data. Do not invent a different kind of being.
 1. Core Identity: [what this subject is, age/sex if relevant, body plan and body type - MUST follow proportions rule above]
-2. Head: [distinguishing features of the head — eyes MUST follow eye style rule]
+2. Head: [a UNIQUE facial signature: explicitly specify at least four renderable features chosen from face shape, forehead, brow shape, eye shape and spacing, eyelids, nose bridge/tip, cheekbones, jaw, lips, teeth, skin marks, asymmetry, or signs of age — eyes MUST follow eye style rule]
 3. Surface: [hair, fur, feathers, skin, or other covering as applicable]
 4. Attire: [${CHARACTER_ATTIRE_INSTRUCTION}] Use the exact wardrobe wording supplied for this character. Preserve every garment, color, material, and fit; never substitute palette colors or redesign the outfit.
 5. Pose & Framing: [full-body lookbook, entire figure visible, typical stance for this subject, all extremities visible, small margin, expression matching personality]
@@ -247,8 +257,9 @@ ${buildCharacterLookbookPromptRules(excludePropNames)}
 3. ALL characters MUST use the SAME proportions: ${artDirection.characterDesignRules.proportions}
 4. ALL characters MUST use the SAME line/edge style: ${artDirection.characterDesignRules.lineWeight}
 5. ALL characters MUST have the SAME detail density: ${artDirection.characterDesignRules.detailLevel}
-6. Each character should be VISUALLY DISTINCT from others through form, markings, covering, and body language
+6. Each character should be VISUALLY DISTINCT from others through form, markings, covering, body language, AND especially facial identity
    - but STYLISTICALLY UNIFIED in rendering quality, detail density, color harmony, and art style.
+   - Every character needs a different facial signature: do not reuse the same face shape + eye shape + nose + mouth combination. Avoid generic symmetrical beauty/model faces and avoid making all characters look like siblings unless the story explicitly says so.
 7. Surface tones must stay in the same family: ${artDirection.colorPalette.skinTones}
 8. Sections 1-3 (identity, head, surface) are FIXED features for each character for consistency across all variations.
 9. NEVER put project prop names or carried items into the visual prompt text.
@@ -360,11 +371,12 @@ Character Data:
 - Gender: ${char.gender}
 - Age: ${char.age}
 - Personality: ${char.personality}
+- Creative Direction: ${char.creativeDirection ? JSON.stringify(char.creativeDirection) : '[follow established personality]'}
 
 REQUIRED STRUCTURE (output in ${language}):
 Describe the subject as given in the character data. Do not invent a different kind of being.
 1. Core Identity: [what this subject is, age/sex if relevant, body plan and body type${artDirection ? ` - MUST follow proportions: ${artDirection.characterDesignRules.proportions}` : ''}]
-2. Head: [distinguishing features of the head${artDirection ? ` — eyes MUST follow eye style: ${artDirection.characterDesignRules.eyeStyle}` : ''}]
+2. Head: [a UNIQUE facial signature with at least four concrete, renderable features: face shape, brow, eye shape/spacing, nose, cheekbones/jaw, mouth/lips, skin marks, asymmetry, or age cues${artDirection ? ` — eyes MUST follow eye style: ${artDirection.characterDesignRules.eyeStyle}` : ''}]
 3. Surface: [hair, fur, feathers, skin, or other covering as applicable${artDirection ? `; surface tones from: ${artDirection.colorPalette.skinTones}` : ''}]
 4. Attire: [${CHARACTER_ATTIRE_INSTRUCTION}] Exact wardrobe from Character Data: ${char.wardrobe || '[not specified]'}. Preserve its colors, materials, garment names, and silhouette literally; the global palette may guide lighting only and must never replace wardrobe colors.
 5. Pose & Framing: [full-body lookbook, entire figure visible, typical stance for this subject, all extremities visible, small margin, expression matching personality]
@@ -382,6 +394,7 @@ CRITICAL RULES:
 - Do not convert the subject into a different body plan. Do not leave human/humanoid subjects unclothed.
 - Follow Visual Style ${visualStyle} only. Do not mix incompatible style families (do not combine photoreal live-action with cel shading, six-head cartoon proportions, or Pixar/DreamWorks CGI).
 - Use specific, concrete visual details
+- Make the face unmistakably individual rather than a generic attractive/model face; do not default to the same face as other characters.
 - Output as single paragraph, comma-separated
 - MUST include style keywords: ${visualStyle}
 - Length: 70-110 words
@@ -398,6 +411,7 @@ Scene Data:
 - Location: ${scene.location}
 - Time: ${scene.time}
 - Atmosphere: ${scene.atmosphere}
+- Creative Direction: ${scene.creativeDirection ? JSON.stringify(scene.creativeDirection) : '[follow established scene facts]'}
 - Genre: ${genre}
 
 REQUIRED STRUCTURE (output in ${language}):
@@ -935,10 +949,25 @@ export const generateImage = async (
   const imageRoutingFamily = resolveImageModelRoutingFamily(activeImageModel);
   const imageModelId = activeImageModel?.apiModel || activeImageModel?.id || 'gemini-3-pro-image-preview';
   const imageApiFormat = getImageApiFormat(activeImageModel as any);
+  const imageModelParams = (activeImageModel?.params || {}) as Partial<ImageModelParams>;
+  const explicitWorkflowName = String(options?.workflowName || '').trim();
+  const hasRequestedReference = referenceImages.some((image) => Boolean(normalizeReferenceImageValue(image)))
+    || Boolean(normalizeReferenceImageValue(options?.continuityReferenceImage));
+  const useConfiguredReferenceWorkflow = imageApiFormat === 'comfyui'
+    && hasRequestedReference
+    && !explicitWorkflowName
+    && Boolean(String(imageModelParams.referenceWorkflowName || '').trim());
+  const selectedWorkflowName = explicitWorkflowName
+    || (useConfiguredReferenceWorkflow
+      ? String(imageModelParams.referenceWorkflowName).trim()
+      : String(imageModelParams.workflowName || '').trim());
+  const selectedSteps = options?.steps
+    ?? (useConfiguredReferenceWorkflow
+      ? imageModelParams.referenceSteps ?? imageModelParams.steps
+      : imageModelParams.steps);
 
   // 参考图上限随实际后端而定，避免前端报“保留 5 张”而后端只吃 4 张
-  const workflowName = String(options?.workflowName || '');
-  const qwenBuiltinEdit = /qwen_image_edit/i.test(workflowName) && !/flf/i.test(workflowName);
+  const qwenBuiltinEdit = /qwen_image_edit/i.test(selectedWorkflowName) && !/flf/i.test(selectedWorkflowName);
   const maxComfyRefs = qwenBuiltinEdit ? 3 : MAX_COMFY_REFERENCE_IMAGES;
   const boundedReferences = buildBoundedReferenceImages(
     referenceImages,
@@ -955,6 +984,15 @@ export const generateImage = async (
       `[Image] Reference images capped at ${boundedReferences.maxReferences}: ` +
       `${boundedReferences.requestedCount} -> ${effectiveReferenceImages.length}`
     );
+  }
+
+  if (imageApiFormat === 'comfyui') {
+    console.info('[ComfyUI Image] 工作流路由:', {
+      workflowName: selectedWorkflowName || 'model-default',
+      steps: selectedSteps,
+      source: useConfiguredReferenceWorkflow ? 'reference-workflow' : explicitWorkflowName ? 'explicit-workflow' : 'text-workflow',
+      referenceCount: effectiveReferenceImages.length,
+    });
   }
 
   const imageModelEndpointTemplate = activeImageModel?.endpoint || getDefaultImageEndpoint(imageApiFormat, imageModelId);
@@ -988,7 +1026,7 @@ export const generateImage = async (
         && hasAnyReference
         && !continuityReferenceImage
         && (() => {
-          const name = String(options?.workflowName || '').toLowerCase();
+          const name = selectedWorkflowName.toLowerCase();
           return name.includes('qwen_image_edit') && !name.includes('turnaround');
         })();
       if (continuityReferenceImage) {
@@ -998,7 +1036,7 @@ export const generateImage = async (
       } else if (characterRef) {
         if (referencePackType === 'shot') {
           comfyPrompt += `\n\n[ComfyUI character anchor] Image 1 is the character identity lock${hasTurnaround ? ' and may be a turnaround or three-view sheet; use the panel matching the requested camera angle' : ''}. Copy that exact subject appearance, body plan, and outfit into this shot; never reproduce the sheet layout or duplicate views. Later images are scene or prop references only. Shot-listed props may be added from prop reference images; do not invent a different item. A missing carried item in the character reference does not forbid it in this shot. Apply the shot description for pose, camera and environment.`;
-        } else if (String(options?.workflowName || '').toLowerCase().includes('turnaround')) {
+        } else if (selectedWorkflowName.toLowerCase().includes('turnaround')) {
           comfyPrompt += '\n\n[ComfyUI turnaround] Image 1 is the identity lock. Copy appearance, body plan, and any attire already on the subject. Only change camera angle and shot size per panel. Do not add attire that is not in image 1. Do not change the body plan. Do not invent a different subject.';
         } else {
           comfyPrompt += '\n\n[ComfyUI character anchor] Match the reference subject exactly: appearance, body plan, and any attire shown. This is a lookbook: no carried items. Do not add attire that is not in the reference. Apply the prompt for pose and studio framing.';
@@ -1031,8 +1069,8 @@ export const generateImage = async (
           : characterRef
             ? 0.78
             : undefined,
-        workflowName: options?.workflowName,
-        steps: options?.steps,
+        workflowName: selectedWorkflowName || undefined,
+        steps: selectedSteps,
         target: options?.target,
         onJobCreated: options?.onJobCreated,
         waitForResult: options?.waitForResult,
@@ -1225,7 +1263,13 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
     }
     finalPrompt = promptLimitResult.text;
 
-    const openAiReferenceSources = [...effectiveReferenceImages];
+    // 尾帧的首帧连续性图必须作为最后一个参考槽位传给 NewAPI；之前只在
+    // ComfyUI 分支通过单独字段传递，Gemini/OpenAI 分支实际没有收到它。
+    const nonComfyReferenceSources = [
+      ...effectiveReferenceImages,
+      ...(continuityReferenceImage ? [continuityReferenceImage] : []),
+    ];
+    const openAiReferenceSources = nonComfyReferenceSources;
 
     if (imageApiFormat === 'openai') {
       const hasOpenAiReferences = openAiReferenceSources.length > 0;
@@ -1311,9 +1355,14 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
 
     // Gemini generateContent protocol
     const parts: any[] = [{ text: finalPrompt }];
-    effectiveReferenceImages.forEach((imgUrl) => {
+    nonComfyReferenceSources.forEach((imgUrl, index) => {
       const match = imgUrl.match(/^data:(image\/[a-zA-Z]+);base64,(.+)$/);
       if (match) {
+        const annotation = options?.referenceAnnotations?.[index]?.trim()
+          || `Reference image ${index + 1}`;
+        parts.push({
+          text: `${annotation}. Use this image only for the specified identity or reference; do not mix it with other subjects.`,
+        });
         parts.push({
           inlineData: {
             mimeType: match[1],

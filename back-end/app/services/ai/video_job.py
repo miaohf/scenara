@@ -1,4 +1,5 @@
 import uuid
+import logging
 from datetime import datetime, timezone
 
 import json
@@ -8,6 +9,8 @@ import redis
 
 from app.core.config import get_settings
 from app.services.ai.chat import AiConfigError, _api_key_for_model, _pick_model, _provider_for_model
+
+logger = logging.getLogger(__name__)
 
 
 def get_redis_client() -> redis.Redis:
@@ -55,10 +58,25 @@ async def run_video_job(job_id: str, registry: dict, payload: dict) -> dict:
         if not task_id:
             raise AiConfigError("Video API 未返回 task id")
 
-        for i in range(120):
-            publish_job_event(job_id, {"progress": min(10 + i, 95), "message": f"生成中... ({i + 1}/120)"})
-            poll_res = await client.get(f"{base_url}{endpoint}/{task_id}", headers=headers)
+        network_error_streak = 0
+        for i in range(2400):
+            publish_job_event(job_id, {"progress": min(10 + i // 24, 95), "message": f"生成中... ({i + 1}/2400)"})
+            try:
+                poll_res = await client.get(f"{base_url}{endpoint}/{task_id}", headers=headers)
+                network_error_streak = 0
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+                network_error_streak += 1
+                if network_error_streak == 1 or network_error_streak % 10 == 0:
+                    logger.warning("视频任务状态暂时不可达，继续等待 (%s 次): %s", network_error_streak, exc)
+                await __import__("asyncio").sleep(5)
+                continue
             if not poll_res.is_success:
+                if poll_res.status_code >= 500:
+                    network_error_streak += 1
+                    if network_error_streak == 1 or network_error_streak % 10 == 0:
+                        logger.warning("视频任务状态暂时返回 %s，继续等待 (%s 次)", poll_res.status_code, network_error_streak)
+                    await __import__("asyncio").sleep(5)
+                    continue
                 raise AiConfigError(f"Video poll 失败: {poll_res.text}")
             data = poll_res.json()
             status = (data.get("status") or "").lower()
@@ -78,4 +96,4 @@ async def run_video_job(job_id: str, registry: dict, payload: dict) -> dict:
                 raise AiConfigError(data.get("error") or "视频生成失败")
             await __import__("asyncio").sleep(5)
 
-    raise AiConfigError("视频生成超时")
+    raise AiConfigError("视频生成超时（已等待约 3 小时）")

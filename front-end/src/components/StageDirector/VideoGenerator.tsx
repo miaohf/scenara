@@ -14,6 +14,7 @@ import { useGenerationQueue } from '../../contexts/GenerationQueueContext';
 import { formatJobProgressLabel, resolveShotVideoBadge } from '../../services/generationQueue';
 import { VideoModelDefinition } from '../../types/model';
 import { useResolvedVideoUrl } from '../../hooks/useResolvedVideoUrl';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface VideoGeneratorProps {
   shot: Shot;
@@ -26,6 +27,7 @@ interface VideoGeneratorProps {
   onModelChange?: (modelId: string) => void;
   planningShotDuration?: number;
   defaultAspectRatio?: AspectRatio;
+  defaultModelId?: string;
 }
 
 const VideoGenerator: React.FC<VideoGeneratorProps> = ({
@@ -39,7 +41,9 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   onModelChange,
   planningShotDuration,
   defaultAspectRatio = '16:9',
+  defaultModelId,
 }) => {
+  const { text } = useInterfaceLanguage();
   const normalizeModelId = (modelId?: string) => {
     if (!modelId) return modelId;
     const normalized = modelId.toLowerCase();
@@ -64,11 +68,12 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   const activeVideoModel = getActiveVideoModel();
 
   const resolveInitialModelId = (): string => {
+    const perShot = normalizeModelId(shot.videoModel);
+    if (perShot && videoModels.some((m) => m.id === perShot)) return perShot;
+    if (defaultModelId && videoModels.some((m) => m.id === defaultModelId)) return defaultModelId;
     if (activeVideoModel?.id && videoModels.some((m) => m.id === activeVideoModel.id)) {
       return activeVideoModel.id;
     }
-    const perShot = normalizeModelId(shot.videoModel);
-    if (perShot && videoModels.some((m) => m.id === perShot)) return perShot;
     return videoModels[0]?.id || 'sora-2';
   };
 
@@ -168,17 +173,22 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   ]);
 
   useEffect(() => {
+    const perShot = normalizeModelId(shot.videoModel);
+    if (perShot && videoModels.some((m) => m.id === perShot)) {
+      setSelectedModelId(perShot);
+      setVeoFastQuality(resolveVeoFastQuality(shot.videoModel));
+      return;
+    }
+    if (defaultModelId && videoModels.some((m) => m.id === defaultModelId)) {
+      setSelectedModelId(defaultModelId);
+      return;
+    }
     if (activeVideoModel?.id && videoModels.some((m) => m.id === activeVideoModel.id)) {
       setSelectedModelId(activeVideoModel.id);
       onModelChange?.(activeVideoModel.id);
       return;
     }
-    const perShot = normalizeModelId(shot.videoModel);
-    if (perShot && videoModels.some((m) => m.id === perShot)) {
-      setSelectedModelId(perShot);
-      setVeoFastQuality(resolveVeoFastQuality(shot.videoModel));
-    }
-  }, [shot.id, shot.videoModel, activeVideoModel?.id, videoModels.map((m) => m.id).join('|')]);
+  }, [shot.id, shot.videoModel, defaultModelId, activeVideoModel?.id, videoModels.map((m) => m.id).join('|')]);
 
   const handleGenerate = () => {
     onGenerate(aspectRatio, duration, effectiveModelId, h3Quality);
@@ -205,11 +215,11 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
       <div className="flex items-center justify-between">
         <h4 className="text-xs font-bold text-[var(--text-primary)] uppercase tracking-widest flex items-center gap-2">
           <Video className="w-3 h-3 text-[var(--accent)]" />
-          参数
+          {text('参数', 'Parameters')}
           <button
             onClick={onEditPrompt}
             className="p-1 text-[var(--warning-text)] hover:text-[var(--text-primary)] transition-colors"
-            title="预览/编辑视频提示词"
+            title={text('编辑视频提示词', 'Edit video prompt')}
           >
             <Edit2 className="w-3 h-3" />
           </button>
@@ -221,7 +231,7 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
 
       <div className="space-y-2">
         <label className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-widest block">
-          选择视频模型
+          {text('视频模型', 'Video model')}
         </label>
         <select
           value={selectedModelId}
@@ -255,24 +265,24 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
         )}
         {isMissingVolcengineApiKey && (
           <div className="rounded-lg border border-[var(--error-border)] bg-[var(--error-bg)] px-3 py-2">
-            <p className="text-[10px] text-[var(--error-text)] font-bold">当前模型需要火山引擎专用 API Key</p>
+            <p className="text-[10px] text-[var(--error-text)] font-bold">{text('当前模型需要火山引擎 API Key', 'This model requires a Volcengine API key')}</p>
             <p className="text-[9px] text-[var(--error-text)]/90 mt-1">
-              未检测到该模型或 Volcengine 提供商的 Key。请先在模型配置里设置对应 Key 后再生成。
+              {text('未检测到对应 Key，请先在模型配置中设置后再生成。', 'No matching key was found. Add it in model settings before generating.')}
             </p>
           </div>
         )}
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-[10px] font-mono text-[var(--text-secondary)] mr-1">{routingLabel}</span>
           {[
-            { key: 'start-only', label: '首帧', enabled: modelRouting.supportsStartFrame },
+            { key: 'start-only', label: text('首帧', 'Start'), enabled: modelRouting.supportsStartFrame },
             {
               key: 'start-end',
-              label: '首尾帧',
+              label: text('首尾帧', 'Start/End'),
               enabled: modelRouting.supportsStartFrame && modelRouting.supportsEndFrame,
             },
             {
               key: 'nine-grid-priority',
-              label: '九宫格',
+              label: text('九宫格', 'Grid'),
               enabled: modelRouting.prefersNineGridStoryboard,
             },
           ].map((capability) => (
@@ -289,18 +299,18 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
           ))}
           {isMiniMaxH3VideoModel(effectiveModelId || selectedModelId) && (
             <span className="px-1.5 py-0.5 rounded border text-[10px] font-mono text-[var(--success)] border-[var(--success)]/40 bg-[var(--success)]/10">
-              原生音频 ON
+              {text('原生音频 ON', 'Native audio ON')}
             </span>
           )}
           {hasEndFrame && !modelRouting.supportsEndFrame && (
             <p className="basis-full text-[9px] text-[var(--warning-text)] font-mono">
-              当前模型会自动忽略尾帧输入，仅使用首帧驱动。
+              {text('当前模型忽略尾帧，仅使用首帧。', 'This model ignores the end frame and uses the start frame only.')}
             </p>
           )}
         </div>
         {isMiniMaxH3VideoModel(effectiveModelId || selectedModelId) && (
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-[var(--text-tertiary)] uppercase">视频质量</span>
+            <span className="text-[10px] text-[var(--text-tertiary)] uppercase">{text('视频质量', 'Quality')}</span>
             <div className="flex gap-1">
               {(['standard', 'turbo'] as const).map((quality) => (
                 <button
@@ -313,7 +323,7 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
                       : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)] hover:text-[var(--text-secondary)]'
                   } ${isGenerating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
                 >
-                  {quality === 'standard' ? '高质量（20步）' : 'Turbo（4/8步）'}
+                  {quality === 'standard' ? text('高质量', 'High') : text('快速预览', 'Turbo')}
                 </button>
               ))}
             </div>
@@ -321,7 +331,7 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
         )}
         {selectedModelId === 'veo_3_1-fast' && (
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-[var(--text-tertiary)] uppercase">清晰度</span>
+            <span className="text-[10px] text-[var(--text-tertiary)] uppercase">{text('清晰度', 'Clarity')}</span>
             <div className="flex gap-1">
               <button
                 onClick={() => handleVeoFastQualityChange('standard')}
@@ -336,7 +346,7 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
                   ${isGenerating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
                 `}
               >
-                标准
+                {text('标准', 'Standard')}
               </button>
               <button
                 onClick={() => handleVeoFastQualityChange('4k')}
@@ -359,7 +369,7 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
       </div>
 
       <div className="space-y-2">
-        <label className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-widest block">视频设置</label>
+        <label className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-widest block">{text('视频设置', 'Video settings')}</label>
         <VideoSettingsPanel
           aspectRatio={aspectRatio}
           onAspectRatioChange={setAspectRatio}
@@ -372,7 +382,7 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
           recommendedDuration={recommendedDuration}
         />
         {durationHint && (
-          <p className="text-[9px] text-[var(--text-muted)] font-mono">{durationHint}，可手动改档</p>
+          <p className="text-[9px] text-[var(--text-muted)] font-mono">{durationHint}{text('，可手动改档', '; adjustable')}</p>
         )}
       </div>
 
@@ -390,11 +400,11 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
             <>
               <Loader2 className="w-4 h-4 animate-spin" />
               {videoBadge.status === 'queued'
-                ? `排队中 ${formatJobProgressLabel(videoBadge.job, 'queued')} (${aspectRatio}, ${duration}秒)`
-                : `${formatJobProgressLabel(videoBadge.job, 'running')} (${aspectRatio}, ${duration}秒)`}
+                ? `${text('排队中', 'Queued')} ${formatJobProgressLabel(videoBadge.job, 'queued')} (${aspectRatio}, ${duration}${text('秒', 's')})`
+                : `${formatJobProgressLabel(videoBadge.job, 'running')} (${aspectRatio}, ${duration}${text('秒', 's')})`}
             </>
           ) : (
-            <>{hasVideo ? '重新生成视频' : '开始生成视频'}</>
+            <>{hasVideo ? text('重做视频', 'Regenerate video') : text('生成视频', 'Generate video')}</>
           )}
         </button>
         {isGenerating && onCancel && (
@@ -402,19 +412,19 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
             onClick={onCancel}
             className="px-4 py-2.5 rounded-lg font-bold text-xs uppercase tracking-widest border border-[var(--error-border)] bg-[var(--error-bg)] text-[var(--error-text)] hover:bg-[var(--error-hover-bg-strong)] transition-colors"
           >
-            取消
+            {text('取消', 'Cancel')}
           </button>
         )}
       </div>
       {isMissingVolcengineApiKey && (
         <div className="text-[9px] text-[var(--error-text)] text-center font-mono">
-          * 请选择并配置火山引擎 API Key（模型 Key 或 Volcengine 提供商 Key）
+          * {text('请配置火山引擎 API Key', 'Configure a Volcengine API key')}
         </div>
       )}
 
       {!hasEndFrame && (
         <div className="text-[9px] text-[var(--text-tertiary)] text-center font-mono">
-          * 未检测到结束帧，将使用单图生成模式 (Image-to-Video)
+          * {text('未检测到尾帧，将使用单图生成', 'No end frame; image-to-video mode will be used')}
         </div>
       )}
       </div>

@@ -86,6 +86,9 @@ export default function EpisodeWorkspace() {
   const hideStatusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 上次成功保存的剧集快照，用于算出需要提交的字段 */
   const lastSavedRef = useRef<Episode | null>(null);
+  // 自动保存的防抖计时器在组件卸载时会被取消；保留最新快照用于卸载兜底写入。
+  const currentEpisodeRef = useRef<Episode | null>(null);
+  currentEpisodeRef.current = currentEpisode;
 
   // 生成任务据此带上 episode_id，落库后可按剧集检索
   useEffect(() => {
@@ -160,6 +163,19 @@ export default function EpisodeWorkspace() {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
   }, [currentEpisode]);
+
+  // Fast Refresh、路由切换等卸载场景不应直接丢弃仍在等待防抖保存的生成断点。
+  useEffect(() => {
+    return () => {
+      const episode = currentEpisodeRef.current;
+      if (!episode) return;
+      const changedKeys = diffEpisodeKeys(episode, lastSavedRef.current);
+      if (changedKeys.length === 0) return;
+      void saveEpisodePartial(episode, changedKeys).catch((error) => {
+        console.warn("组件卸载时保存剧集断点失败:", error);
+      });
+    };
+  }, []);
 
   useEffect(() => {
     if (saveStatus === "saved") {
@@ -343,7 +359,9 @@ export default function EpisodeWorkspace() {
   return (
     <GenerationQueueProvider
       episode={currentEpisode}
-      onEpisodeReconcile={(updater) => setCurrentEpisode((prev) => (prev ? updater(prev) : prev))}
+      onEpisodeReconcile={(updater) => {
+        if (currentEpisode) setCurrentEpisode(updater(currentEpisode));
+      }}
     >
     <div className="flex h-screen bg-[var(--bg-secondary)] font-sans text-[var(--text-secondary)] selection:bg-[var(--accent-bg)]">
       <Sidebar

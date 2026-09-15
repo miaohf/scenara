@@ -7,8 +7,10 @@ import base64
 import copy
 import io
 import json
+import os
 import random
 import re
+import tempfile
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -46,6 +48,7 @@ COMFYUI_GPU_LOCK_BLOCKING_TIMEOUT_SEC = 180
 COMFYUI_POLL_INTERVAL_SEC = 1.0
 COMFYUI_MAX_POLLS_IMAGE = 1800  # Qwen 全量 ~50 steps @1328 可能超过 10 分钟
 COMFYUI_MAX_POLLS_VIDEO = 3600  # MiniMax H3 20 steps @1344x768 可能超过 1 小时
+COMFYUI_NETWORK_RETRY_LOG_EVERY = 10
 IMG2IMG_DENOISE_CONTINUITY = 0.65
 IMG2IMG_DENOISE_CHARACTER = 0.78
 FLUX2_EDIT_MAX_REFS = 4
@@ -244,6 +247,26 @@ def _qwen_encoder_max_refs(nodes: dict[str, Any]) -> int:
     return 3 if _is_qwen_edit_workflow(nodes) else QWEN_EDIT_MAX_REFS
 
 
+def _reference_workflow_capacity(workflow: dict[str, Any]) -> int:
+    """Return the number of usable reference-image slots exposed by a workflow."""
+    nodes = workflow.get("prompt") or workflow
+    if not isinstance(nodes, dict):
+        return 0
+    if _is_qwen_edit_workflow(nodes):
+        return _qwen_encoder_max_refs(nodes)
+
+    titled_slots = 0
+    generic_loaders = 0
+    for node in nodes.values():
+        if str(node.get("class_type", "")).lower() != "loadimage":
+            continue
+        generic_loaders += 1
+        title = str((node.get("_meta") or {}).get("title", "")).lower()
+        if re.search(r"reference\s*image\s*\d+", title):
+            titled_slots += 1
+    return titled_slots or generic_loaders
+
+
 def _qwen_encoder_image_source(nodes: dict[str, Any], load_id: str) -> str:
     """Image 1 若先经 FluxKontextImageScale，编码器应接缩放输出，不能直连 Load Image。"""
     for scale_id, node in nodes.items():
@@ -309,7 +332,17 @@ def resolve_comfy_base(registry: dict[str, Any], model_id: str | None, kind: str
         or ""
     ).strip()
     if endpoint.startswith("http"):
-        return normalize_comfy_base(endpoint)
+        normalized = normalize_comfy_base(endpoint)
+        # 旧注册表可能持久化了本机默认值；部署配置明确使用远程 ComfyUI 时，
+        # 不要让这个陈旧默认值遮蔽 COMFYUI_BASE_URL。
+        deployment_base = normalize_comfy_base(get_settings().comfyui_base_url)
+        if normalized in {"http://127.0.0.1:8188", "http://localhost:8188"} and deployment_base not in {
+            "",
+            "http://127.0.0.1:8188",
+            "http://localhost:8188",
+        }:
+            return deployment_base
+        return normalized
     return normalize_comfy_base(provider.get("baseUrl", ""))
 
 
@@ -479,6 +512,115 @@ def _store_generated_media(
 
     b64 = base64.b64encode(content).decode("ascii")
     return {"base64": b64, "url": f"data:{content_type};base64,{b64}"}
+
+
+async def _run_nano_banana_sdk(
+    registry: dict[str, Any],
+    model: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    user_id: int | None,
+) -> dict[str, str]:
+    """Run Nano Banana API-node workflows through Comfy's API v2 SDK.
+
+    Nano Banana is a Comfy partner node. It must be submitted to Comfy Cloud
+    with the SDK so the workflow receives both the authenticated job request
+    and ``extra_data.api_key_comfy_org`` for the partner node.
+    """
+    try:
+        from comfy_sdk import AsyncComfy
+    except ImportError as exc:
+        raise AiConfigError("Nano Banana 需要安装 comfy-sdk，请先执行 uv sync") from exc
+
+    params = model.get("params") or {}
+    references = _collect_reference_images(payload)
+    workflow_name = str(
+        params.get("referenceWorkflowName") if references else params.get("workflowName")
+    ).strip()
+    if not workflow_name:
+        raise AiConfigError("Nano Banana 未配置 workflowName")
+
+    aspect_ratio = payload.get("aspectRatio") or "16:9"
+    width, height = _aspect_ratio_size(aspect_ratio, video=False)
+    workflow = load_workflow_template(workflow_name)
+    patched = patch_image_workflow(
+        workflow,
+        prompt=str(payload.get("prompt") or ""),
+        negative_prompt=payload.get("negativePrompt") or payload.get("negative_prompt"),
+        width=width,
+        height=height,
+        seed=int(payload.get("seed") or random.getrandbits(63)),
+        steps=int(payload.get("steps") or 1),
+    )
+
+    api_key = str(
+        model.get("apiKey")
+        or (_provider_for_model(registry, model).get("apiKey") if model else "")
+        or registry.get("globalApiKey")
+        or os.getenv("COMFY_API_KEY")
+        or ""
+    ).strip()
+    if not api_key:
+        raise AiConfigError("Nano Banana 需要配置 COMFY_API_KEY")
+
+    # AsyncComfy reads COMFY_BASE_URL when constructed. Keep the worker's
+    # existing environment intact after constructing this request client.
+    base = resolve_comfy_base(registry, model.get("id"), "image")
+    previous_base = os.environ.get("COMFY_BASE_URL")
+    os.environ["COMFY_BASE_URL"] = base
+    temp_paths: list[str] = []
+    try:
+        async with AsyncComfy(api_key=api_key) as client:
+            workflow_client = client.workflows.from_json(patched)
+            if references:
+                load_nodes = [
+                    (str(node_id), node)
+                    for node_id, node in patched.items()
+                    if str(node.get("class_type", "")).lower() == "loadimage"
+                ]
+                if not load_nodes:
+                    raise AiConfigError("Nano Banana Edit workflow 未找到 LoadImage 节点")
+                # The supplied official Edit template currently exposes one
+                # image input. Use the first reference and reject silent loss.
+                if len(references) > 1:
+                    logger.info("Nano Banana Edit 当前 workflow 仅消费 1 张参考图，已忽略其余参考图")
+                raw, _ = await _load_media_source(references[0])
+                temp = tempfile.NamedTemporaryFile(prefix="nano-banana-ref-", suffix=".png", delete=False)
+                temp.write(raw)
+                temp.close()
+                temp_paths.append(temp.name)
+                asset = client.assets.from_file(temp.name)
+                workflow_client.set_input(load_nodes[0][0], "image", asset)
+
+            job = await client.run(workflow_client, api_key=api_key)
+            outputs = job.get_outputs("9")
+            output = outputs[0] if outputs else None
+            if output is None:
+                raise AiConfigError("Nano Banana workflow 未返回图片输出")
+            content = await output.to_bytes()
+    except AiConfigError:
+        raise
+    except Exception as exc:
+        logger.warning("Nano Banana SDK generation failed: %s", exc)
+        raise AiConfigError(f"Nano Banana 生成失败: {exc}") from exc
+    finally:
+        for path in temp_paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        if previous_base is None:
+            os.environ.pop("COMFY_BASE_URL", None)
+        else:
+            os.environ["COMFY_BASE_URL"] = previous_base
+
+    stored = _store_generated_media(content, user_id=user_id, suffix=".png", content_type="image/png")
+    result: dict[str, str] = {"image_url": stored["url"], "image_data_url": stored["url"]}
+    if "media_key" in stored:
+        result["media_key"] = stored["media_key"]
+    if "base64" in stored:
+        result["image_base64"] = stored["base64"]
+    return result
 
 
 def _resize_image_bytes(
@@ -772,7 +914,7 @@ def patch_video_workflow(
         raise AiConfigError("ComfyUI 视频工作流格式无效")
 
     uses_primitive = any(
-        str(n.get("_meta", {}).get("title", "")).lower() == "prompt"
+        "prompt" in str(n.get("_meta", {}).get("title", "")).lower()
         and str(n.get("class_type", "")) == "PrimitiveStringMultiline"
         for n in nodes.values()
     )
@@ -792,7 +934,7 @@ def patch_video_workflow(
         title = str(node.get("_meta", {}).get("title", "")).lower()
         is_negative = "clip" in class_type and "negative" in title
 
-        if title == "prompt" and class_type == "primitivestringmultiline" and isinstance(inputs.get("value"), str):
+        if "prompt" in title and class_type == "primitivestringmultiline" and isinstance(inputs.get("value"), str):
             inputs["value"] = prompt
             prompt_patched = True
         if not is_negative and "positive" in title and isinstance(inputs.get("text"), str):
@@ -891,6 +1033,11 @@ def patch_video_workflow(
             (key for key in ref_inputs if key.startswith("ref_images.ref_image_")),
             key=lambda key: int(key.rsplit("_", 1)[-1]),
         )
+        if len(reference_image_names) > len(ref_slots):
+            raise AiConfigError(
+                f"R2V 工作流只声明了 {len(ref_slots)} 个参考图槽位，"
+                f"但请求注入了 {len(reference_image_names)} 张；请更新工作流后重试。"
+            )
         for index, slot in enumerate(ref_slots):
             link = ref_inputs.get(slot)
             linked_node = nodes.get(str(link[0])) if isinstance(link, list) and link else None
@@ -905,6 +1052,12 @@ def patch_video_workflow(
             ("ref_audios.ref_audio_", reference_audio_names or [], "audio"),
         ):
             slots = sorted((key for key in ref_inputs if key.startswith(prefix)), key=lambda key: int(key.rsplit("_", 1)[-1]))
+            if len(names) > len(slots):
+                media_label = "视频" if field == "video" else "音频"
+                raise AiConfigError(
+                    f"R2V 工作流只声明了 {len(slots)} 个参考{media_label}槽位，"
+                    f"但请求注入了 {len(names)} 个；请更新工作流后重试。"
+                )
             for index, slot in enumerate(slots):
                 link = ref_inputs.get(slot)
                 linked_node = nodes.get(str(link[0])) if isinstance(link, list) and link else None
@@ -1289,11 +1442,33 @@ async def _poll_history(
     poll_interval: float,
 ) -> bytes:
     missing_streak = 0
+    network_error_streak = 0
     for poll_index in range(max_polls):
         await asyncio.sleep(poll_interval)
         poll_url = f"{base}/history/{prompt_id}"
-        history_res = await client.get(poll_url, timeout=30)
+        try:
+            history_res = await client.get(poll_url, timeout=30)
+            network_error_streak = 0
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+            # ComfyUI 任务是由服务端持有的；轮询期间短暂断网不代表任务失败。
+            # 保持 Celery 任务存活，下一轮继续查询，避免把可恢复的网络抖动写成 failed。
+            network_error_streak += 1
+            if network_error_streak == 1 or network_error_streak % COMFYUI_NETWORK_RETRY_LOG_EVERY == 0:
+                logger.warning(
+                    "ComfyUI history 暂时不可达，继续等待 (%s 次): %s",
+                    network_error_streak,
+                    exc,
+                )
+            continue
         if not history_res.is_success:
+            if history_res.status_code >= 500:
+                network_error_streak += 1
+                if network_error_streak == 1 or network_error_streak % COMFYUI_NETWORK_RETRY_LOG_EVERY == 0:
+                    logger.warning(
+                        "ComfyUI history 暂时返回 %s，继续等待 (%s 次)",
+                        history_res.status_code,
+                        network_error_streak,
+                    )
             continue
         record = history_res.json().get(prompt_id) or {}
         outputs = record.get("outputs") or {}
@@ -1334,16 +1509,13 @@ async def run_comfy_image(
     user_id: int | None = None,
 ) -> dict[str, str]:
     model_id = payload.get("modelId")
-    base = resolve_comfy_base(registry, model_id, "image")
     model = _pick_model(registry, model_id, "image")
-    workflow_name = (
-        (payload.get("workflowName") or "").strip()
-        or (model.get("params") or {}).get("workflowName")
-        or DEFAULT_IMAGE_WORKFLOW_NAME
-    )
-    steps = int((model.get("params") or {}).get("steps") or payload.get("steps") or 20)
-    if payload.get("steps") is not None:
-        steps = int(payload["steps"])
+    if model.get("id") == "comfyui-nano-banana-2":
+        return await _run_nano_banana_sdk(registry, model, payload, user_id=user_id)
+    base = resolve_comfy_base(registry, model_id, "image")
+    model_params = model.get("params") or {}
+    requested_workflow = (payload.get("workflowName") or "").strip()
+    default_workflow = model_params.get("workflowName") or DEFAULT_IMAGE_WORKFLOW_NAME
     aspect_ratio = payload.get("aspectRatio") or "16:9"
     width, height = _aspect_ratio_size(aspect_ratio, video=False)
 
@@ -1353,6 +1525,24 @@ async def run_comfy_image(
     )
     reference_sources = _collect_reference_images(payload)
     use_reference = bool(reference_sources) or bool(source)
+    reference_workflow = str(model_params.get("referenceWorkflowName") or "").strip()
+    use_reference_workflow = bool(
+        use_reference
+        and reference_workflow
+        and (not requested_workflow or requested_workflow == default_workflow)
+    )
+    workflow_name = reference_workflow if use_reference_workflow else (requested_workflow or default_workflow)
+    if use_reference_workflow and model_params.get("referenceSteps") is not None:
+        steps = int(model_params["referenceSteps"])
+    else:
+        steps = int(model_params.get("steps") or payload.get("steps") or 20)
+        if payload.get("steps") is not None:
+            steps = int(payload["steps"])
+    # 角色/参考图定妆默认使用完整 Qwen Edit 路径。旧版前端可能仍会在
+    # payload 中带 steps=4；不能让这个请求级值绕过质量优先的模型配置，
+    # 否则 UI 显示 40 steps，但实际会启用 Lightning LoRA。
+    if use_reference_workflow and steps <= 8:
+        steps = max(int(model_params.get("referenceSteps") or 40), 40)
     denoise = _resolve_denoise(mode, payload.get("img2imgDenoise")) if source else None
     seed_raw = payload.get("seed")
     # 未显式传 seed 时每次随机（ComfyUI RandomNoise 为 64-bit 量级）
@@ -1375,16 +1565,32 @@ async def run_comfy_image(
         if reference_sources:
             denoise = None
 
+    reference_capacity = _reference_workflow_capacity(workflow) if use_reference else 0
+    if use_reference and reference_capacity <= 0:
+        raise AiConfigError(
+            f"工作流 {effective_workflow} 不支持参考图输入。请为当前图片模型配置 referenceWorkflowName，"
+            "并选择包含 Reference Image 槽位的编辑工作流。"
+        )
+    if reference_sources and len(reference_sources) > reference_capacity:
+        logger.info(
+            "ComfyUI reference images capped workflow=%s capacity=%s requested=%s",
+            effective_workflow,
+            reference_capacity,
+            len(reference_sources),
+        )
+        reference_sources = reference_sources[:reference_capacity]
+
     reference_name = None
     reference_names: list[str] = []
     upload_url = f"{base}/upload/image"
     prompt_url = f"{base}/prompt"
     logger.info(
-        "ComfyUI image start model_id=%s workflow=%s effective=%s "
+        "ComfyUI image start model_id=%s workflow=%s effective=%s route=%s "
         "comfy_base=%s upload=%s prompt=%s size=%sx%s steps=%s seed=%s has_ref=%s ref_count=%s",
         model_id,
         workflow_name,
         effective_workflow,
+        "reference-workflow" if use_reference_workflow else "requested-or-text-workflow",
         base,
         upload_url,
         prompt_url,
@@ -1471,7 +1677,12 @@ async def run_comfy_video(
     aspect_ratio = payload.get("aspectRatio") or params.get("defaultAspectRatio") or "16:9"
     duration = float(payload.get("duration") or params.get("defaultDuration") or 5)
     is_minimax = "minimax" in f"{workflow_name} {model_id or ''} {model.get('id') or ''} {model.get('apiModel') or ''}".lower()
-    is_ref2v = "r2v" in f"{workflow_name} {model_id or ''} {model.get('id') or ''} {model.get('apiModel') or ''}".lower()
+    normalized_workflow_context = f"{workflow_name} {model_id or ''} {model.get('id') or ''} {model.get('apiModel') or ''}".lower()
+    is_ref2v = (
+        "r2v" in normalized_workflow_context
+        or "ref2va" in normalized_workflow_context
+        or params.get("supportsReferenceImages") is True
+    )
     width, height = _aspect_ratio_size(aspect_ratio, video=True, minimax=is_minimax)
     seed = random.randint(0, 2**31 - 1)
 

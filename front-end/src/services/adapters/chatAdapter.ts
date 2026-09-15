@@ -34,15 +34,18 @@ const normalizeChatApiBase = (baseUrl?: string): { url: string; endpoint: string
 const retryOperation = async <T>(
   operation: () => Promise<T>,
   maxRetries: number = 3,
-  delay: number = 1000
+  delay: number = 1000,
+  abortSignal?: AbortSignal,
 ): Promise<T> => {
   let lastError: Error | null = null;
   
   for (let i = 0; i < maxRetries; i++) {
+    if (abortSignal?.aborted) throw new Error('请求已取消');
     try {
       return await operation();
     } catch (error: any) {
       lastError = error;
+      if (abortSignal?.aborted || error?.name === 'AbortError') throw error;
       // 400/401/403 错误不重试
       if (error.message?.includes('400') || 
           error.message?.includes('401') || 
@@ -50,7 +53,17 @@ const retryOperation = async <T>(
         throw error;
       }
       if (i < maxRetries - 1) {
-        await new Promise(resolve => setTimeout(resolve, delay * (i + 1)));
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            abortSignal?.removeEventListener('abort', handleAbort);
+            resolve();
+          }, delay * (i + 1));
+          const handleAbort = () => {
+            clearTimeout(timer);
+            reject(new Error('请求已取消'));
+          };
+          abortSignal?.addEventListener('abort', handleAbort, { once: true });
+        });
       }
     }
   }
@@ -141,6 +154,14 @@ export const callChatApi = async (
   // 超时控制
   const timeout = options.timeout || 600000; // 默认 10 分钟
   const controller = new AbortController();
+  const handleExternalAbort = () => controller.abort();
+  if (options.abortSignal) {
+    if (options.abortSignal.aborted) {
+      controller.abort();
+    } else {
+      options.abortSignal.addEventListener('abort', handleExternalAbort, { once: true });
+    }
+  }
   const timeoutId = setTimeout(() => controller.abort(), timeout);
   
   try {
@@ -168,9 +189,7 @@ export const callChatApi = async (
       }
       
       return res;
-    });
-    
-    clearTimeout(timeoutId);
+    }, 3, 2000, options.abortSignal);
     
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || '';
@@ -182,13 +201,17 @@ export const callChatApi = async (
     
     return content;
   } catch (error: any) {
-    clearTimeout(timeoutId);
-    
     if (error.name === 'AbortError') {
+      if (options.abortSignal?.aborted) {
+        throw new Error('请求已取消');
+      }
       throw new Error(`请求超时 (${timeout / 1000}秒)`);
     }
     
     throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    options.abortSignal?.removeEventListener('abort', handleExternalAbort);
   }
 };
 

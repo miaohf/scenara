@@ -143,7 +143,7 @@ export const toFriendlyAiError = (error: unknown, fallback: string): string => {
     return /comfy/i.test(message) ? COMFYUI_UNAVAILABLE_MESSAGE : BACKEND_UNAVAILABLE_MESSAGE;
   }
   if (message === 'Internal Server Error' || message === 'Request failed') {
-    return '生成服务暂时不可用。若使用本地 ComfyUI，请先确认服务已启动后再试。';
+    return '生成服务暂时不可用，请稍后重试。若使用本地模型，请确认对应服务已启动。';
   }
 
   let normalized = message || fallback;

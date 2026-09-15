@@ -3,6 +3,7 @@ import { Loader2, Edit2, Upload, ArrowRight, ArrowLeft, Sparkles, Wand2 } from '
 import { Keyframe } from '../../types';
 import { useGenerationQueue } from '../../contexts/GenerationQueueContext';
 import { findShotKeyframeJob, formatJobProgressLabel, jobDisplayState } from '../../services/generationQueue';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface KeyframeEditorProps {
   shotId: string;
@@ -31,6 +32,7 @@ const KeyframeImage: React.FC<{ url: string; alt: string; onClick: () => void }>
   alt,
   onClick,
 }) => {
+  const { text } = useInterfaceLanguage();
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
 
@@ -51,8 +53,8 @@ const KeyframeImage: React.FC<{ url: string; alt: string; onClick: () => void }>
   if (failed) {
     return (
       <div className="absolute inset-0 flex flex-col items-center justify-center text-[var(--text-muted)] p-2">
-        <span className="text-[10px] text-[var(--error)] mb-1">图片无法显示</span>
-        <span className="text-[9px] text-[var(--text-muted)] text-center">请重新生成或上传</span>
+        <span className="text-[10px] text-[var(--error)] mb-1">{text('图片无法显示', 'Image unavailable')}</span>
+        <span className="text-[9px] text-[var(--text-muted)] text-center">{text('请重新生成或上传', 'Try generating or uploading again')}</span>
       </div>
     );
   }
@@ -68,7 +70,7 @@ const KeyframeImage: React.FC<{ url: string; alt: string; onClick: () => void }>
         alt={alt}
       />
       <div className="absolute inset-0 bg-[var(--bg-base)]/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-        <span className="text-[var(--text-primary)] text-xs font-mono">点击预览</span>
+        <span className="text-[var(--text-primary)] text-xs font-mono">{text('点击预览', 'Click to preview')}</span>
       </div>
     </>
   );
@@ -96,6 +98,7 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
   onImageClick
 }) => {
   const { jobs } = useGenerationQueue();
+  const { text } = useInterfaceLanguage();
 
   const renderKeyframePanel = (
     type: 'start' | 'end',
@@ -121,7 +124,7 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
               onClick={() => onOptimizeWithAI(type)}
               disabled={isAIOptimizing}
               className="p-1 text-[var(--accent-text)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              title="AI优化提示词"
+              title={text('AI优化提示词', 'Optimize prompt with AI')}
             >
               {isAIOptimizing ? (
                 <Loader2 className="w-3 h-3 animate-spin" />
@@ -133,7 +136,7 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
               <button
                 onClick={() => onEditPrompt(type, keyframe.visualPrompt!)}
                 className="p-1 text-[var(--warning-text)] hover:text-[var(--text-primary)] transition-colors"
-                title="编辑提示词"
+                title={text('编辑提示词', 'Edit prompt')}
               >
                 <Edit2 className="w-3 h-3" />
               </button>
@@ -146,21 +149,21 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
             <KeyframeImage
               url={keyframe.imageUrl}
               alt={label}
-              onClick={() => onImageClick(keyframe.imageUrl!, `${label} - 关键帧`)}
+              onClick={() => onImageClick(keyframe.imageUrl!, `${label} - ${text('关键帧', 'Keyframe')}`)}
             />
           ) : !isGenerating && hasFailed ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-[var(--text-muted)] p-2">
-              <span className="text-[10px] text-[var(--error)] mb-2">生成失败</span>
+              <span className="text-[10px] text-[var(--error)] mb-2">{text('生成失败', 'Generation failed')}</span>
               <button
                 onClick={() => onGenerateKeyframe(type)}
                 className="px-2 py-1 bg-[var(--error-bg)] text-[var(--error-text)] hover:bg-[var(--error-hover-bg-strong)] rounded text-[9px] font-bold transition-colors border border-[var(--error-border)]"
               >
-                重试
+                {text('重试', 'Retry')}
               </button>
             </div>
           ) : !isGenerating ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center text-[var(--text-muted)] p-2">
-              <span className="text-[10px] text-center">未生成</span>
+              <span className="text-[10px] text-center">{text('未生成', 'Not generated')}</span>
             </div>
           ) : null}
           {isGenerating && (
@@ -168,8 +171,8 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
               <Loader2 className="w-6 h-6 animate-spin mb-2 text-[var(--accent)]" />
               <span className="text-[10px] text-[var(--accent-text)] font-mono">
                 {display === 'queued'
-                  ? (job?.queue_position ? `排队 #${job.queue_position}` : '排队中')
-                  : progressLabel || '生成中'}
+                  ? (job?.queue_position ? text(`排队 #${job.queue_position}`, `Queued #${job.queue_position}`) : text('排队中', 'Queued'))
+                  : progressLabel || text('生成中', 'Generating')}
               </span>
               {display === 'running' && (
                 <div className="mt-2 w-20 h-0.5 rounded-full bg-[var(--bg-hover)] overflow-hidden">
@@ -191,7 +194,7 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
                 onClick={() => onCancelKeyframe(type)}
                 className="flex-1 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider border border-[var(--error-border)] bg-[var(--error-bg)] text-[var(--error-text)] hover:bg-[var(--error-hover-bg-strong)] transition-colors"
               >
-                取消生成
+                {text('取消生成', 'Cancel generation')}
               </button>
             ) : null
           ) : (
@@ -201,14 +204,14 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
                 disabled={isGenerating}
                 className="flex-1 py-1.5 bg-[var(--btn-primary-bg)] hover:bg-[var(--btn-primary-hover)] text-[var(--btn-primary-text)] rounded text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1 disabled:opacity-50"
               >
-                {keyframe?.imageUrl ? '重新生成' : '生成'}
+                {keyframe?.imageUrl ? text('重新生成', 'Regenerate') : text('生成', 'Generate')}
               </button>
               <button
                 onClick={() => onUploadKeyframe(type)}
                 className="flex-1 py-1.5 bg-[var(--bg-hover)] hover:bg-[var(--border-secondary)] text-[var(--text-secondary)] rounded text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1"
               >
                 <Upload className="w-3 h-3" />
-                上传
+                {text('上传', 'Upload')}
               </button>
             </>
           )}
@@ -221,7 +224,7 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
             className="w-full py-1.5 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1 border border-[var(--border-secondary)]"
           >
             <ArrowRight className="w-3 h-3" />
-            {keyframe?.imageUrl ? '用上一镜头尾帧覆盖' : '复制上一镜头尾帧'}
+            {keyframe?.imageUrl ? text('用上一镜头尾帧覆盖', 'Replace with previous shot\'s end frame') : text('复制上一镜头尾帧', 'Copy previous shot\'s end frame')}
           </button>
         )}
 
@@ -231,7 +234,7 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
             className="w-full py-1.5 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center justify-center gap-1 border border-[var(--border-secondary)]"
           >
             <ArrowLeft className="w-3 h-3" />
-            {keyframe?.imageUrl ? '用下一镜头首帧覆盖' : '复制下一镜头首帧'}
+            {keyframe?.imageUrl ? text('用下一镜头首帧覆盖', 'Replace with next shot\'s start frame') : text('复制下一镜头首帧', 'Copy next shot\'s start frame')}
           </button>
         )}
       </div>
@@ -242,20 +245,20 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
     <div className="space-y-4">
       <div className="flex items-center gap-2 border-b border-[var(--border-primary)] pb-2">
         <span className="text-xs font-bold text-[var(--text-tertiary)] uppercase tracking-widest flex-1">
-          视觉制作 (Visual Production)
+          {text('视觉制作', 'Visual Production')}
         </span>
         
         {/* AI 增强开关 */}
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-[var(--text-tertiary)]">
-            AI增强提示词
+            {text('AI增强提示词', 'AI prompt enhancement')}
           </span>
           <button
             onClick={onToggleAIEnhancement}
             className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
               useAIEnhancement ? 'bg-[var(--accent)]' : 'bg-[var(--border-secondary)]'
             }`}
-            title={useAIEnhancement ? '关闭AI增强：使用基础提示词快速生成' : '开启AI增强：自动扩展为专业电影级描述'}
+            title={useAIEnhancement ? text('关闭AI增强：使用基础提示词快速生成', 'Disable AI enhancement: generate quickly with the base prompt') : text('开启AI增强：自动扩展为专业电影级描述', 'Enable AI enhancement: expand into a professional cinematic description')}
           >
             <span
               className={`inline-block h-3.5 w-3.5 transform rounded-full bg-[var(--btn-primary-bg)] transition-transform ${
@@ -271,17 +274,17 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
             onClick={onOptimizeBothWithAI}
             disabled={isAIOptimizing}
             className="px-3 py-1.5 bg-[var(--btn-primary-bg)] hover:bg-[var(--btn-primary-hover)] text-[var(--btn-primary-text)] rounded text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="AI一次性优化起始帧和结束帧（推荐）"
+            title={text('AI一次性优化起始帧和结束帧（推荐）', 'Optimize start and end frames with AI (recommended)')}
           >
             {isAIOptimizing ? (
               <>
                 <Loader2 className="w-3 h-3 animate-spin" />
-                <span>优化中...</span>
+                <span>{text('优化中...', 'Optimizing...')}</span>
               </>
             ) : (
               <>
                 <Wand2 className="w-3 h-3" />
-                <span>AI优化两帧</span>
+                <span>{text('AI优化两帧', 'Optimize both frames')}</span>
               </>
             )}
           </button>
@@ -289,8 +292,8 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
       </div>
 
       <div className={`grid gap-4 ${showEndFrame ? 'grid-cols-2' : 'grid-cols-1'}`}>
-        {renderKeyframePanel('start', '起始帧', startKeyframe)}
-        {showEndFrame && renderKeyframePanel('end', '结束帧', endKeyframe)}
+        {renderKeyframePanel('start', text('起始帧', 'Start frame'), startKeyframe)}
+        {showEndFrame && renderKeyframePanel('end', text('结束帧', 'End frame'), endKeyframe)}
       </div>
     </div>
   );

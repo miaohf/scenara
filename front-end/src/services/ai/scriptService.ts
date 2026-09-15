@@ -41,6 +41,15 @@ import {
 import { normalizeSceneId } from '../storyboardIdUtils';
 import { resolveEndpointUrl } from '../urlUtils';
 import { formatProductionBibleForPrompt } from '../productionBibleService';
+import {
+  attachShotAgentMetadata,
+  buildShotAgentContract,
+  completeStoryboardAgentRun,
+  developScriptForProduction,
+  formatDirectorPlanForScene,
+  generateStoryboardDirectorPlan,
+  reviewAndRepairStoryboard,
+} from './storyboardAgent';
 
 // Re-export 日志回调函数（保持外部 API 兼容）
 export { setScriptLogCallback, clearScriptLogCallback, logScriptProgress } from './apiCore';
@@ -411,12 +420,13 @@ export const parseScriptStructure = async (
         resolve();
       }, ms);
       if (abortSignal) {
-        onAbort = () => {
+        const handleAbort = () => {
           clearTimeout(timer);
-          abortSignal.removeEventListener('abort', onAbort);
+          abortSignal.removeEventListener('abort', handleAbort);
           reject(new Error('请求已取消'));
         };
-        abortSignal.addEventListener('abort', onAbort);
+        onAbort = handleAbort;
+        abortSignal.addEventListener('abort', handleAbort);
       }
     });
 
@@ -655,12 +665,13 @@ export const enrichScriptDataVisuals = async (
         resolve();
       }, ms);
       if (abortSignal) {
-        onAbort = () => {
+        const handleAbort = () => {
           clearTimeout(timer);
-          abortSignal.removeEventListener('abort', onAbort);
+          abortSignal.removeEventListener('abort', handleAbort);
           reject(new Error('请求已取消'));
         };
-        abortSignal.addEventListener('abort', onAbort);
+        onAbort = handleAbort;
+        abortSignal.addEventListener('abort', handleAbort);
       }
     });
 
@@ -695,8 +706,20 @@ export const enrichScriptDataVisuals = async (
         nextData.title || '未命名剧本',
         genre,
         nextData.logline || '',
-        characters.map(c => ({ name: c.name, gender: c.gender, age: c.age, personality: c.personality, species: c.species })),
-        scenes.map(s => ({ location: s.location, time: s.time, atmosphere: s.atmosphere })),
+        characters.map(c => ({
+          name: c.name,
+          gender: c.gender,
+          age: c.age,
+          personality: c.personality,
+          species: c.species,
+          creativeDirection: c.creativeDirection,
+        })),
+        scenes.map(s => ({
+          location: s.location,
+          time: s.time,
+          atmosphere: s.atmosphere,
+          creativeDirection: s.creativeDirection,
+        })),
         targetStyle,
         nextData.language || language,
         model,
@@ -891,7 +914,8 @@ export const parseScriptToData = async (
 
   try {
     const structured = await parseScriptStructure(rawText, language, model);
-    const enriched = await enrichScriptDataVisuals(structured, model, visualStyle, language);
+    const developed = await developScriptForProduction(structured, model);
+    const enriched = await enrichScriptDataVisuals(developed, model, visualStyle, language);
 
     addRenderLogWithTokens({
       type: 'script-parsing',
@@ -930,6 +954,16 @@ interface GenerateShotListOptions {
   reuseUnchangedScenes?: boolean;
   enableQualityCheck?: boolean;
   promptTemplates?: PromptTemplateConfig;
+  /**
+   * 每个场景完成后立即通知调用方，使调用方可以持久化已完成的部分。
+   * 回调失败不会中断后续分镜生成；持久化属于可靠性增强，不应影响创作结果。
+   */
+  onSceneComplete?: (result: {
+    scene: Scene;
+    sceneIndex: number;
+    shots: Shot[];
+    mode: 'generated' | 'reused' | 'fallback';
+  }) => void | Promise<void>;
 }
 
 // Keep version=1 so StageDirector does not mislabel this deterministic pass as AI V2 scoring.
@@ -968,6 +1002,7 @@ const buildSceneReuseSignature = (input: {
   language: string;
   model: string;
   artDirectionSeed?: string;
+  directorPlanSeed?: string;
 }): string => {
   const normalizedScene = [
     normalizeMatchText(input.scene.location),
@@ -983,6 +1018,7 @@ const buildSceneReuseSignature = (input: {
     normalizeMatchText(input.language),
     normalizeMatchText(input.model),
     hashText(normalizeMatchText(input.artDirectionSeed || '')),
+    hashText(normalizeMatchText(input.directorPlanSeed || '')),
   ].join('::');
   return `scene-${hashText(payload)}`;
 };
@@ -1427,12 +1463,13 @@ export const generateShotList = async (
         resolve();
       }, ms);
       if (abortSignal) {
-        onAbort = () => {
+        const handleAbort = () => {
           clearTimeout(timer);
-          abortSignal.removeEventListener('abort', onAbort);
+          abortSignal.removeEventListener('abort', handleAbort);
           reject(new Error('请求已取消'));
         };
-        abortSignal.addEventListener('abort', onAbort);
+        onAbort = handleAbort;
+        abortSignal.addEventListener('abort', handleAbort);
       }
     });
 
@@ -1468,6 +1505,30 @@ export const generateShotList = async (
     const end = start + Math.max(0, count) - 1;
     return { start, end, count: Math.max(0, count) };
   });
+
+  ensureNotAborted();
+  const storedDirectorPlan = scriptData.storyboardDirectorPlan;
+  const canReuseDirectorPlan = Boolean(
+    storedDirectorPlan &&
+    storedDirectorPlan.targetShotCount === totalShotsNeeded &&
+    storedDirectorPlan.shotDurationSeconds === shotDurationSeconds &&
+    storedDirectorPlan.beats.length === scriptData.scenes.length &&
+    scriptData.scenes.every((scene) =>
+      storedDirectorPlan.beats.some((beat) => String(beat.sceneId) === String(scene.id))
+    )
+  );
+  const directorPlan = canReuseDirectorPlan && storedDirectorPlan
+    ? storedDirectorPlan
+    : await generateStoryboardDirectorPlan(
+        scriptData,
+        sceneShotPlan,
+        shotDurationSeconds,
+        model,
+        abortSignal,
+      );
+  if (canReuseDirectorPlan) {
+    logScriptProgress('导演 Agent：已复用当前全片分镜规划。');
+  }
 
   const getSceneNameForLog = (scene: Scene, index: number): string => {
     const location = String(scene.location || '')
@@ -1707,7 +1768,12 @@ export const generateShotList = async (
         visualStyle: previousScriptData.visualStyle || visualStyle,
         language: previousScriptData.language || lang,
         model,
-        artDirectionSeed: previousScriptData.artDirection?.consistencyAnchors || ''
+        artDirectionSeed: previousScriptData.artDirection?.consistencyAnchors || '',
+        directorPlanSeed: JSON.stringify(
+          previousScriptData.storyboardDirectorPlan?.beats.find(
+            (beat) => String(beat.sceneId) === String(previousScene.id)
+          ) || {}
+        )
       });
       if (!reusableSceneBuckets.has(signature)) {
         reusableSceneBuckets.set(signature, []);
@@ -1727,6 +1793,18 @@ export const generateShotList = async (
     const paragraphs = actionSource.text;
     const sceneProgressLabel = getSceneProgressLabel(scene, index);
 
+    const completeScene = async (
+      shots: Shot[],
+      mode: 'generated' | 'reused' | 'fallback'
+    ): Promise<Shot[]> => {
+      try {
+        await options.onSceneComplete?.({ scene, sceneIndex: index, shots, mode });
+      } catch (error) {
+        console.warn(`Persisting partial storyboard for scene ${scene.id} failed`, error);
+      }
+      return shots;
+    };
+
     if (shouldReuseUnchangedScenes && reusableSceneBuckets.size > 0) {
       const signature = buildSceneReuseSignature({
         scene,
@@ -1735,7 +1813,10 @@ export const generateShotList = async (
         visualStyle,
         language: lang,
         model,
-        artDirectionSeed: artDir?.consistencyAnchors || ''
+        artDirectionSeed: artDir?.consistencyAnchors || '',
+        directorPlanSeed: JSON.stringify(
+          directorPlan.beats.find((beat) => String(beat.sceneId) === String(scene.id)) || {}
+        )
       });
       const candidateGroup = reusableSceneBuckets.get(signature);
       if (candidateGroup && candidateGroup.length > 0) {
@@ -1750,7 +1831,7 @@ export const generateShotList = async (
         logScriptProgress(`复用分镜：${sceneProgressLabel}`);
         logShotSceneCompletion(scene, index, remapped.length, 'reused');
         logScriptProgress(`场景「${scene.location}」命中增量复用，跳过AI分镜生成（复用 ${remapped.length} 条）`);
-        return remapped;
+        return completeScene(remapped, 'reused');
       }
     }
 
@@ -1763,7 +1844,7 @@ export const generateShotList = async (
         `${scene.location} ${scene.time} ${scene.atmosphere}`.trim()
       );
       logShotSceneCompletion(scene, index, fallbackShots.length, 'fallback');
-      return fallbackShots;
+      return completeScene(fallbackShots, 'fallback');
     }
 
     if (actionSource.source !== 'direct') {
@@ -1777,6 +1858,7 @@ export const generateShotList = async (
         id: c.id,
         name: c.name,
         wardrobe: c.wardrobe || '',
+        creativeDirection: c.creativeDirection,
         variations: (c.variations || []).map(variation => ({
           id: variation.id,
           name: variation.name,
@@ -1793,6 +1875,9 @@ export const generateShotList = async (
         category: p.category,
         isWearable: !!p.isWearable,
         desc: p.description,
+        presentationMode: p.presentationMode,
+        presentationNote: p.presentationNote,
+        forbiddenPresentationModes: p.forbiddenPresentationModes,
       }))
     );
 
@@ -1801,6 +1886,7 @@ export const generateShotList = async (
       DEFAULT_PROMPT_TEMPLATE_CONFIG.storyboard.shotGeneration
     );
     const productionBibleBlock = formatProductionBibleForPrompt(scriptData);
+    const directorPlanBlock = formatDirectorPlanForScene(directorPlan, String(scene.id));
     const renderedShotPrompt = renderPromptTemplate(shotGenerationTemplate, {
       sceneIndex: index + 1,
       lang,
@@ -1829,9 +1915,10 @@ export const generateShotList = async (
       keyframeVisualPromptConstraint: artDir ? ' and follow Art Direction' : '',
       productionBibleBlock,
     });
-    const prompt = shotGenerationTemplate.includes('{productionBibleBlock}')
+    const basePrompt = shotGenerationTemplate.includes('{productionBibleBlock}')
       ? renderedShotPrompt
       : `${productionBibleBlock}\n\n${renderedShotPrompt}`;
+    const prompt = `${directorPlanBlock}\n\n${basePrompt}\n\n${buildShotAgentContract(shotDurationSeconds)}`;
 
     let responseText = '';
     try {
@@ -1946,7 +2033,7 @@ export const generateShotList = async (
       });
 
       logShotSceneCompletion(scene, index, result.length, 'generated');
-      return result;
+      return completeScene(result, 'generated');
     } catch (e: any) {
       console.error(`Failed to generate shots for scene ${scene.id}`, e);
       try {
@@ -1969,7 +2056,7 @@ export const generateShotList = async (
       const fallbackShots = createFallbackShotsForScene(scene, shotsPerScene, paragraphs);
       logScriptProgress(`分镜生成失败，改用兜底结果：${sceneProgressLabel}`);
       logShotSceneCompletion(scene, index, fallbackShots.length, 'fallback');
-      return fallbackShots;
+      return completeScene(fallbackShots, 'fallback');
     }
   };
 
@@ -2007,6 +2094,11 @@ export const generateShotList = async (
     return {
       ...s,
       id: `shot-${idx + 1}`,
+      // 默认路由：首镜/尾镜保留首尾帧工作流，中间镜头使用 MiniMax H3 Ref2VA。
+      // 用户在分镜页手动切换模型后，仍以镜头级 videoModel 为准。
+      videoModel: (idx === 0 || idx === allShots.length - 1)
+        ? 'comfyui-minimax-h3-flft2v' as any
+        : 'comfyui-minimax-h3-r2v' as any,
       characters,
       characterVariations: normalizeShotCharacterVariations(
         s.characterVariations,
@@ -2025,21 +2117,37 @@ export const generateShotList = async (
     };
   });
 
-  const qualityCheckedShots = enableQualityCheck
+  const agentEnrichedShots = attachShotAgentMetadata(
+    normalizedShots,
+    scriptData,
+    directorPlan,
+    shotDurationSeconds,
+  );
+
+  let qualityCheckedShots = enableQualityCheck
     ? applyScriptStageQualityPipeline(
-        normalizedShots,
+        agentEnrichedShots,
         scriptData,
         validCharacterIds,
         validPropIds,
         visualStyle
       )
-    : normalizedShots.map(shot => {
+    : agentEnrichedShots.map(shot => {
         if (!('qualityAssessment' in shot)) return shot;
         const { qualityAssessment, ...rest } = shot as Shot & { qualityAssessment?: ShotQualityAssessment };
         return rest as Shot;
       });
   if (!enableQualityCheck) {
     logScriptProgress('分镜质量校验已关闭，跳过自动打分与修复。');
+    completeStoryboardAgentRun(scriptData, '用户关闭了分镜质量校验，未运行语义审片 Agent。');
+  } else {
+    qualityCheckedShots = await reviewAndRepairStoryboard(
+      qualityCheckedShots,
+      scriptData,
+      directorPlan,
+      model,
+      abortSignal,
+    );
   }
   logScriptProgress(`分镜生成完成，总耗时 ${Math.round((Date.now() - overallStartTime) / 1000)}s`);
   return qualityCheckedShots;

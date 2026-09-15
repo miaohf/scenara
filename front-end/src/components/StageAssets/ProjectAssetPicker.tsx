@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Check, Link2, Search, MapPin, Package } from 'lucide-react';
 import { Scene, Prop, SeriesProject } from '../../types';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 type AssetType = 'scene' | 'prop';
 
@@ -15,6 +16,7 @@ interface Props {
 }
 
 const ProjectAssetPicker: React.FC<Props> = ({ isOpen, onClose, project, assetType, existingIds, onSelectScene, onSelectProp }) => {
+  const { text } = useInterfaceLanguage();
   const [query, setQuery] = useState('');
   if (!isOpen || !project) return null;
 
@@ -25,8 +27,8 @@ const ProjectAssetPicker: React.FC<Props> = ({ isOpen, onClose, project, assetTy
 
   const isAlreadyLinked = (id: string) => existingIds.includes(id);
   const Icon = isScene ? MapPin : Package;
-  const title = isScene ? '从场景库添加' : '从道具库添加';
-  const emptyText = isScene ? '场景库为空' : '道具库为空';
+  const title = isScene ? text('从场景库添加', 'Add from locations') : text('从道具库添加', 'Add from props');
+  const emptyText = isScene ? text('场景库为空', 'Locations are empty') : text('道具库为空', 'Props are empty');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--bg-base)]/70 p-6" onClick={onClose}>
@@ -41,7 +43,7 @@ const ProjectAssetPicker: React.FC<Props> = ({ isOpen, onClose, project, assetTy
         <div className="px-6 py-3 border-b border-[var(--border-subtle)]">
           <div className="relative">
             <Search className="w-4 h-4 text-[var(--text-muted)] absolute left-3 top-1/2 -translate-y-1/2" />
-            <input value={query} onChange={e => setQuery(e.target.value)} placeholder={isScene ? '搜索场景...' : '搜索道具...'} className="w-full pl-9 pr-3 py-2 bg-[var(--bg-primary)] border border-[var(--border-primary)] text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none rounded" autoFocus />
+            <input value={query} onChange={e => setQuery(e.target.value)} placeholder={isScene ? text('搜索场景…', 'Search locations…') : text('搜索道具…', 'Search props…')} className="w-full pl-9 pr-3 py-2 bg-[var(--bg-primary)] border border-[var(--border-primary)] text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none rounded" autoFocus />
           </div>
         </div>
 
@@ -49,7 +51,7 @@ const ProjectAssetPicker: React.FC<Props> = ({ isOpen, onClose, project, assetTy
           {items.length === 0 ? (
             <div className="text-center py-12 text-[var(--text-muted)]">
               <Icon className="w-8 h-8 mx-auto mb-3 opacity-30" />
-              <p className="text-xs">{query ? '未找到匹配项' : emptyText}</p>
+              <p className="text-xs">{query ? text('未找到匹配项', 'No matches') : emptyText}</p>
             </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">

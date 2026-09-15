@@ -488,7 +488,8 @@ export const chatCompletion = async (
   maxTokens: number = 8192,
   responseFormat?: 'json_object',
   timeout: number = 600000,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  imageUrls: string[] = [],
 ): Promise<string> => {
   if (abortSignal?.aborted) {
     throw new Error('Request cancelled');
@@ -506,8 +507,10 @@ export const chatCompletion = async (
     const content = await apiCallChat(
       {
         prompt: effectivePrompt,
+        imageUrls,
         responseFormat: wantsJson ? 'json' : undefined,
         timeout,
+        abortSignal,
       },
       resolvedModel as ChatModelDefinition | undefined,
     );
@@ -516,9 +519,17 @@ export const chatCompletion = async (
 
   const apiKey = checkApiKey('chat', model);
 
+  const buildUserContent = (text: string): string | Array<Record<string, unknown>> =>
+    imageUrls.length > 0
+      ? [
+          { type: 'text', text },
+          ...imageUrls.map((url) => ({ type: 'image_url', image_url: { url } })),
+        ]
+      : text;
+
   const requestBody: any = {
     model: requestModel,
-    messages: [{ role: 'user', content: effectivePrompt }],
+    messages: [{ role: 'user', content: buildUserContent(effectivePrompt) }],
     temperature,
   };
 
@@ -572,7 +583,7 @@ export const chatCompletion = async (
     } catch (error) {
       if (wantsJson && canUseNativeJsonObject && isJsonResponseFormatUnsupportedError(error)) {
         delete requestBody.response_format;
-        requestBody.messages = [{ role: 'user', content: withJsonOutputGuardrails(prompt) }];
+        requestBody.messages = [{ role: 'user', content: buildUserContent(withJsonOutputGuardrails(prompt)) }];
         response = await executeRequest(requestBody);
       } else {
         throw error;
@@ -600,6 +611,27 @@ export const chatCompletion = async (
     }
   }
 };
+
+/** Non-stream OpenAI-compatible multimodal chat completion. */
+export const chatCompletionWithImages = async (
+  prompt: string,
+  imageUrls: string[],
+  model: string = getActiveChatModelName(),
+  temperature: number = 0.1,
+  maxTokens: number = 4096,
+  responseFormat?: 'json_object',
+  timeout: number = 600000,
+  abortSignal?: AbortSignal,
+): Promise<string> => chatCompletion(
+  prompt,
+  model,
+  temperature,
+  maxTokens,
+  responseFormat,
+  timeout,
+  abortSignal,
+  imageUrls,
+);
 
 /** Streaming chat completion (SSE) */
 export const chatCompletionStream = async (
@@ -629,6 +661,7 @@ export const chatCompletionStream = async (
         prompt: effectivePrompt,
         responseFormat: wantsJson ? 'json' : undefined,
         timeout,
+        abortSignal,
       },
       resolvedModel as ChatModelDefinition | undefined,
     );
@@ -706,51 +739,64 @@ export const chatCompletionStream = async (
     }
 
     const reader = response.body.getReader();
-    const decoder = new TextDecoder('utf-8');
+    const decoder = new TextDecoder('utf-8', { fatal: true });
     let buffer = '';
     let fullText = '';
+
+    const consumeSseBlock = (rawBlock: string): 'done' | 'continue' => {
+      const dataLines = rawBlock
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.replace(/^data:\s?/, ''));
+      if (dataLines.length === 0) return 'continue';
+
+      const dataStr = dataLines.join('\n').trim();
+      if (dataStr === '[DONE]') return 'done';
+
+      try {
+        const payload = JSON.parse(dataStr);
+        const delta = payload?.choices?.[0]?.delta?.content || payload?.choices?.[0]?.message?.content || '';
+        if (delta) {
+          fullText += delta;
+          onDelta?.(delta);
+        }
+      } catch (error) {
+        throw new Error(`无法解析模型流式响应：${error instanceof Error ? error.message : 'SSE JSON 格式错误'}`);
+      }
+      return 'continue';
+    };
+
+    const consumeAvailableBlocks = (flush = false): boolean => {
+      let boundary = buffer.match(/\r?\n\r?\n/);
+      while (boundary?.index !== undefined) {
+        const boundaryIndex = boundary.index;
+        const chunk = buffer.slice(0, boundaryIndex).trim();
+        buffer = buffer.slice(boundaryIndex + boundary[0].length);
+        if (chunk && consumeSseBlock(chunk) === 'done') return true;
+        boundary = buffer.match(/\r?\n\r?\n/);
+      }
+
+      if (flush && buffer.trim()) {
+        const chunk = buffer.trim();
+        buffer = '';
+        return consumeSseBlock(chunk) === 'done';
+      }
+      return false;
+    };
 
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-
-      let boundaryIndex = buffer.indexOf('\n\n');
-      while (boundaryIndex !== -1) {
-        const chunk = buffer.slice(0, boundaryIndex).trim();
-        buffer = buffer.slice(boundaryIndex + 2);
-
-        if (chunk) {
-          const lines = chunk.split('\n');
-          for (const line of lines) {
-            if (!line.startsWith('data:')) continue;
-            const dataStr = line.replace(/^data:\s*/, '');
-
-            if (dataStr === '[DONE]') {
-              clearTimeout(timeoutId);
-              if (wantsJson) {
-                return cleanJsonString(fullText);
-              }
-              return fullText;
-            }
-
-            try {
-              const payload = JSON.parse(dataStr);
-              const delta = payload?.choices?.[0]?.delta?.content || payload?.choices?.[0]?.message?.content || '';
-              if (delta) {
-                fullText += delta;
-                onDelta?.(delta);
-              }
-            } catch {
-              // Ignore malformed SSE JSON line.
-            }
-          }
-        }
-
-        boundaryIndex = buffer.indexOf('\n\n');
+      if (consumeAvailableBlocks()) {
+        clearTimeout(timeoutId);
+        return wantsJson ? cleanJsonString(fullText) : fullText;
       }
     }
+
+    buffer += decoder.decode();
+    consumeAvailableBlocks(true);
 
     clearTimeout(timeoutId);
     if (wantsJson) {

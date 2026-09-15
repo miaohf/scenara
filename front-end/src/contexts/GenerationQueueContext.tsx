@@ -5,7 +5,7 @@ import type { Episode } from "@/types";
 import { fetchJob, listEpisodeJobs, type JobStatus } from "@/services/aiApiAdapter";
 import { setGenerationJobListener } from "@/services/generationContext";
 import { mergeEpisodeMediaFromServer, reconcileEpisodeWithJobs } from "@/services/jobReconcile";
-import { primaryRunningJobId, sortQueueJobs } from "@/services/generationQueue";
+import { sortQueueJobs } from "@/services/generationQueue";
 import { loadEpisode } from "@/services/storageService";
 
 interface GenerationQueueValue {
@@ -35,6 +35,7 @@ export const GenerationQueueProvider: React.FC<{
   const inFlightRef = useRef(false);
   const mediaSyncTickRef = useRef(0);
   const idleCatchupRef = useRef(0);
+  const pollRef = useRef<(() => void) | null>(null);
   const episodeRef = useRef(episode);
   const reconcileRef = useRef(onEpisodeReconcile);
   episodeRef.current = episode;
@@ -60,6 +61,9 @@ export const GenerationQueueProvider: React.FC<{
 
     let cancelled = false;
     const tick = async () => {
+      // 活动任务结束后只做几次收尾对账，随后暂停网络轮询；新任务创建时
+      // upsertJob 会重新唤醒。这样失败任务不会让前端永久刷 pending/running 查询。
+      if (hydratedRef.current && idleCatchupRef.current >= 3) return;
       if (inFlightRef.current) return;
       inFlightRef.current = true;
       try {
@@ -103,10 +107,7 @@ export const GenerationQueueProvider: React.FC<{
           ).filter((job): job is JobStatus => Boolean(job));
           if (cancelled) return;
           applyJobs([...active, ...finishedJobs], false);
-          if (finishedJobs.some((job) => job.status === "completed" || job.status === "failed")) {
-            void syncFromServer();
-            return;
-          }
+          if (finishedJobs.some((job) => job.status === "completed" || job.status === "failed")) return;
         }
 
         // 批量入队不挂 SSE：Worker 已写回剧集时，定期把本地空镜头补上图。
@@ -123,7 +124,6 @@ export const GenerationQueueProvider: React.FC<{
                 applyJobs([...active, ...recent], false);
               })
               .catch(() => undefined);
-            void syncFromServer();
           }
         } else if (idleCatchupRef.current < 3) {
           idleCatchupRef.current += 1;
@@ -134,7 +134,6 @@ export const GenerationQueueProvider: React.FC<{
               if (!cancelled) applyJobs(recent, false);
             })
             .catch(() => undefined);
-          await syncFromServer();
         } else {
           mediaSyncTickRef.current = 0;
         }
@@ -145,29 +144,24 @@ export const GenerationQueueProvider: React.FC<{
       }
     };
 
+    pollRef.current = () => {
+      idleCatchupRef.current = 0;
+      void tick();
+    };
     void tick();
     const timer = window.setInterval(() => {
       void tick();
     }, POLL_MS);
     const onVisible = () => {
       if (document.visibilityState === "visible") {
-        void loadEpisode(episodeId)
-          .then((server) => {
-            if (cancelled) return;
-            const reconcile = reconcileRef.current;
-            if (!reconcile) return;
-            reconcile((prev) => {
-              const { episode: next, changed } = mergeEpisodeMediaFromServer(prev, server);
-              return changed ? next : prev;
-            });
-          })
-          .catch(() => undefined);
+        pollRef.current?.();
       }
     };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);
     return () => {
       cancelled = true;
+      pollRef.current = null;
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
@@ -182,6 +176,9 @@ export const GenerationQueueProvider: React.FC<{
       }
       return sortQueueJobs(next);
     });
+    if (job.status === "pending" || job.status === "running") {
+      pollRef.current?.();
+    }
     if (job.status === "completed" || job.status === "failed") {
       applyJobs([job], false);
     }
@@ -193,9 +190,8 @@ export const GenerationQueueProvider: React.FC<{
   }, [upsertJob]);
 
   const value = useMemo<GenerationQueueValue>(() => {
-    const runnerId = primaryRunningJobId(jobs);
-    const runningCount = runnerId ? 1 : 0;
-    const queuedCount = jobs.filter((job) => job.id !== runnerId).length;
+    const runningCount = jobs.filter((job) => job.status === "running").length;
+    const queuedCount = jobs.filter((job) => job.status === "pending").length;
     return { jobs, runningCount, queuedCount, upsertJob };
   }, [jobs, upsertJob]);
 

@@ -3,6 +3,7 @@ import { Mic, Loader2, Trash2 } from 'lucide-react';
 import { Character, Shot, DubbingMode } from '../../types';
 import { getAudioModels, getActiveAudioModel } from '../../services/modelRegistry';
 import { AudioModelDefinition } from '../../types/model';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface DubbingPanelProps {
   shot: Shot;
@@ -12,6 +13,7 @@ interface DubbingPanelProps {
 }
 
 const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [], onGenerateDubbing, onClearDubbing }) => {
+  const { text } = useInterfaceLanguage();
   const audioModels = getAudioModels().filter((m) => m.isEnabled);
   const activeAudioModel = getActiveAudioModel();
 
@@ -26,15 +28,16 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [],
   const hasDubbingAudio = !!shot.dubbing?.audioUrl;
   const resolvedDubbingModel = audioModels.find((m) => m.id === selectedAudioModelId) as AudioModelDefinition | undefined;
   const fallbackDubbingText = useMemo(
-    () => (dubbingMode === 'dialogue' ? (shot.dialogue || '') : (shot.actionSummary || '')).trim(),
-    [dubbingMode, shot.dialogue, shot.actionSummary]
+    // 动作描述是画面指令，不能默认当作旁白；无明确台词时由 H3 生成环境声。
+    () => (dubbingMode === 'dialogue' ? (shot.dialogue || '') : '').trim(),
+    [dubbingMode, shot.dialogue]
   );
   const canGenerateDubbing = dubbingText.trim().length > 0 && !!selectedAudioModelId && !isGeneratingDubbing;
 
   useEffect(() => {
     const initialMode = shot.dubbing?.mode || 'narration';
     const initialModelId = shot.dubbing?.modelId || activeAudioModel?.id || audioModels[0]?.id || 'gpt-audio-1.5';
-    const initialText = (shot.dubbing?.text || (initialMode === 'dialogue' ? shot.dialogue : shot.actionSummary) || '').trim();
+    const initialText = (shot.dubbing?.text || (initialMode === 'dialogue' ? shot.dialogue : '') || '').trim();
     setDubbingMode(initialMode);
     setSelectedAudioModelId(initialModelId);
     setDubbingText(initialText);
@@ -51,7 +54,7 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [],
       <div className="flex items-center justify-between">
         <h5 className="text-[10px] font-bold uppercase tracking-widest text-[var(--text-tertiary)] flex items-center gap-2">
           <Mic className="w-3 h-3 text-[var(--accent)]" />
-          配音模块
+          {text('配音模块', 'Dubbing')}
         </h5>
         {shot.dubbing?.status === 'completed' && (
           <span className="text-[9px] text-[var(--success)] font-mono">● READY</span>
@@ -64,7 +67,7 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [],
           onClick={() => {
             setDubbingMode('narration');
             if (!shot.dubbing?.text || dubbingMode !== 'narration') {
-              setDubbingText((shot.actionSummary || '').trim());
+              setDubbingText('');
             }
           }}
           className={`px-2 py-2 rounded border text-[10px] font-bold uppercase tracking-wider transition-colors ${
@@ -74,7 +77,7 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [],
           }`}
           disabled={isGeneratingDubbing}
         >
-          旁白
+          {text('旁白', 'Narration')}
         </button>
         <button
           type="button"
@@ -91,7 +94,7 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [],
           }`}
           disabled={isGeneratingDubbing}
         >
-          对话
+          {text('对话', 'Dialogue')}
         </button>
       </div>
 
@@ -99,7 +102,7 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [],
         {dubbingMode === 'dialogue' && voiceCharacters.length > 0 && (
           <>
             <label className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-widest block">
-              说话角色
+              {text('说话角色', 'Speaker')}
             </label>
             <select
               value={selectedSpeakerId}
@@ -107,7 +110,7 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [],
               className="w-full bg-[var(--bg-surface)] border border-[var(--border-primary)] text-[var(--text-primary)] text-xs rounded-lg px-3 py-2 outline-none focus:border-[var(--accent)]"
               disabled={isGeneratingDubbing}
             >
-              <option value="">自动识别声音角色</option>
+              <option value="">{text('自动识别声音角色', 'Auto-detect speaker')}</option>
               {voiceCharacters.map((character) => (
                 <option key={character.id} value={character.id}>
                   {character.name}
@@ -115,12 +118,12 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [],
               ))}
             </select>
             <p className="text-[9px] text-[var(--text-muted)]">
-              该角色名会写入 H3 原生音频提示词；不会作为画面角色加入参考图。
+              {text('该角色名会写入 H3 原生音频提示词；不会作为画面角色加入参考图。', 'The speaker name is added to the H3 audio prompt; it is not added as a visual reference character.')}
             </p>
           </>
         )}
         <label className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-widest block">
-          选择配音模型
+          {text('选择配音模型', 'Select voice model')}
         </label>
         <select
           value={selectedAudioModelId}
@@ -136,15 +139,15 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [],
         </select>
         <p className="text-[9px] text-[var(--text-muted)]">
           {resolvedDubbingModel
-            ? `默认音色 ${resolvedDubbingModel.params.defaultVoice} · 输出 ${resolvedDubbingModel.params.outputFormat}`
-            : '请先在模型配置中启用配音模型'}
+            ? text(`默认音色 ${resolvedDubbingModel.params.defaultVoice} · 输出 ${resolvedDubbingModel.params.outputFormat}`, `Default voice ${resolvedDubbingModel.params.defaultVoice} · Output ${resolvedDubbingModel.params.outputFormat}`)
+            : text('请先在模型配置中启用配音模型', 'Enable an audio model in Model Configuration first')}
         </p>
       </div>
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <label className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-widest">
-            配音文本
+            {text('配音文本', 'Voiceover text')}
           </label>
           <button
             type="button"
@@ -152,14 +155,14 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [],
             className="text-[9px] text-[var(--accent-text)] hover:text-[var(--text-primary)]"
             disabled={isGeneratingDubbing}
           >
-            使用建议文本
+            {text('使用建议文本', 'Use suggested text')}
           </button>
         </div>
         <textarea
           value={dubbingText}
           onChange={(e) => setDubbingText(e.target.value)}
           rows={3}
-          placeholder={dubbingMode === 'dialogue' ? '请输入对话文本' : '请输入旁白文本'}
+          placeholder={dubbingMode === 'dialogue' ? text('请输入对话文本', 'Enter dialogue text') : text('请输入旁白文本', 'Enter narration text')}
           className="w-full bg-[var(--bg-surface)] border border-[var(--border-primary)] text-[var(--text-primary)] text-xs rounded-lg px-3 py-2 outline-none focus:border-[var(--accent)] resize-y min-h-[72px]"
           disabled={isGeneratingDubbing}
         />
@@ -175,10 +178,10 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [],
           {isGeneratingDubbing ? (
             <>
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              生成中...
+              {text('生成中...', 'Generating...')}
             </>
           ) : (
-            <>生成配音</>
+            <>{text('生成配音', 'Generate voiceover')}</>
           )}
         </button>
         {shot.dubbing && (
@@ -187,7 +190,7 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [],
             onClick={onClearDubbing}
             disabled={isGeneratingDubbing}
             className="px-3 py-2 rounded-lg border border-[var(--border-secondary)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
-            title="清除当前配音"
+            title={text('清除当前配音', 'Clear current voiceover')}
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
@@ -199,7 +202,7 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [],
       {hasDubbingAudio && (
         <div className="space-y-2">
           <audio src={shot.dubbing?.audioUrl} controls className="w-full" />
-          <p className="text-[9px] text-[var(--text-muted)]">配音已生成，可单独预览并用于后续导出。</p>
+          <p className="text-[9px] text-[var(--text-muted)]">{text('配音已生成，可单独预览并用于后续导出。', 'Voiceover generated. Preview it separately or use it in the final export.')}</p>
         </div>
       )}
     </div>

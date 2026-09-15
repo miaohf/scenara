@@ -28,7 +28,7 @@ import {
 import { useTheme } from '../contexts/ThemeContext';
 import type { Episode } from '../types';
 import { useGenerationQueue } from '../contexts/GenerationQueueContext';
-import { describeJobTitle, formatJobProgressLabel, jobDisplayState, jobKind, primaryRunningJobId, type JobKind } from '../services/generationQueue';
+import { describeJobTitle, formatJobProgressLabel, jobDisplayState, jobKind, type JobKind } from '../services/generationQueue';
 import { cancelJob, type JobStatus } from '../services/aiApiAdapter';
 import LanguageModeSelector from './LanguageModeSelector';
 import { useInterfaceLanguage } from '../contexts/InterfaceLanguageContext';
@@ -81,7 +81,7 @@ const JOB_KIND_LABEL: Record<JobKind, string> = {
 
 const Sidebar: React.FC<SidebarProps> = ({ currentStage, setStage, onExit, onGoHome, projectName, onShowModelConfig, isNavigationLocked, isBackgroundBusy, episode, episodeInfo, onGoToProject, collapsed = false, onCollapsedChange }) => {
   const { theme, toggleTheme } = useTheme();
-  const { language, setLanguage, text } = useInterfaceLanguage();
+  const { language, setLanguage, text, t } = useInterfaceLanguage();
   const { jobs, runningCount, queuedCount, upsertJob } = useGenerationQueue();
   const [cancellingIds, setCancellingIds] = useState<string[]>([]);
   const showQueue = !isNavigationLocked && (isBackgroundBusy || jobs.length > 0);
@@ -93,9 +93,6 @@ const Sidebar: React.FC<SidebarProps> = ({ currentStage, setStage, onExit, onGoH
     { id: 'prompts', label: '提示词库', english: 'Prompt Library', icon: ListTree },
   ];
 
-  const runnerId = primaryRunningJobId(jobs);
-  const runningJob = jobs.find((job) => job.id === runnerId);
-  const runningProgress = typeof runningJob?.progress === 'number' ? runningJob.progress : null;
 
   const handleCancelQueueJob = async (job: JobStatus, event: React.MouseEvent) => {
     event.preventDefault();
@@ -263,7 +260,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentStage, setStage, onExit, onGoH
             <div className="flex items-center gap-1.5 min-w-0">
               <Loader2 className="w-3.5 h-3.5 text-[var(--accent-text)] animate-spin shrink-0" />
               <span className="text-[10px] font-medium text-[var(--accent-text)] tracking-wide uppercase">
-                {text('生成队列', 'GENERATION QUEUE')}
+          {t('queue.title')}
               </span>
             </div>
             <span
@@ -273,7 +270,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentStage, setStage, onExit, onGoH
               {jobs.length === 0
                 ? '…'
                 : runningCount > 0
-                  ? `${runningProgress ?? 0}% · ${runningCount}/${jobs.length}`
+                  ? `${runningCount}/${jobs.length}`
                   : text(`排队 ${jobs.length}`, `${jobs.length} queued`)}
             </span>
           </div>

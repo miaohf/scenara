@@ -12,6 +12,28 @@ export interface CharacterVariation {
   status?: 'pending' | 'generating' | 'completed' | 'failed'; // 生成状态，用于loading状态持久化
 }
 
+/** 编剧/导演 Agent 为角色补充的创作意图，不覆盖剧本中的客观事实。 */
+export interface CreativeCharacterDirection {
+  dramaticFunction: string;
+  desire: string;
+  innerConflict: string;
+  performanceNotes: string;
+  silhouette: string;
+  signatureFeatures: string[];
+  /** 服装的叙事目的；显式服装事实仍以 wardrobe/variation 为准。 */
+  wardrobeIntent: string;
+}
+
+/** 编剧/导演 Agent 为场景补充的戏剧与视觉意图。 */
+export interface CreativeSceneDirection {
+  narrativePurpose: string;
+  conflict: string;
+  emotionalTurn: string;
+  visualMotif: string;
+  continuityIn: string;
+  continuityOut: string;
+}
+
 /** 角色在剧本中的用途；旧数据缺失时按名称/语义兼容推断。 */
 export type CharacterRole = 'visual' | 'voice';
 
@@ -177,6 +199,7 @@ export interface Character {
   promptVersions?: PromptVersion[]; // Prompt edit history with rollback support
   negativePrompt?: string;
   coreFeatures?: string;
+  creativeDirection?: CreativeCharacterDirection;
   shapeReferenceImage?: string; // Optional reference image used only for shape/silhouette guidance during generation
   referenceImage?: string;
   turnaround?: CharacterTurnaroundData;
@@ -195,6 +218,7 @@ export interface Scene {
   location: string;
   time: string;
   atmosphere: string;
+  creativeDirection?: CreativeSceneDirection;
   visualPrompt?: string;
   promptVersions?: PromptVersion[]; // Prompt edit history with rollback support
   negativePrompt?: string; // 负面提示词，用于排除不想要的元素
@@ -281,6 +305,51 @@ export interface Keyframe {
   promptVersions?: PromptVersion[]; // Prompt edit history with rollback support
   imageUrl?: string; // 关键帧图像，存储为base64格式（data:image/png;base64,...）
   status: 'pending' | 'generating' | 'completed' | 'failed';
+  /** 成图后的结构 + 视觉语义审核结果；视频提交门禁以此为准。 */
+  visualReview?: KeyframeVisualReview;
+}
+
+export type VisualReviewIssueType =
+  | 'structure'
+  | 'shot_size'
+  | 'composition'
+  | 'character_count'
+  | 'character_identity'
+  | 'wardrobe'
+  | 'subject_position'
+  | 'prop_presence'
+  | 'prop_scale'
+  | 'prop_usage'
+  | 'scene_match'
+  | 'anatomy'
+  | 'text_watermark'
+  | 'motion_space'
+  | 'adjacent_similarity'
+  | 'other';
+
+export interface VisualReviewIssue {
+  type: VisualReviewIssueType;
+  severity: 'low' | 'medium' | 'high';
+  message: string;
+  repairInstruction?: string;
+}
+
+export interface KeyframeVisualReview {
+  version: 1;
+  status: 'reviewing' | 'passed' | 'failed' | 'error';
+  score: number;
+  passed: boolean;
+  structureScore: number;
+  semanticScore?: number;
+  issues: VisualReviewIssue[];
+  repairPrompt?: string;
+  /** 与上一镜头关键帧的感知相似度，0-1。 */
+  previousShotSimilarity?: number;
+  reviewedImageUrl?: string;
+  reviewedAt: number;
+  model?: string;
+  repairAttempt?: number;
+  error?: string;
 }
 
 export interface VideoInterval {
@@ -358,6 +427,103 @@ export interface ShotDubbing {
   generatedAt?: number;
 }
 
+export interface CreativeDevelopmentPlan {
+  version: number;
+  status: 'generated' | 'fallback';
+  hook: string;
+  audiencePromise: string;
+  theme: string;
+  centralConflict: string;
+  escalationPlan: string;
+  climax: string;
+  payoff: string;
+  pacingStrategy: string;
+  generatedAt: number;
+}
+
+export interface StoryboardDirectorBeat {
+  id: string;
+  sceneId: string;
+  order: number;
+  shotCount: number;
+  purpose: string;
+  emotionalBeat: string;
+  conflictBeat: string;
+  visualHook: string;
+  cameraStrategy: string;
+  continuityIn: string;
+  continuityOut: string;
+  h3FeasibilityNotes: string;
+}
+
+export interface StoryboardDirectorPlan {
+  version: number;
+  status: 'generated' | 'fallback';
+  openingHook: string;
+  escalation: string;
+  climax: string;
+  payoff: string;
+  pacingNotes: string;
+  targetShotCount: number;
+  shotDurationSeconds: number;
+  beats: StoryboardDirectorBeat[];
+  generatedAt: number;
+}
+
+export interface ShotTimelineBeat {
+  startSeconds: number;
+  endSeconds: number;
+  action: string;
+  camera?: string;
+  sound?: string;
+}
+
+export interface ShotContinuityPlan {
+  entryState: string;
+  exitState: string;
+  screenDirection: string;
+  mustPreserve: string[];
+}
+
+export interface ShotSemanticReview {
+  score: number;
+  verdict: 'pass' | 'warning' | 'fail';
+  issues: string[];
+  repaired: boolean;
+  reviewedAt: number;
+}
+
+/** 单镜头 Agent 产物；由分镜生成、语义审片和 H3 编译器共同消费。 */
+export interface ShotAgentMetadata {
+  directorPurpose: string;
+  emotionalBeat: string;
+  visualHook: string;
+  timeline: ShotTimelineBeat[];
+  continuity: ShotContinuityPlan;
+  audioIntent: string;
+  h3FeasibilityNotes: string;
+  semanticReview?: ShotSemanticReview;
+}
+
+export type StoryboardAgentStage =
+  | 'development'
+  | 'director-plan'
+  | 'shot-generation'
+  | 'semantic-review'
+  | 'completed';
+
+export interface StoryboardAgentRun {
+  version: number;
+  runId: string;
+  status: 'running' | 'completed' | 'degraded';
+  stage: StoryboardAgentStage;
+  completedStages: StoryboardAgentStage[];
+  warnings: string[];
+  startedAt: number;
+  updatedAt: number;
+  completedAt?: number;
+}
+
 export interface Shot {
   id: string;
   sceneId: string;
@@ -373,6 +539,7 @@ export interface Shot {
   keyframes: Keyframe[];
   interval?: VideoInterval;
   qualityAssessment?: ShotQualityAssessment;
+  agent?: ShotAgentMetadata;
   videoModel?: 'veo' | 'sora-2' | 'veo_3_1-fast' | 'veo_3_1-fast-4K' | 'veo_3_1_t2v_fast_landscape' | 'veo_3_1_t2v_fast_portrait' | 'veo_3_1_i2v_s_fast_fl_landscape' | 'veo_3_1_i2v_s_fast_fl_portrait' | 'doubao-seedance-1-5-pro' | 'doubao-seedance-1-5-pro-251215' | 'doubao-seedance-2-0-260128'; // Video generation model selection
   videoInputMode?: 'keyframes' | 'storyboard-grid'; // 视频驱动方式：首尾帧 / 网格分镜（互斥）
   nineGrid?: NineGridData; // 可选的九宫格分镜预览数据（高级功能）
@@ -440,6 +607,9 @@ export interface ScriptData {
   planningShotDuration?: number; // Locked shot duration baseline (seconds) used for shot count planning
   artDirection?: ArtDirection; // 全局美术指导文档，用于统一角色和场景的视觉风格
   productionBible?: ProductionBible; // 项目圣经：事实、服装、场景与制作约束
+  creativeDevelopment?: CreativeDevelopmentPlan; // 编剧 Agent 的全片创作意图
+  storyboardDirectorPlan?: StoryboardDirectorPlan; // 全片分镜规划，供并发场景生成共享
+  storyboardAgentRun?: StoryboardAgentRun; // 可恢复、可诊断的 Agent 运行状态
   characters: Character[];
   scenes: Scene[];
   props: Prop[]; // 道具列表，用于保持多分镜间物品视觉一致性
@@ -447,6 +617,8 @@ export interface ScriptData {
   generationMeta?: {
     // Fingerprint of raw script + language (structure extraction inputs).
     structureKey?: string;
+    // Fingerprint of structure + model/duration (creative development inputs).
+    developmentKey?: string;
     // Fingerprint of structure + style/model/language (visual enrichment inputs).
     visualsKey?: string;
     // Fingerprint of visualized script + duration/model (shot generation inputs).
@@ -516,7 +688,7 @@ export interface EpisodePropRef {
   syncStatus: AssetSyncStatus;
 }
 
-export type ScriptGenerationStep = 'structure' | 'visuals' | 'shots';
+export type ScriptGenerationStep = 'structure' | 'development' | 'visuals' | 'shots';
 
 export interface ScriptGenerationCheckpoint {
   // Next step to execute in the analyze pipeline.

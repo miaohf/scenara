@@ -16,6 +16,7 @@ export type ModelType = 'chat' | 'image' | 'video' | 'audio';
  * 横竖屏比例类型
  */
 export type AspectRatio = '16:9' | '9:16' | '1:1';
+export type ImageResolution = '1K' | '2K' | '4K';
 
 /**
  * 图片模型 API 协议类型
@@ -61,10 +62,16 @@ export interface ChatModelParams {
 export interface ImageModelParams {
   defaultAspectRatio: AspectRatio;
   supportedAspectRatios: AspectRatio[];
+  /** 输出分辨率等级；Gemini 使用 imageSize，OpenAI 兼容接口映射为具体尺寸。 */
+  outputResolution?: ImageResolution;
   apiFormat?: ImageApiFormat;
   /** 定妆/通用文生图 ComfyUI 工作流 */
   workflowName?: string;
   steps?: number;
+  /** 定妆存在角色、形体、场景或道具参考图时使用的 ComfyUI 编辑工作流；未填则回退 workflowName */
+  referenceWorkflowName?: string;
+  /** 参考图定妆 steps；未填则回退 steps */
+  referenceSteps?: number;
   /** 镜头首尾帧专用 ComfyUI 工作流；未填则回退 workflowName */
   keyframeWorkflowName?: string;
   /** 镜头首尾帧 steps；未填则回退 steps */
@@ -228,8 +235,11 @@ export interface ModelRegistryState {
 export interface ChatOptions {
   prompt: string;
   systemPrompt?: string;
+  /** OpenAI-compatible multimodal image inputs (data URLs or reachable URLs). */
+  imageUrls?: string[];
   responseFormat?: 'text' | 'json';
   timeout?: number;
+  abortSignal?: AbortSignal;
   // 可选覆盖模型参数
   overrideParams?: Partial<ChatModelParams>;
 }
@@ -242,6 +252,8 @@ export interface ImageGenerateOptions {
   /** ComfyUI 负面提示词，写入工作流 negative 节点而非拼进 positive */
   negativePrompt?: string;
   referenceImages?: string[];
+  /** 与 referenceImages 同下标的角色/场景/道具说明，供多角色模型逐图识别。 */
+  referenceAnnotations?: string[];
   /** Ref2VA 可选的运动参考视频。 */
   referenceVideos?: string[];
   /** Ref2VA 可选的独立音频参考。 */
@@ -300,6 +312,10 @@ export interface VideoGenerateOptions {
   endImage?: string;
   /** Ref2VA 多参考图；首帧/尾帧仍通过 startImage/endImage 单独传入。 */
   referenceImages?: string[];
+  /** Ref2VA 动作/运镜参考视频，工作流当前最多消费 3 个。 */
+  referenceVideos?: string[];
+  /** Ref2VA 音色/声音参考，工作流当前最多消费 3 个。 */
+  referenceAudios?: string[];
   audioUrl?: string;
   aspectRatio?: AspectRatio;
   duration?: VideoDuration;
@@ -333,6 +349,7 @@ export const DEFAULT_IMAGE_PARAMS: ImageModelParams = {
   defaultAspectRatio: '16:9',
   supportedAspectRatios: ['16:9', '9:16'],
   apiFormat: 'gemini',
+  outputResolution: '1K',
 };
 
 /**
@@ -342,12 +359,16 @@ export const DEFAULT_IMAGE_PARAMS_OPENAI: ImageModelParams = {
   defaultAspectRatio: '16:9',
   supportedAspectRatios: ['16:9', '9:16', '1:1'],
   apiFormat: 'openai',
+  outputResolution: '1K',
 };
 
 /** 代码内置默认图片工作流名（不含 .json）；前端填写后以前端为准 */
-export const DEFAULT_IMAGE_WORKFLOW_NAME = 'default_image_generate';
+export const DEFAULT_IMAGE_WORKFLOW_NAME = 'image_qwen_image_2512';
 /** 代码内置默认视频工作流名（不含 .json）；前端填写后以前端为准 */
 export const DEFAULT_VIDEO_WORKFLOW_NAME = 'default_video_generate';
+export const MINIMAX_H3_R2V_WORKFLOW_NAME = 'MiniMax_H3_Ref2VA_High-Quality_Multi-Reference.json';
+export const NANO_BANANA_T2I_WORKFLOW_NAME = 'api_google_nano_banana2_text_to_image.json';
+export const NANO_BANANA_EDIT_WORKFLOW_NAME = 'api_google_nano_banana2_image_edit.json';
 
 /**
  * ComfyUI Workflow 默认参数
@@ -356,8 +377,12 @@ export const DEFAULT_IMAGE_PARAMS_COMFYUI: ImageModelParams = {
   defaultAspectRatio: '16:9',
   supportedAspectRatios: ['16:9', '9:16', '1:1'],
   apiFormat: 'comfyui',
+  outputResolution: '1K',
   workflowName: DEFAULT_IMAGE_WORKFLOW_NAME,
   steps: 20,
+  referenceWorkflowName: 'image_qwen_image_edit_2511_20260908',
+  // 定妆参考图优先质量与身份一致性：40 steps 会走完整 Qwen Edit 路径，关闭 Lightning LoRA。
+  referenceSteps: 40,
   keyframeWorkflowName: 'image_flux2_klein_image_edit_9b_base',
   keyframeSteps: 20,
   turnaroundWorkflowName: 'qwen_image_edit_2511_fp8_character_turnaround',
@@ -585,25 +610,13 @@ export const BUILTIN_IMAGE_MODELS: ImageModelDefinition[] = [
     params: { ...DEFAULT_IMAGE_PARAMS },
   },
   {
-    id: 'gpt-image-1.5',
-    apiModel: 'gpt-image-1.5',
-    name: 'GPT Image 1.5',
+    id: 'gpt-image-2',
+    apiModel: 'gpt-image-2',
+    name: 'GPT Image 2',
     type: 'image',
     providerId: 'default',
     endpoint: '/v1/images/generations',
-    description: '高质量通用模型：提示词遵循和文本渲染表现优秀，适合角色与场景创作；参考一致性弱于 Nano Banana Pro',
-    isBuiltIn: true,
-    isEnabled: true,
-    params: { ...DEFAULT_IMAGE_PARAMS_OPENAI },
-  },
-  {
-    id: 'gpt-image-1-mini',
-    apiModel: 'gpt-image-1-mini',
-    name: 'GPT Image 1 Mini',
-    type: 'image',
-    providerId: 'default',
-    endpoint: '/v1/images/generations',
-    description: '低成本模型：支持文图输入与图片输出，适合草图预览和大批量试错（细节与一致性弱于 GPT Image 1.5）',
+    description: '新一代高质量图片模型：支持文生图与参考图编辑，适合角色、场景和分镜创作；支持 1K 输出',
     isBuiltIn: true,
     isEnabled: true,
     params: { ...DEFAULT_IMAGE_PARAMS_OPENAI },
@@ -615,7 +628,7 @@ export const BUILTIN_IMAGE_MODELS: ImageModelDefinition[] = [
     type: 'image',
     providerId: 'comfyui-local',
     description:
-      '默认定妆：FLUX.2 Klein 9B T2I；关键帧：FLUX.2 Klein 9B Image Edit（最多 4 张参考）；造型九宫格：Qwen Edit turnaround。工作流读取 back-end/workflows/<名称>.json。',
+      '默认定妆：Qwen Image 2512 T2I；带参考图定妆：Qwen Image Edit 2511（最多 3 张）；关键帧：FLUX.2 Klein 9B Image Edit（最多 4 张参考）；造型九宫格：Qwen Edit turnaround。工作流读取 back-end/workflows/<名称>.json。',
     isBuiltIn: true,
     isEnabled: true,
     params: {
@@ -634,7 +647,7 @@ export const BUILTIN_IMAGE_MODELS: ImageModelDefinition[] = [
     name: 'ComfyUI Flux Dev1 FP8 (本地·备用)',
     type: 'image',
     providerId: 'comfyui-local',
-    description: 'Flux1-Dev FP8 文生图（定妆）；关键帧走 Qwen Image Edit 2511；九宫格走 Qwen Edit turnaround。',
+    description: 'Qwen Image 2512 文生图（定妆）；带参考图与关键帧走 Qwen Image Edit 2511；九宫格走 Qwen Edit turnaround。',
     isBuiltIn: true,
     isEnabled: false,
     params: {
@@ -645,6 +658,24 @@ export const BUILTIN_IMAGE_MODELS: ImageModelDefinition[] = [
       keyframeSteps: 40,
       turnaroundWorkflowName: 'qwen_image_edit_2511_fp8_character_turnaround',
       turnaroundSteps: 4,
+    },
+  },
+  {
+    id: 'comfyui-nano-banana-2',
+    apiModel: 'nano-banana-2',
+    name: 'ComfyUI Nano Banana 2（本地）',
+    type: 'image',
+    providerId: 'comfyui-local',
+    description: 'Nano Banana 2 文生图与参考图编辑；角色定妆、场景、道具及分镜参考修改。',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      ...DEFAULT_IMAGE_PARAMS_COMFYUI,
+      workflowName: NANO_BANANA_T2I_WORKFLOW_NAME,
+      referenceWorkflowName: NANO_BANANA_EDIT_WORKFLOW_NAME,
+      referenceSteps: 1,
+      keyframeWorkflowName: NANO_BANANA_EDIT_WORKFLOW_NAME,
+      keyframeSteps: 1,
     },
   },
 ];
@@ -744,7 +775,7 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
     isEnabled: true,
     params: {
       ...DEFAULT_VIDEO_PARAMS_COMFYUI,
-      workflowName: 'video_minimax_h3_r2v',
+      workflowName: MINIMAX_H3_R2V_WORKFLOW_NAME,
       defaultDuration: 5,
       supportedDurations: [5, 10, 15],
       supportedAspectRatios: ['16:9', '9:16', '1:1'],

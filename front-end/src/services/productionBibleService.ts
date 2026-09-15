@@ -51,7 +51,11 @@ export const deriveProductionBible = (scriptData?: ScriptData | null): Productio
 
   const sceneAnchors = joinLines(scenes.map((scene) => {
     const details = [scene.location, scene.time, scene.atmosphere].map(clean).filter(Boolean);
-    return details.length ? `- ${scene.id}: ${details.join(' | ')}` : undefined;
+    const direction = scene.creativeDirection;
+    const creativeDetails = direction
+      ? ` | purpose: ${clean(direction.narrativePurpose)} | continuity: ${clean(direction.continuityIn)} -> ${clean(direction.continuityOut)}`
+      : '';
+    return details.length ? `- ${scene.id}: ${details.join(' | ')}${creativeDetails}` : undefined;
   }));
 
   return {
@@ -59,13 +63,23 @@ export const deriveProductionBible = (scriptData?: ScriptData | null): Productio
     worldRules: joinLines([
       scriptData?.genre ? `Genre: ${scriptData.genre}` : undefined,
       scriptData?.logline ? `Story premise: ${scriptData.logline}` : undefined,
+      scriptData?.creativeDevelopment?.centralConflict
+        ? `Central conflict: ${scriptData.creativeDevelopment.centralConflict}`
+        : undefined,
+      scriptData?.creativeDevelopment?.payoff
+        ? `Required payoff: ${scriptData.creativeDevelopment.payoff}`
+        : undefined,
       'Preserve established story facts. Do not invent identity, costume, location, or continuity changes.',
     ]),
     costumeRules: costumeRules || 'Use each character base wardrobe unless the shot explicitly selects a valid costume variation.',
     sceneAnchors: sceneAnchors || 'Preserve the location, time, atmosphere, and spatial layout established for each scene.',
-    characterVoiceRules: joinLines(characters.map((character) =>
-      character.personality ? `- ${character.name}: ${character.personality}` : undefined
-    )) || 'Keep dialogue and behavior consistent with each established character.',
+    characterVoiceRules: joinLines(characters.map((character) => {
+      const base = clean(character.personality);
+      const performance = clean(character.creativeDirection?.performanceNotes);
+      return base || performance
+        ? `- ${character.name}: ${[base, performance].filter(Boolean).join(' | performance: ')}`
+        : undefined;
+    })) || 'Keep dialogue and behavior consistent with each established character.',
     cameraLanguage: 'Use motivated cinematic coverage, readable screen direction, and continuity-safe camera changes. Do not change costume or location merely to improve composition.',
     platformGuardrails: 'No subtitles, captions, logos, watermarks, contact sheets, duplicated subjects, or reference-sheet layouts in final cinematic frames unless explicitly requested.',
     pinnedDecisions: artDirection?.consistencyAnchors

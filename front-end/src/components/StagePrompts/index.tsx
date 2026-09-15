@@ -372,7 +372,7 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
           {project.scriptData && filteredBibleCount > 0 && (
             <ProductionBibleSection
               key={project.scriptData.productionBible?.updatedAt || 'derived'}
-              scriptData={project.scriptData}
+              scriptData={project.scriptData || undefined}
               isExpanded={expandedSections.has('bible')}
               onToggle={() => toggleSection('bible')}
               onUpdate={(productionBible) => updateProject((prev) => prev.scriptData ? ({
@@ -439,7 +439,7 @@ const StagePrompts: React.FC<Props> = ({ project, updateProject }) => {
           {project.shots.length > 0 && (
             <KeyframeSection
               shots={filteredShots}
-              scriptData={project.scriptData}
+              scriptData={project.scriptData || undefined}
               isExpanded={expandedSections.has('shots')}
               onToggle={() => toggleSection('shots')}
               editingPrompt={editingPrompt}

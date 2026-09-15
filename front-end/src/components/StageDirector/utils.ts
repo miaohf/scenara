@@ -522,8 +522,8 @@ export const getRefImagesForShot = (
   }
 
   const orderedPrimary = sceneFirst
-    ? [...sceneImages, ...characterImages, ...propImages, ...extraCharacterImages]
-    : [...characterImages, ...sceneImages, ...propImages, ...extraCharacterImages];
+    ? [...sceneImages, ...characterImages, ...extraCharacterImages, ...propImages]
+    : [...characterImages, ...extraCharacterImages, ...sceneImages, ...propImages];
   const dedupedPrimary = dedupeImageRefs(orderedPrimary);
   const images = dedupedPrimary;
   const selectedTurnaroundCount = images.filter((img) => selectedMultiViewImages.has(img)).length;

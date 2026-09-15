@@ -13,6 +13,7 @@ export {
   cleanJsonString,
   parseJsonWithRecovery,
   chatCompletion,
+  chatCompletionWithImages,
   chatCompletionStream,
   checkApiKey,
   getApiBase,
@@ -76,6 +77,38 @@ export {
   rewriteScriptSegmentStream,
   type VisualStyleInferenceResult,
 } from './scriptService';
+
+// 状态化编剧/导演 Agent
+export {
+  developScriptForProduction,
+  generateStoryboardDirectorPlan,
+  formatDirectorPlanForScene,
+  buildShotAgentContract,
+  normalizeShotAgentMetadata,
+  attachShotAgentMetadata,
+  reviewAndRepairStoryboard,
+  completeStoryboardAgentRun,
+} from './storyboardAgent';
+
+// 多阶段剧本改写 Agent
+export {
+  runScriptRewriteAgent,
+  type ScriptRewriteAgentEvent,
+  type ScriptRewriteAgentEventStatus,
+  type ScriptRewriteAgentOptions,
+  type ScriptRewriteAgentResult,
+  type ScriptRewriteAgentStage,
+  type ScriptRewriteIssue,
+  type ScriptRewritePlan,
+  type ScriptRewriteReview,
+} from './scriptRewriteAgent';
+
+// MiniMax H3 Ref2VA 提示词编译器
+export {
+  isMiniMaxH3Ref2VAModel,
+  buildMiniMaxH3Ref2VAPrompt,
+  type MiniMaxH3Ref2VAPromptOptions,
+} from './h3PromptCompiler';
 
 // 视觉资产生成服务
 export {

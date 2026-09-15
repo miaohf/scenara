@@ -1,5 +1,7 @@
 import json
 import re
+import base64
+import mimetypes
 from typing import Any
 
 import httpx
@@ -113,10 +115,17 @@ async def chat_completion(
     *,
     prompt: str,
     system_prompt: str | None = None,
+    image_urls: list[str] | None = None,
     model_id: str | None = None,
     response_format: str | None = None,
     timeout: int = 600,
 ) -> str:
+    normalized_image_urls = [url for url in (image_urls or []) if url]
+    if len(normalized_image_urls) > 8:
+        raise AiConfigError("视觉审核单次最多支持 8 张图片")
+    if sum(len(url) for url in normalized_image_urls) > 20_000_000:
+        raise AiConfigError("视觉审核图片总数据过大，请压缩后重试")
+
     model = _pick_model(registry, model_id, "chat")
     provider = _provider_for_model(registry, model)
     api_key = _api_key_for_model(registry, model, provider)
@@ -126,10 +135,18 @@ async def chat_completion(
     api_model = model.get("apiModel") or model.get("id")
     params = model.get("params") or {}
 
-    messages: list[dict[str, str]] = []
+    messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
+    if normalized_image_urls:
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+        content.extend(
+            {"type": "image_url", "image_url": {"url": image_url}}
+            for image_url in normalized_image_urls
+        )
+        messages.append({"role": "user", "content": content})
+    else:
+        messages.append({"role": "user", "content": prompt})
 
     body: dict[str, Any] = {
         "model": api_model,
@@ -162,7 +179,15 @@ async def chat_completion(
         raise AiConfigError(f"Chat API 错误: {detail}")
 
     data = res.json()
-    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    content_value = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+    if isinstance(content_value, list):
+        content = "\n".join(
+            str(item.get("text") or item.get("content") or "")
+            for item in content_value
+            if isinstance(item, dict)
+        ).strip()
+    else:
+        content = str(content_value or "")
     if response_format == "json":
         return _clean_json_response(content)
     return content
@@ -174,36 +199,96 @@ async def generate_image_openai_compatible(
     prompt: str,
     model_id: str | None = None,
     aspect_ratio: str = "16:9",
+    reference_images: list[str] | None = None,
+    reference_annotations: list[str] | None = None,
 ) -> str:
     model = _pick_model(registry, model_id, "image")
     provider = _provider_for_model(registry, model)
     api_key = _api_key_for_model(registry, model, provider)
 
-    size_map = {"16:9": "1792x1024", "9:16": "1024x1792", "1:1": "1024x1024"}
+    resolution = str((model.get("params") or {}).get("outputResolution") or "1K").upper()
+    size_maps = {
+        "1K": {"16:9": "1536x1024", "9:16": "1024x1536", "1:1": "1024x1024"},
+        "2K": {"16:9": "2048x1152", "9:16": "1152x2048", "1:1": "2048x2048"},
+        "4K": {"16:9": "4096x2304", "9:16": "2304x4096", "1:1": "4096x4096"},
+    }
+    size_map = size_maps.get(resolution, size_maps["1K"])
     size = size_map.get(aspect_ratio, "1024x1024")
-    base_url = (provider.get("baseUrl") or "").rstrip("/")
+    # 模型级地址优先；否则用户在模型卡片里改的 Base URL 会被旧逻辑忽略。
+    base_url = (model.get("baseUrl") or provider.get("baseUrl") or "").rstrip("/")
     if not base_url:
         raise AiConfigError("API Base URL 未配置，请在模型设置中填写")
-    endpoint = model.get("endpoint") or "/v1/images/generations"
+    references = [item for item in (reference_images or []) if item]
+    annotations = [str(item or "").strip() for item in (reference_annotations or [])]
+    configured_endpoint = model.get("endpoint") or "/v1/images/generations"
+    endpoint = configured_endpoint
+    if references and endpoint.rstrip("/").endswith("/images/generations"):
+        endpoint = endpoint.rstrip("/")[:-len("generations")] + "edits"
     if not endpoint.startswith("/"):
         endpoint = f"/{endpoint}"
     api_model = model.get("apiModel") or model.get("id")
 
-    body = {
-        "model": api_model,
-        "prompt": prompt,
-        "size": size,
-        "response_format": "b64_json",
-        "n": 1,
-    }
-
     url = f"{base_url}{endpoint}"
     async with httpx.AsyncClient(timeout=300, trust_env=False) as client:
-        res = await client.post(
-            url,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=body,
-        )
+        # Gemini 原生 generateContent（New API 可透传该协议）。这条分支必须
+        # 在 OpenAI images/generations 之前处理，否则会把 contents 当成 prompt。
+        if "generatecontent" in endpoint.lower():
+            parts: list[dict[str, Any]] = [{"text": prompt}]
+            for index, image in enumerate(references):
+                match = re.match(r"^data:([^;]+);base64,(.+)$", image, re.S)
+                if not match:
+                    raise AiConfigError("Gemini 参考图必须是 data URL，请重新上传后重试")
+                label = annotations[index] if index < len(annotations) else f"Reference image {index + 1}"
+                parts.append({"text": f"{label}. Use this image only for the described identity/reference."})
+                parts.append({"inlineData": {"mimeType": match.group(1), "data": match.group(2)}})
+            native_body = {
+                "contents": [{"role": "user", "parts": parts}],
+                "generationConfig": {
+                    "responseModalities": ["TEXT", "IMAGE"],
+                    "imageConfig": {"aspectRatio": aspect_ratio, "imageSize": resolution},
+                },
+            }
+            res = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=native_body,
+            )
+            if not res.is_success:
+                raise AiConfigError(f"Gemini Image API 错误: {res.text}")
+            data = res.json()
+            for candidate in data.get("candidates", []):
+                for part in candidate.get("content", {}).get("parts", []):
+                    inline = part.get("inlineData") or part.get("inline_data")
+                    if inline and inline.get("data"):
+                        return str(inline["data"])
+            raise AiConfigError("Gemini Image API 未返回图片数据")
+
+        common = {"model": api_model, "prompt": prompt, "size": size, "n": "1"}
+        if references:
+            files: list[tuple[str, tuple[str, bytes, str]]] = []
+            for index, image in enumerate(references):
+                match = re.match(r"^data:([^;]+);base64,(.+)$", image, re.S)
+                if not match:
+                    raise AiConfigError("参考图必须是可上传的 data URL，请重新上传后重试")
+                mime = match.group(1)
+                try:
+                    content = base64.b64decode(match.group(2), validate=True)
+                except ValueError as exc:
+                    raise AiConfigError("参考图数据无效，请重新上传后重试") from exc
+                extension = mimetypes.guess_extension(mime) or ".png"
+                files.append(("image[]", (f"reference-{index + 1}{extension}", content, mime)))
+            res = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                data=common,
+                files=files,
+            )
+        else:
+            res = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={**common, "response_format": "b64_json"},
+            )
         if not res.is_success:
             raise AiConfigError(f"Image API 错误: {res.text}")
         data = res.json()

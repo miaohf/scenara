@@ -12,7 +12,7 @@ import {
   mapAspectRatioToOpenAiImageSize,
 } from '../imageModelUtils';
 import { ApiKeyError } from './chatAdapter';
-import { resolveComfyApiBaseUrl, buildComfyApiUrl } from '../urlUtils';
+import { resolveComfyApiBaseUrl, buildComfyApiUrl, resolveEndpointUrl } from '../urlUtils';
 import { isApiAiMode, apiCallImage, apiCallComfyImage, fetchComfyWorkflowTemplate } from '../aiApiAdapter';
 
 /**
@@ -203,11 +203,19 @@ const truncatePromptToMaxChars = (
   };
 };
 
-const dataUrlToImageFile = (dataUrl: string, filename: string): File | null => {
+const dataUrlToImageFile = async (source: string, filename: string): Promise<File | null> => {
+  const dataUrl = String(source || '').trim();
   const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-  if (!match) return null;
-
   try {
+    if (!match) {
+      // 资产/历史定妆照通常保存为 /api/media/... URL，而不是 data URL。
+      // 编辑接口需要 multipart 文件，因此先在浏览器端读取媒体再上传。
+      const response = await fetch(dataUrl, { credentials: 'include' });
+      if (!response.ok) return null;
+      const blob = await response.blob();
+      if (!blob.type.startsWith('image/')) return null;
+      return new File([blob], filename, { type: blob.type });
+    }
     const mimeType = match[1];
     const binary = atob(match[2]);
     const bytes = new Uint8Array(binary.length);
@@ -559,6 +567,7 @@ export const callImageApi = async (
   
   // 确定宽高比
   const aspectRatio = options.aspectRatio || activeModel.params.defaultAspectRatio;
+  const outputResolution = activeModel.params.outputResolution || '1K';
 
   // ComfyUI 走 img2img 底图约束，不再套云端多模态参考图文案
   if (apiFormat === 'comfyui') {
@@ -638,10 +647,11 @@ export const callImageApi = async (
       let res: Response;
       if (hasReferenceImages) {
         const files = (options.referenceImages || [])
-          .map((img, index) => dataUrlToImageFile(img, `reference-${index + 1}.png`))
+          .map((img, index) => dataUrlToImageFile(img, `reference-${index + 1}.png`));
+        const resolvedFiles = (await Promise.all(files))
           .filter((file): file is File => Boolean(file));
 
-        if (files.length === 0) {
+        if (resolvedFiles.length === 0) {
           throw new Error('图片生成失败：参考图格式无效，请上传图片后重试。');
         }
 
@@ -653,7 +663,7 @@ export const callImageApi = async (
         formData.append('output_format', OPENAI_IMAGE_OUTPUT_FORMAT);
         formData.append('output_compression', String(OPENAI_IMAGE_OUTPUT_COMPRESSION));
         formData.append('n', '1');
-        files.forEach(file => formData.append('image[]', file));
+        resolvedFiles.forEach(file => formData.append('image[]', file));
 
         res = await fetch(resolveEndpointUrl(apiBase, resolvedEndpoint), {
           method: 'POST',
@@ -704,9 +714,14 @@ export const callImageApi = async (
   // Gemini generateContent protocol
   const parts: any[] = [{ text: finalPrompt }];
   if (options.referenceImages) {
-    options.referenceImages.forEach((imgUrl) => {
+    options.referenceImages.forEach((imgUrl, index) => {
       const match = imgUrl.match(/^data:(image\/[a-zA-Z]+);base64,(.+)$/);
       if (match) {
+        const annotation = options.referenceAnnotations?.[index]?.trim()
+          || `Reference image ${index + 1}`;
+        parts.push({
+          text: `${annotation}. Use this image only for the specified identity or reference; do not mix it with other subjects.`,
+        });
         parts.push({
           inlineData: {
             mimeType: match[1],
@@ -726,6 +741,7 @@ export const callImageApi = async (
       responseModalities: ['TEXT', 'IMAGE'],
       imageConfig: {
         aspectRatio: aspectRatio,
+        imageSize: outputResolution,
       },
     },
   };

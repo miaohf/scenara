@@ -47,14 +47,16 @@ class Settings(BaseSettings):
     vllm_model_id: str = "Qwen/Qwen3.8-27B-FP8"
     vllm_max_tokens: int = 32768
 
-    indextts_base_url: str = "http://ai-6gpu:8002/v1"
+    # 不含尾部 /v1：模型 endpoint 已是 /v1/audio/speech
+    indextts_base_url: str = "http://100.64.0.35:8002"
     indextts_api_key: str = "local"
     indextts_model_id: str = "indextts"
     indextts_default_voice: str = "EL_Danielle_Gentle_Engaging"
     indextts_response_format: str = "opus"
     indextts_timeout_ms: int = 120000
 
-    comfyui_base_url: str = "http://127.0.0.1:8188"
+    # 当前部署中 ComfyUI 位于独立的 Tailscale 节点；避免无环境变量时错误回退到后端容器本机。
+    comfyui_base_url: str = "http://100.64.0.35:8188"
     # ComfyUI 自身已有队列；默认关闭 Redis GPU 锁，避免崩溃后死锁导致请求卡在 /comfyui/image 之前
     comfyui_gpu_lock_enabled: bool = False
 

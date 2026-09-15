@@ -113,6 +113,27 @@ const renderInline = (
   return nodes;
 };
 
+const renderMarkdownInline = (text: string, keyPrefix: string): React.ReactNode => {
+  const nodes: React.ReactNode[] = [];
+  const re = /\*\*([^*]+)\*\*/g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+  let index = 0;
+
+  while ((match = re.exec(text))) {
+    if (match.index > last) nodes.push(text.slice(last, match.index));
+    nodes.push(
+      <strong key={`${keyPrefix}-strong-${index}`} className="font-semibold text-[var(--text-primary)]">
+        {match[1]}
+      </strong>,
+    );
+    last = match.index + match[0].length;
+    index += 1;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes.length > 0 ? nodes : text;
+};
+
 const headingClass = (level: number): string => {
   if (level === 1) return H1;
   if (level === 2) return H2;
@@ -159,4 +180,48 @@ export const renderHighlightedScript = (
   });
 
   return nodes;
+};
+
+/** Render the screenplay as readable Markdown without exposing the Markdown syntax. */
+export const renderMarkdownPreview = (script: string): React.ReactNode => {
+  if (!script) return '\u00a0';
+
+  let offset = 0;
+  return script.split('\n').map((line, index, lines) => {
+    const lineOffset = offset;
+    offset += line.length + 1;
+    const heading = line.match(/^(#{1,3})\s+(.*)$/);
+    const key = `preview-line-${index}`;
+    const lineBreak = index < lines.length - 1 ? <div key={`${key}-break`} className="h-1" /> : null;
+
+    if (heading) {
+      const HeadingTag = heading[1].length === 1 ? 'h1' : heading[1].length === 2 ? 'h2' : 'h3';
+      const headingClass = heading[1].length === 1
+        ? 'mt-3 mb-2 text-xl font-bold text-[var(--text-primary)]'
+        : heading[1].length === 2
+          ? 'mt-3 mb-1.5 text-base font-semibold text-[var(--accent-text)]'
+          : 'mt-2 mb-1 text-sm font-medium text-[var(--text-tertiary)]';
+      return (
+        <React.Fragment key={key}>
+          <HeadingTag data-script-offset={lineOffset} className={headingClass}>
+            {renderMarkdownInline(heading[2], key)}
+          </HeadingTag>
+          {lineBreak}
+        </React.Fragment>
+      );
+    }
+
+    return (
+      <React.Fragment key={key}>
+        {line.trim() ? (
+          <p data-script-offset={lineOffset} className="m-0 min-h-[1.45em] text-[13px] leading-[1.45] text-[var(--text-secondary)]">
+            {renderMarkdownInline(line, key)}
+          </p>
+        ) : (
+          <div className="h-2" aria-hidden="true" />
+        )}
+        {lineBreak}
+      </React.Fragment>
+    );
+  });
 };

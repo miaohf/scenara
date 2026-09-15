@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useSyncExternalStore } from "react";
+import { translate, type TranslationKey } from "../i18n";
 
 const STORAGE_KEY = "scenara_interface_language";
 
@@ -9,6 +10,8 @@ export type InterfaceLanguage = "zh" | "en";
 interface InterfaceLanguageContextValue {
   language: InterfaceLanguage;
   setLanguage: (language: InterfaceLanguage) => void;
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string;
+  /** @deprecated Migrate component copy to t('namespace.key'). */
   text: (chinese: string, english: string) => string;
 }
 
@@ -59,9 +62,13 @@ export function InterfaceLanguageProvider({ children }: { children: React.ReactN
     },
     [language],
   );
+  const t = useCallback(
+    (key: TranslationKey, values?: Record<string, string | number>) => translate(language, key, values),
+    [language],
+  );
 
   return (
-    <InterfaceLanguageContext.Provider value={{ language, setLanguage, text }}>
+    <InterfaceLanguageContext.Provider value={{ language, setLanguage, t, text }}>
       {children}
     </InterfaceLanguageContext.Provider>
   );

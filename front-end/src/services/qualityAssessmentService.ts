@@ -7,6 +7,7 @@ const clamp = (value: number, min: number, max: number) => Math.max(min, Math.mi
 
 const resolveSupportsEndFrame = (modelId?: string): boolean => {
   const id = (modelId || '').toLowerCase();
+  if (id.includes('r2v') || id.includes('ref2va')) return false;
   if (!id) return false;
   if (id.startsWith('sora') || id.startsWith('doubao-seedance')) return false;
   return true;
@@ -32,6 +33,20 @@ const evaluatePromptReadiness = (shot: Shot): QualityCheck => {
   const endPrompt = shot.keyframes?.find((frame) => frame.type === 'end')?.visualPrompt?.trim() || '';
   const videoPrompt = shot.interval?.videoPrompt?.trim() || '';
   const actionSummaryLen = shot.actionSummary.trim().length;
+
+  // Ref2VA 的核心输入是参考图组 + 视频提示词，不应因没有首/尾帧被判低分。
+  const modelId = (shot.videoModel || '').toLowerCase();
+  if (modelId.includes('r2v') || modelId.includes('ref2va')) {
+    const videoScore = videoPrompt.length >= 80 ? 70 : videoPrompt.length >= 30 ? 50 : videoPrompt.length > 0 ? 25 : 0;
+    const actionScore = actionSummaryLen >= 12 ? 30 : actionSummaryLen > 0 ? 15 : 0;
+    return pickCheck(
+      'prompt-readiness',
+      'Prompt Readiness',
+      videoScore + actionScore,
+      30,
+      `Ref2VA 规则：参考图驱动的视频提示词70分 + 动作意图30分；视频提示词 ${videoPrompt.length} 字符，动作摘要 ${actionSummaryLen} 字符。`,
+    );
+  }
 
   let startScore = 0;
   if (startPrompt.length >= 40) startScore = 45;
@@ -104,7 +119,7 @@ const evaluateAssetCoverage = (shot: Shot, scriptData?: ScriptData | null): Qual
     return 5;
   });
   const characterScore = charScoreParts.length
-    ? charScoreParts.reduce((sum, value) => sum + value, 0) / charScoreParts.length
+    ? charScoreParts.reduce<number>((sum, value) => sum + value, 0) / charScoreParts.length
     : 20;
 
   const props = shot.props || [];
@@ -123,7 +138,7 @@ const evaluateAssetCoverage = (shot: Shot, scriptData?: ScriptData | null): Qual
     return 4;
   });
   const propScore = propScoreParts.length
-    ? propScoreParts.reduce((sum, value) => sum + value, 0) / propScoreParts.length
+    ? propScoreParts.reduce<number>((sum, value) => sum + value, 0) / propScoreParts.length
     : 10;
 
   const totalScore = sceneScore + characterScore + propScore;
@@ -149,6 +164,17 @@ const evaluateAssetCoverage = (shot: Shot, scriptData?: ScriptData | null): Qual
 };
 
 const evaluateKeyframeExecution = (shot: Shot): QualityCheck => {
+  const modelId = (shot.videoModel || '').toLowerCase();
+  if (modelId.includes('r2v') || modelId.includes('ref2va')) {
+    const hasVideoPrompt = Boolean(shot.interval?.videoPrompt?.trim());
+    return pickCheck(
+      'keyframe-execution',
+      'Reference Execution',
+      hasVideoPrompt ? 85 : 35,
+      30,
+      `Ref2VA 不要求首尾帧；当前${hasVideoPrompt ? '已生成参考图驱动提示词' : '尚未生成视频提示词'}。`,
+    );
+  }
   const startFrame = shot.keyframes?.find((frame) => frame.type === 'start');
   const endFrame = shot.keyframes?.find((frame) => frame.type === 'end');
   const supportsEndFrame = resolveSupportsEndFrame(shot.videoModel);
@@ -250,8 +276,9 @@ const evaluateContinuity = (shot: Shot): QualityCheck => {
   const endFrame = shot.keyframes?.find((frame) => frame.type === 'end');
   const supportsEndFrame = resolveSupportsEndFrame(shot.videoModel);
   const hasCharacters = (shot.characters?.length || 0) > 0;
+  const isR2V = (shot.videoModel || '').toLowerCase().includes('r2v') || (shot.videoModel || '').toLowerCase().includes('ref2va');
 
-  let baseScore = 40;
+  const baseScore = 40;
   let startBonus = 0;
   let endBonus = 0;
   let modelCompensation = 0;
@@ -262,7 +289,7 @@ const evaluateContinuity = (shot: Shot): QualityCheck => {
   if (supportsEndFrame && endFrame?.imageUrl) endBonus = 25;
   if (!supportsEndFrame) modelCompensation = 20;
 
-  if (hasCharacters && !startFrame?.imageUrl) charPenalty = -20;
+  if (hasCharacters && !startFrame?.imageUrl && !isR2V) charPenalty = -20;
   if (supportsEndFrame && hasCharacters && !endFrame?.imageUrl) charEndPenalty = -10;
 
   const score = baseScore + startBonus + endBonus + modelCompensation + charPenalty + charEndPenalty;

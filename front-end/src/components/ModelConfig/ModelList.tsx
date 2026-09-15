@@ -167,6 +167,8 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
                 <p className="text-[10px] text-[var(--text-tertiary)] font-mono leading-relaxed">
                   定妆/通用：{imageParams.workflowName || '（未填）'}
                   <br />
+                  参考图定妆：{imageParams.referenceWorkflowName || '（回退到定妆工作流）'}
+                  <br />
                   关键帧（首尾帧）：{imageParams.keyframeWorkflowName || '（回退到定妆工作流）'}
                   <br />
                   造型九宫格：{imageParams.turnaroundWorkflowName || '（回退到定妆工作流）'}

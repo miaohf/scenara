@@ -218,7 +218,7 @@ export const formatJobProgressLabel = (
   return typeof job?.progress === "number" ? `${job.progress}%` : "生成中";
 };
 
-/** ComfyUI / Celery 同时只跑一个：多个 running 也只认最早那条为真正生成中。 */
+/** 返回最早启动的任务，供需要单一代表任务的旧界面兼容使用。 */
 export const primaryRunningJobId = (jobs: JobStatus[]): string | undefined => {
   const running = jobs
     .filter((job) => job.status === "running")
@@ -226,9 +226,9 @@ export const primaryRunningJobId = (jobs: JobStatus[]): string | undefined => {
   return running[0]?.id;
 };
 
-export const jobDisplayState = (job: JobStatus, jobs: JobStatus[]): "running" | "queued" => {
-  const runnerId = primaryRunningJobId(jobs);
-  return job.status === "running" && job.id === runnerId ? "running" : "queued";
+/** Worker 已支持并发时，每一条 running 任务都应显示真实进度。 */
+export const jobDisplayState = (job: JobStatus, _jobs: JobStatus[]): "running" | "queued" => {
+  return job.status === "running" ? "running" : "queued";
 };
 
 export const resolveShotVideoBadge = (

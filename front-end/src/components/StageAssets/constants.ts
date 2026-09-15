@@ -36,6 +36,7 @@ export const STYLES = {
 // 网格布局常量
 export const GRID_LAYOUTS = {
   cards: "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5",
+  characterCards: "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4",
   compactCards: "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4",
   twoColumn: "grid grid-cols-1 md:grid-cols-2 gap-8",
 };

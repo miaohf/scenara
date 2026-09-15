@@ -11,7 +11,7 @@ import {
   isComfyUiVideoModel,
 } from '../modelRegistry';
 import { ApiKeyError } from './chatAdapter';
-import { resolveComfyApiBaseUrl, buildComfyApiUrl } from '../urlUtils';
+import { resolveComfyApiBaseUrl, buildComfyApiUrl, resolveEndpointUrl } from '../urlUtils';
 import { isApiAiMode, apiCallVideo, apiCallComfyVideo, fetchComfyWorkflowTemplate } from '../aiApiAdapter';
 import { toFriendlyAiError } from '../errorMessageService';
 
@@ -376,6 +376,12 @@ const patchComfyVideoWorkflow = (
     const refSlots = Object.keys(refInputs)
       .filter((key) => /^ref_images\.ref_image_\d+$/.test(key))
       .sort((a, b) => Number(a.split('_').pop()) - Number(b.split('_').pop()));
+    if (options.referenceImageNames.length > refSlots.length) {
+      throw new Error(
+        `R2V 工作流只声明了 ${refSlots.length} 个参考图槽位，` +
+        `但请求注入了 ${options.referenceImageNames.length} 张。`
+      );
+    }
     refSlots.forEach((slot, index) => {
       const link = refInputs[slot];
       const node = Array.isArray(link) ? nodes[link[0]] : undefined;
@@ -397,6 +403,13 @@ const patchComfyVideoWorkflow = (
           if (node?.inputs && name) node.inputs[field] = name;
           else delete refInputs[slot];
         });
+      const slots = Object.keys(refInputs).filter((key) => key.startsWith(prefix));
+      if (names.length > slots.length) {
+        throw new Error(
+          `R2V 工作流只声明了 ${slots.length} 个参考${field === 'video' ? '视频' : '音频'}槽位，` +
+          `但请求注入了 ${names.length} 个。`
+        );
+      }
     };
     patchRefGroup('ref_videos.ref_video_', options.referenceVideoNames || [], 'video');
     patchRefGroup('ref_audios.ref_audio_', options.referenceAudioNames || [], 'audio');
@@ -448,7 +461,10 @@ const callComfyVideoApi = async (
       ? getMiniMaxH3Size(aspectRatio)
       : getSizeFromAspectRatio(aspectRatio);
     console.info('[ComfyUI Video] Start generation:', { apiBase, workflowName });
-    const isRef2V = workflowName.toLowerCase().includes('r2v');
+    const normalizedWorkflowName = workflowName.toLowerCase();
+    const isRef2V = normalizedWorkflowName.includes('r2v')
+      || normalizedWorkflowName.includes('ref2va')
+      || model.params.supportsReferenceImages === true;
     if (!options.startImage && !isRef2V) {
       throw new Error('ComfyUI 图生视频工作流需要参考图（首帧），请先生成或选择关键帧图片。');
     }

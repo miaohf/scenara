@@ -127,7 +127,14 @@ export function reconcileEpisodeWithJobs(
             : next.scriptData?.props;
       const item = list?.find((row) => sameId(row.id, target.id));
       if (!item) continue;
-      if (url && isNewerMedia(item.referenceImage, url)) {
+      // 用户手动选择历史定妆照后会把资源标记为 completed。此时即使旧的
+      // 生成任务稍后完成，也不能把它的结果写回 referenceImage；否则会在
+      // 任务完成的几秒后把用户刚选的图片刷掉。只有空媒体或仍在生成时才回写。
+      if (
+        url &&
+        isNewerMedia(item.referenceImage, url) &&
+        (!item.referenceImage || item.status === "generating")
+      ) {
         if (target.kind === "character") {
           const character = item as Character;
           const shouldActivate = character.status === "generating";
@@ -141,7 +148,7 @@ export function reconcileEpisodeWithJobs(
       } else if ((job.status === "failed" || job.status === "cancelled") && item.status === "generating" && !url) {
         item.status = job.status === "cancelled" && item.referenceImage ? "completed" : job.status === "cancelled" ? "pending" : "failed";
         changed = true;
-      } else if (isActive(job.status) && item.status !== "generating") {
+      } else if (isActive(job.status) && item.status !== "generating" && !item.referenceImage) {
         item.status = "generating";
         changed = true;
       }
@@ -478,10 +485,9 @@ export function mergeEpisodeMediaFromServer(
             changed = true;
             next = { ...next, imageHistory };
           }
-          if (serverChar?.activeImageView && serverChar.activeImageView !== character.activeImageView) {
-            changed = true;
-            next = { ...next, activeImageView: serverChar.activeImageView };
-          }
+          // activeImageView 是用户在当前页面选择的展示状态，不是媒体生成结果。
+          // 普通后台刷新不能用旧服务端快照覆盖它；首次加载时仍会从服务端读取，
+          // 新生成任务完成时则由 reconcileEpisodeWithJobs 按任务目标主动切换。
           return variations !== character.variations ? { ...next, variations } : next;
         }),
         scenes: mergeAsset(local.scriptData.scenes, server.scriptData?.scenes) || local.scriptData.scenes,

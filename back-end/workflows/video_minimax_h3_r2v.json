@@ -305,7 +305,7 @@
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "Reference Image 1"
     }
   },
   "138": {
@@ -323,7 +323,7 @@
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "Reference Image 2"
     }
   },
   "147": {

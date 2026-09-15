@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { LayoutGrid, Sparkles, Loader2, AlertCircle, Edit2, Film, MessageSquare, Video as VideoIcon } from 'lucide-react';
 import {
   ProjectState,
@@ -10,8 +10,9 @@ import {
   NineGridData,
   StoryboardGridPanelCount,
   DubbingMode,
+  KeyframeVisualReview,
 } from '../../types';
-import { generateImage, generateVideo, generateActionSuggestion, optimizeKeyframePrompt, optimizeBothKeyframes, enhanceKeyframePrompt, splitShotIntoSubShots, generateNineGridPanels, translateNineGridPanels, reviseNineGridPanelsByInstruction, generateNineGridImage, getNegativePrompt, compressPromptWithLLM, generateDubbingAudio } from '../../services/aiService';
+import { generateImage, generateVideo, generateActionSuggestion, optimizeKeyframePrompt, optimizeBothKeyframes, enhanceKeyframePrompt, splitShotIntoSubShots, generateNineGridPanels, translateNineGridPanels, reviseNineGridPanelsByInstruction, generateNineGridImage, getNegativePrompt, compressPromptWithLLM, generateDubbingAudio, buildMiniMaxH3Ref2VAPrompt, isMiniMaxH3Ref2VAModel } from '../../services/aiService';
 import { 
   getRefImagesForShot, 
   getPropsInfoForShot,
@@ -54,7 +55,8 @@ import { findSceneByIdCompat } from '../../services/storyboardIdUtils';
 import NineGridPreview from './NineGridPreview';
 import { useAlert } from '../GlobalAlert';
 import { AspectRatioSelector } from '../AspectRatioSelector';
-import { getUserAspectRatio, getModelById, getActiveChatModel, getActiveImageModel, getActiveAudioModel, getActiveVideoModel, resolveShotGenerationModel } from '../../services/modelRegistry';
+import { getModelById, getActiveChatModel, getActiveImageModel, getActiveAudioModel, getActiveVideoModel, resolveShotGenerationModel } from '../../services/modelRegistry';
+import { getImageApiFormat } from '../../services/imageModelUtils';
 import BilingualLabel from '../BilingualLabel';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 import { persistVideoReference } from '../../services/videoStorageService';
@@ -71,6 +73,11 @@ import {
   buildReferenceImagePack,
   describeReferencePack,
 } from '../../services/referenceImagePack';
+import {
+  assessKeyframeVisualSemantics,
+  buildVisualRepairPrompt,
+  isVisualReviewCurrent,
+} from '../../services/visualSemanticAssessmentService';
 
 interface Props {
   project: ProjectState;
@@ -94,10 +101,11 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
   const [isNineGridRevising, setIsNineGridRevising] = useState(false); // 是否正在按指令改写九宫格描述
   const [showNineGrid, setShowNineGrid] = useState(false); // 是否显示九宫格预览弹窗
   const [toastMessage, setToastMessage] = useState('');
+  const visualAuditInFlightRef = useRef(new Set<string>());
   
   // 关键帧生成使用的横竖屏比例：优先读取当前项目，旧项目回退到模型默认配置。
   const [keyframeAspectRatio, setKeyframeAspectRatioState] = useState<AspectRatio>(
-    () => project.aspectRatio || getUserAspectRatio()
+    () => project.aspectRatio || '16:9'
   );
   
   // 包装 setKeyframeAspectRatio，同时持久化到当前项目。
@@ -107,7 +115,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
   };
 
   useEffect(() => {
-    setKeyframeAspectRatioState(project.aspectRatio || getUserAspectRatio());
+    setKeyframeAspectRatioState(project.aspectRatio || '16:9');
   }, [project.projectId, project.aspectRatio]);
   
   // 统一的编辑状态
@@ -140,10 +148,71 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       : 'keyframes';
   };
 
-  const applyShotQuality = (shot: Shot, scriptData: ProjectState['scriptData']): Shot => ({
-    ...shot,
-    qualityAssessment: assessShotQuality(shot, scriptData),
-  });
+  const applyShotQuality = (shot: Shot, scriptData: ProjectState['scriptData']): Shot => {
+    const base = assessShotQuality(shot, scriptData);
+    const reviewedFrame = shot.keyframes?.find((frame) => frame.type === 'start' && frame.imageUrl)
+      || shot.keyframes?.find((frame) => frame.type === 'end' && frame.imageUrl);
+    const review = reviewedFrame?.visualReview;
+    if (!review || review.reviewedImageUrl !== reviewedFrame?.imageUrl) {
+      return { ...shot, qualityAssessment: base };
+    }
+
+    const visualPassed = review.status === 'passed' && review.passed;
+    const similarityPassed = !review.issues.some((issue) => issue.type === 'adjacent_similarity');
+    const visualDetails = review.status === 'reviewing'
+      ? '画面语义审核进行中。'
+      : review.status === 'error'
+        ? `画面语义审核失败：${review.error || '未知错误'}`
+        : review.issues.map((issue) => `${issue.severity}: ${issue.message}`).join('；') || '画面语义审核通过。';
+    const checks = [
+      ...base.checks.filter((check) => check.key !== 'visual-semantics' && check.key !== 'adjacent-similarity'),
+      {
+        key: 'visual-semantics',
+        label: 'Visual Semantics',
+        score: review.score,
+        weight: 30,
+        passed: visualPassed,
+        details: visualDetails,
+      },
+      {
+        key: 'adjacent-similarity',
+        label: 'Adjacent-shot Difference',
+        score: review.previousShotSimilarity === undefined
+          ? 100
+          : Math.max(0, Math.min(100, Math.round((1 - review.previousShotSimilarity) * 160))),
+        weight: 15,
+        passed: similarityPassed,
+        details: review.previousShotSimilarity === undefined
+          ? '首镜或缺少上一镜头，无需相邻重复检测。'
+          : `与上一镜头感知相似度 ${Math.round(review.previousShotSimilarity * 100)}%。`,
+      },
+    ];
+    const score = review.status === 'reviewing'
+      ? Math.min(base.score, 79)
+      : visualPassed && similarityPassed
+        ? Math.round(base.score * 0.55 + review.score * 0.45)
+        : Math.min(base.score, 59);
+    const grade = review.status === 'reviewing'
+      ? 'warning' as const
+      : visualPassed && similarityPassed
+        ? base.grade
+        : 'fail' as const;
+    return {
+      ...shot,
+      qualityAssessment: {
+        ...base,
+        version: 3,
+        score,
+        grade,
+        checks,
+        summary: review.status === 'reviewing'
+          ? '结构审核完成，正在执行画面语义审核。'
+          : visualPassed && similarityPassed
+            ? '结构审核与画面语义审核均已通过。'
+            : '画面语义审核未通过，视频生成已被门禁阻止。',
+      },
+    };
+  };
 
   /**
    * 场景负面提示词里常包含“禁止人物”的约束（用于纯环境图），
@@ -376,7 +445,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
   const handleGenerateKeyframe = async (
     shot: Shot,
     type: 'start' | 'end',
-    options?: { enqueueOnly?: boolean },
+    options?: { enqueueOnly?: boolean; repairReview?: KeyframeVisualReview },
   ) => {
     const existingKf = shot.keyframes?.find(k => k.type === type);
     const kfId = existingKf?.id || generateId(`kf-${shot.id}-${type}`);
@@ -448,13 +517,18 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       );
     }
     prompt = appendCharacterCompositionConstraints(prompt, shot, project.scriptData);
+    if (options?.repairReview) {
+      prompt = buildVisualRepairPrompt(prompt, options.repairReview);
+    }
 
     const refResult = getRefImagesForShot(shot, project.scriptData, { sceneFirst });
     const requestedContinuityReference =
       type === 'end' && startKf?.imageUrl && !refResult.images.includes(startKf.imageUrl)
         ? startKf.imageUrl
         : undefined;
-    const maxReferenceCount = isQwenEditKeyframeWorkflow(keyframeWorkflowName) ? 3 : 5;
+    // 多角色 NewAPI 请求需要逐图标注；避免 Jane、dog 和丧尸群被压缩成
+    // 一张全景图后失去各自的身份边界。
+    const maxReferenceCount = isQwenEditKeyframeWorkflow(keyframeWorkflowName) ? 3 : 8;
     const referencePack = await buildReferenceImagePack(refResult.entries, {
       maxReferenceImages: maxReferenceCount,
       continuityReferenceImage: requestedContinuityReference,
@@ -466,6 +540,9 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     if (packNotice) setToastMessage(packNotice);
 
     const activeImageModel = getActiveImageModel() as any;
+    // 只有 ComfyUI 图片才由后端 job 队列异步提交；New API 图片接口是同步请求，
+    // 不能在 enqueueOnly 后直接 return，否则关键帧会永久停留在 QUEUED。
+    const supportsAsyncImageQueue = getImageApiFormat(activeImageModel) === 'comfyui';
     const preflightResult = runKeyframePreflight({
       prompt,
       negativePrompt,
@@ -539,11 +616,16 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       `Generate ${type} keyframe`
     );
 
-    // 进入生成中，但保留已有预览图；批量入队不挂结果回写，空掉会导致灰卡片。
+    // 进入新一轮生成时清除旧预览，避免审核/队列状态变化时继续显示上一张图。
+    // 失败或取消时会在下方恢复 existingKf.imageUrl。
     updateShot(shot.id, (s) => {
       const generatingKeyframe = {
-        ...createKeyframe(kfId, type, prompt, existingKf?.imageUrl, 'generating', generationId),
+        ...createKeyframe(kfId, type, prompt, undefined, 'generating', generationId),
         promptVersions,
+        visualReview: options?.repairReview ? {
+          ...options.repairReview,
+          repairAttempt: (options.repairReview.repairAttempt || 0) + 1,
+        } : undefined,
       };
       return updateKeyframeInShot(s, type, generatingKeyframe);
     });
@@ -574,11 +656,11 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
             referenceAnnotations: referencePack.referenceAnnotations,
             target: { kind: 'keyframe', shotId: shot.id, type, generationId },
             onJobCreated: upsertJob,
-            waitForResult: options?.enqueueOnly ? false : undefined,
+            waitForResult: options?.enqueueOnly && supportsAsyncImageQueue ? false : undefined,
           }
         );
 
-        if (options?.enqueueOnly) return;
+        if (options?.enqueueOnly && supportsAsyncImageQueue) return;
 
         updateShot(shot.id, (s) => {
           const current = s.keyframes?.find((frame) => frame.type === type);
@@ -586,6 +668,10 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           const completedKeyframe = {
             ...createKeyframe(kfId, type, prompt, url, 'completed', generationId),
             promptVersions,
+            visualReview: options?.repairReview ? {
+              ...options.repairReview,
+              repairAttempt: (options.repairReview.repairAttempt || 0) + 1,
+            } : undefined,
           };
           return updateKeyframeInShot(s, type, completedKeyframe);
         });
@@ -631,6 +717,66 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
 
     await runGeneration();
   };
+
+  // Queue-backed generations are written back independently of the button
+  // promise. Observe completed keyframes here so direct, queued, restored and
+  // uploaded images all use exactly the same semantic-review path.
+  useEffect(() => {
+    const scriptData = project.scriptData;
+    if (!scriptData) return;
+
+    const candidate = project.shots.flatMap((candidateShot, shotIndex) =>
+      (candidateShot.keyframes || []).map((frame) => ({
+        shot: candidateShot,
+        shotIndex,
+        frame,
+      })),
+    ).find(({ frame }) => {
+      if (frame.status !== 'completed' || !frame.imageUrl) return false;
+      const review = frame.visualReview;
+      if (review?.reviewedImageUrl === frame.imageUrl && review.status !== 'reviewing') return false;
+      const key = `${frame.id}:${frame.imageUrl}`;
+      return !visualAuditInFlightRef.current.has(key);
+    });
+
+    if (!candidate?.frame.imageUrl) return;
+    const { shot: shotToReview, shotIndex, frame } = candidate;
+    const imageUrl = frame.imageUrl as string;
+    const auditKey = `${frame.id}:${imageUrl}`;
+    visualAuditInFlightRef.current.add(auditKey);
+
+    updateShot(shotToReview.id, (currentShot) => updateKeyframeInShot(currentShot, frame.type, {
+      ...(currentShot.keyframes?.find((item) => item.type === frame.type) || frame),
+      visualReview: {
+        version: 1,
+        status: 'reviewing',
+        score: frame.visualReview?.score || 0,
+        passed: false,
+        structureScore: frame.visualReview?.structureScore || 0,
+        issues: frame.visualReview?.issues || [],
+        reviewedImageUrl: imageUrl,
+        reviewedAt: Date.now(),
+        repairAttempt: frame.visualReview?.repairAttempt || 0,
+      },
+    }));
+
+    void assessKeyframeVisualSemantics(shotToReview, scriptData, imageUrl, {
+      frameType: frame.type,
+      previousShot: shotIndex > 0 ? project.shots[shotIndex - 1] : undefined,
+      repairAttempt: frame.visualReview?.repairAttempt || 0,
+    }).then((review) => {
+      updateShot(shotToReview.id, (currentShot) => {
+        const current = currentShot.keyframes?.find((item) => item.type === frame.type);
+        if (!current || current.imageUrl !== imageUrl) return currentShot;
+        return updateKeyframeInShot(currentShot, frame.type, { ...current, visualReview: review });
+      });
+
+      // 审核失败不再自动重做：自动重做会覆盖刚生成的预览并重新进入队列，
+      // 用户容易误以为图片没有刷新。改为由用户点击“按建议重做”明确触发。
+    }).finally(() => {
+      visualAuditInFlightRef.current.delete(auditKey);
+    });
+  }, [project.shots, project.scriptData]);
 
   const handleCancelKeyframe = async (shot: Shot, type: 'start' | 'end') => {
     const existingKf = shot.keyframes?.find((frame) => frame.type === type);
@@ -699,7 +845,14 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
   * @param duration - 视频时长（仅异步模型有效）
    * @param modelId - 视频模型 ID
    */
-  const handleGenerateVideo = async (shot: Shot, aspectRatio: AspectRatio = '16:9', duration: VideoDuration = 8, modelId?: string, quality: 'standard' | 'turbo' = 'standard') => {
+  const handleGenerateVideo = async (
+    shot: Shot,
+    aspectRatio: AspectRatio = '16:9',
+    duration: VideoDuration = 8,
+    modelId?: string,
+    quality: 'standard' | 'turbo' = 'standard',
+    skipVisualReview = false,
+  ) => {
     const sKf = shot.keyframes?.find(k => k.type === 'start');
     const eKf = shot.keyframes?.find(k => k.type === 'end');
     
@@ -707,7 +860,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     const selectedModelInput: string = modelId || getActiveVideoModel()?.id || shot.videoModel || DEFAULTS.videoModel;
     const selectedModelRouting = resolveVideoModelRouting(selectedModelInput);
     const selectedModel = selectedModelRouting.normalizedModelId;
-    const isR2VModel = selectedModel.toLowerCase().includes('r2v');
+    const isR2VModel = isMiniMaxH3Ref2VAModel(selectedModel) || selectedModel.toLowerCase().includes('r2v');
     const steps = isMiniMaxH3VideoModel(selectedModel)
       ? quality === 'turbo' ? (isR2VModel ? 4 : 8) : 20
       : undefined;
@@ -715,13 +868,112 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
 
     // FLF2V 必须有首帧；R2V 直接使用角色/场景/道具参考图。
     if (!isR2VModel && !sKf?.imageUrl) {
-      return showAlert("请先生成起始帧！", { type: 'warning' });
+      return showAlert(text('请先生成起始帧！', 'Generate the start frame first.'), { type: 'warning' });
+    }
+
+    // The R2V workflow still uses assets directly as its generation inputs, but
+    // a storyboard keyframe is required as a disposable visual proof. It is
+    // reviewed and gated here; it is never added to the R2V reference slots.
+    if (!project.scriptData) {
+      return showAlert(text('缺少结构化剧本，无法执行画面审核。', 'Structured script data is required for visual review.'), { type: 'warning' });
+    }
+    const auditFrame = sKf?.imageUrl ? sKf : eKf?.imageUrl ? eKf : undefined;
+    if (!skipVisualReview && !auditFrame?.imageUrl) {
+      return showAlert(
+        `${text(
+          '当前没有关键帧审核样张。R2V 仍只会传入角色、场景和道具参考图。',
+          'No keyframe review proof is available. R2V will still receive only character, scene, and prop references.',
+        )}\n\n${text('可以忽略画面审核，直接生成 R2V 视频。', 'You can ignore visual review and generate the R2V video directly.')}`,
+        {
+          type: 'warning',
+          showCancel: true,
+          cancelText: text('返回修改', 'Back to editing'),
+          confirmText: text('忽略并生成', 'Ignore and generate'),
+          onConfirm: () => {
+            void handleGenerateVideo(shot, aspectRatio, duration, modelId, quality, true);
+          },
+        },
+      );
+    }
+    if (!skipVisualReview && auditFrame && (auditFrame.status === 'generating' || auditFrame.visualReview?.status === 'reviewing')) {
+      return showAlert(text('关键帧仍在生成或审核，请等待审核完成。', 'The keyframe is still generating or under review.'), { type: 'warning' });
+    }
+
+    let gateReview = auditFrame?.visualReview;
+    if (!skipVisualReview && auditFrame?.imageUrl && !isVisualReviewCurrent(auditFrame.imageUrl, gateReview) && gateReview?.reviewedImageUrl !== auditFrame.imageUrl) {
+      const shotIndex = project.shots.findIndex((item) => item.id === shot.id);
+      updateShot(shot.id, (currentShot) => updateKeyframeInShot(currentShot, auditFrame.type, {
+        ...(currentShot.keyframes?.find((item) => item.type === auditFrame.type) || auditFrame),
+        visualReview: {
+          version: 1,
+          status: 'reviewing',
+          score: 0,
+          passed: false,
+          structureScore: 0,
+          issues: [],
+          reviewedImageUrl: auditFrame.imageUrl,
+          reviewedAt: Date.now(),
+        },
+      }));
+      gateReview = await assessKeyframeVisualSemantics(shot, project.scriptData, auditFrame.imageUrl, {
+        frameType: auditFrame.type,
+        previousShot: shotIndex > 0 ? project.shots[shotIndex - 1] : undefined,
+      });
+      const completedReview = gateReview;
+      updateShot(shot.id, (currentShot) => {
+        const current = currentShot.keyframes?.find((item) => item.type === auditFrame.type);
+        if (!current || current.imageUrl !== auditFrame.imageUrl) return currentShot;
+        return updateKeyframeInShot(currentShot, auditFrame.type, { ...current, visualReview: completedReview });
+      });
+    }
+    if (!skipVisualReview && auditFrame?.imageUrl && !isVisualReviewCurrent(auditFrame.imageUrl, gateReview)) {
+      const issueText = (gateReview?.issues || [])
+        .filter((issue) => issue.severity !== 'low')
+        .slice(0, 5)
+        .map((issue) => `• ${issue.message}`)
+        .join('\n');
+      const detail = gateReview?.status === 'error'
+        ? `${text('视觉审核服务不可用：', 'Visual review unavailable: ')}${gateReview.error || ''}`
+        : issueText || text('关键帧尚未通过画面语义审核。', 'The keyframe has not passed visual semantic review.');
+      return showAlert(
+        `${text('视频提交未通过画面审核。', 'The video did not pass visual review.')}\n${detail}\n\n${text('可以忽略审核结果，直接使用当前参考图生成 R2V 视频。', 'You can ignore this result and generate the R2V video with the current references.')}`,
+        {
+          type: 'warning',
+          showCancel: true,
+          cancelText: text('返回修改', 'Back to editing'),
+          confirmText: text('忽略并生成', 'Ignore and generate'),
+          onConfirm: () => {
+            void handleGenerateVideo(shot, aspectRatio, duration, modelId, quality, true);
+          },
+        },
+      );
+    }
+    if (!isR2VModel && eKf?.imageUrl && !isVisualReviewCurrent(eKf.imageUrl, eKf.visualReview)) {
+      return showAlert(text(
+        '尾帧尚未通过画面语义审核，视频提交已阻止。请等待审核或按建议重做。',
+        'The end frame has not passed visual semantic review. Wait for review or regenerate it with the suggested fixes.',
+      ), { type: 'warning' });
     }
     
     const projectLanguage = project.language || project.scriptData?.language || '中文';
     const visualStyle = project.visualStyle || project.scriptData?.visualStyle || 'live-action';
     const selectedModelConfig = (getModelById(selectedModelInput) || getModelById(selectedModel)) as any;
     const nativeAudioContext = buildShotNativeAudioContext(shot, project.scriptData);
+    const r2vReferenceResult = isR2VModel
+      ? getRefImagesForShot(shot, project.scriptData)
+      : undefined;
+    const r2vReferencePack = r2vReferenceResult
+      ? await buildReferenceImagePack(r2vReferenceResult.entries, {
+          maxReferenceImages: selectedModelConfig?.params?.maxReferenceImages || 9,
+        })
+      : undefined;
+    if (isR2VModel && !r2vReferencePack?.referenceImages.length) {
+      return showAlert(text('Ref2VA 至少需要一张角色、场景或道具参考图，请先在资产页生成或上传参考图。', 'Ref2V needs at least one character, location, or prop reference. Add one in Assets first.'), { type: 'warning' });
+    }
+    if (r2vReferencePack) {
+      const referenceNotice = describeReferencePack(r2vReferencePack, language);
+      if (referenceNotice) setToastMessage(referenceNotice);
+    }
     
     const videoInputMode = shot.videoInputMode || getRecommendedVideoInputMode(selectedModel);
     // 检测是否为网格分镜模式：必须显式选择网格模式 + 首帧使用整张网格图
@@ -745,19 +997,30 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
 
     if (routedFrames.ignoredEndFrame) {
       if (videoInputMode === 'storyboard-grid' && !!eKf?.imageUrl) {
-        setToastMessage('网格分镜模式已启用：视频生成将只使用首帧，尾帧输入已自动忽略。');
+        setToastMessage(text('网格分镜模式已启用：视频生成将只使用首帧，尾帧输入已自动忽略。', 'Storyboard grid mode enabled: video uses the start frame only.'));
       } else {
         const modelName = selectedModelRouting.family === 'sora'
           ? 'Sora'
           : selectedModelRouting.family === 'doubao-task'
             ? 'Doubao Task'
             : selectedModel;
-        setToastMessage(`能力路由：${modelName} 当前只使用首帧，已自动忽略尾帧输入。`);
+        setToastMessage(text(`能力路由：${modelName} 当前只使用首帧，已自动忽略尾帧输入。`, `Routing: ${modelName} uses the start frame only; the end frame was ignored.`));
       }
     }
 
     let videoPrompt = (shot.interval?.videoPrompt || '').trim();
-    if (!videoPrompt) {
+    const latestPromptVersion = [...(shot.interval?.promptVersions || [])]
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    const preserveManualRef2VAPrompt = latestPromptVersion?.source === 'manual-edit' && Boolean(videoPrompt);
+    const requiresRef2VACompilation = isMiniMaxH3Ref2VAModel(selectedModel) && !preserveManualRef2VAPrompt;
+    if (requiresRef2VACompilation) {
+      videoPrompt = buildMiniMaxH3Ref2VAPrompt(shot, project.scriptData, {
+        durationSeconds: duration,
+        aspectRatio,
+        referenceEntries: r2vReferencePack?.entries || r2vReferenceResult?.entries,
+        referenceAnnotations: r2vReferencePack?.referenceAnnotations,
+      });
+    } else if (!videoPrompt) {
       videoPrompt = buildVideoPrompt(
         shot.actionSummary,
         shot.cameraMovement,
@@ -806,6 +1069,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     const preflightResult = runVideoPreflight({
       prompt: videoPrompt,
       hasStartFrame: !!generationFrames.startImage,
+      requiresStartFrame: !isR2VModel,
       hasEndFrame: !!generationFrames.endImage,
       modelId: selectedModel,
       supportsEndFrame: selectedModelRouting.supportsEndFrame,
@@ -840,7 +1104,14 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     updateShot(shot.id, (s) => ({
       ...s,
       videoModel: selectedModel as any,
-      interval: s.interval ? { ...s.interval, status: 'generating', videoPrompt, promptVersions: intervalPromptVersions, aspectRatio, videoQuality: quality } : {
+      interval: s.interval ? {
+        ...s.interval,
+        status: 'generating',
+        videoPrompt,
+        promptVersions: intervalPromptVersions,
+        aspectRatio,
+        videoQuality: quality,
+      } : {
         id: intervalId,
         startKeyframeId: isR2VModel ? '' : (sKf?.id || ''),
         endKeyframeId: routedEndKeyframeId,
@@ -885,9 +1156,9 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           onJobCreated: upsertJob,
           steps,
           referenceImages: isR2VModel
-            ? Array.from(new Set(getRefImagesForShot(shot, project.scriptData).images))
+            ? r2vReferencePack?.referenceImages || Array.from(new Set(r2vReferenceResult?.images || []))
             : undefined,
-          referenceAudios: selectedModel.toLowerCase().includes('r2v') && shot.dubbing?.audioUrl
+          referenceAudios: isR2VModel && shot.dubbing?.audioUrl
             ? [shot.dubbing.audioUrl]
             : undefined,
         }
@@ -900,7 +1171,14 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
 
       updateShot(shot.id, (s) => ({
         ...s,
-        interval: s.interval ? { ...s.interval, videoUrl: persistedVideoUrl, status: 'completed', promptVersions: intervalPromptVersions, aspectRatio, videoQuality: quality } : {
+        interval: s.interval ? {
+              ...s.interval,
+              videoUrl: persistedVideoUrl,
+              status: 'completed',
+              promptVersions: intervalPromptVersions,
+              aspectRatio,
+              videoQuality: quality,
+            } : {
           id: intervalId,
           startKeyframeId: isR2VModel ? '' : (sKf?.id || ''),
           endKeyframeId: routedEndKeyframeId,
@@ -931,7 +1209,11 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       }
       updateShot(shot.id, (s) => ({
         ...s,
-        interval: s.interval ? { ...s.interval, status: 'failed', promptVersions: intervalPromptVersions } : {
+        interval: s.interval ? {
+          ...s.interval,
+          status: 'failed',
+          promptVersions: intervalPromptVersions,
+        } : {
           id: intervalId,
           startKeyframeId: isR2VModel ? '' : (sKf?.id || ''),
           endKeyframeId: routedEndKeyframeId,
@@ -960,8 +1242,9 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     } catch (error) {
       console.warn('取消视频任务失败:', error);
     }
-    setToastMessage('已取消视频生成');
+    setToastMessage(text('已取消视频生成', 'Video generation cancelled'));
   };
+
 
   /**
    * 生成镜头配音（旁白 / 对话）
@@ -969,13 +1252,13 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
   const handleGenerateDubbing = async (
     shot: Shot,
     mode: DubbingMode,
-    text: string,
+    dubbingText: string,
     modelId?: string,
     speakerId?: string,
   ) => {
-    const cleanText = (text || '').trim();
+    const cleanText = (dubbingText || '').trim();
     if (!cleanText) {
-      showAlert(mode === 'dialogue' ? '请先填写对话文本' : '请先填写旁白文本', { type: 'warning' });
+      showAlert(mode === 'dialogue' ? text('请先填写对话文本', 'Enter dialogue text first.') : text('请先填写旁白文本', 'Enter narration text first.'), { type: 'warning' });
       return;
     }
 
@@ -1022,7 +1305,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         },
       }));
 
-      showAlert('配音生成成功', { type: 'success' });
+      showAlert(text('配音生成成功', 'Voiceover generated'), { type: 'success' });
     } catch (e: any) {
       console.error('配音生成失败:', e);
 
@@ -2060,7 +2343,11 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
             scriptData={project.scriptData}
             projectAspectRatio={project.aspectRatio || '16:9'}
             voiceCharacters={(project.scriptData?.characters || []).filter(isVoiceCharacter).map(({ id, name }) => ({ id, name }))}
-            currentVideoModelId={resolveEffectiveVideoModelId(activeShot.videoModel)}
+            currentVideoModelId={resolveEffectiveVideoModelId(activeShot.videoModel || (
+              activeShotIndex === 0 || activeShotIndex === project.shots.length - 1
+                ? 'comfyui-minimax-h3-flft2v'
+                : 'comfyui-minimax-h3-r2v'
+            ))}
             nextShotHasStartFrame={!!project.shots[activeShotIndex + 1]?.keyframes?.find(k => k.type === 'start')?.imageUrl}
             isAIOptimizing={isAIGenerating}
             isAIReassessing={isAIReassessing}
@@ -2095,6 +2382,16 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
             onAddProp={(propId) => updateShot(activeShot.id, s => ({ ...s, props: [...(s.props || []), propId] }))}
             onRemoveProp={(propId) => updateShot(activeShot.id, s => ({ ...s, props: (s.props || []).filter(id => id !== propId) }))}
             onGenerateKeyframe={(type) => handleGenerateKeyframe(activeShot, type)}
+            onReviewKeyframe={(type) => updateShot(activeShot.id, (shot) => {
+              const frame = shot.keyframes?.find((item) => item.type === type);
+              return frame ? updateKeyframeInShot(shot, type, { ...frame, visualReview: undefined }) : shot;
+            })}
+            onRepairKeyframe={(type) => {
+              const frame = activeShot.keyframes?.find((item) => item.type === type);
+              if (frame?.visualReview) {
+                void handleGenerateKeyframe(activeShot, type, { repairReview: frame.visualReview });
+              }
+            }}
             onUploadKeyframe={(type) => handleUploadKeyframeImage(activeShot, type)}
             onEditKeyframePrompt={(type, prompt) => setEditModal({ type: 'keyframe', value: prompt, frameType: type })}
             onOptimizeKeyframeWithAI={(type) => handleOptimizeKeyframeWithAI(type)}
@@ -2103,7 +2400,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
             onCopyNextStartFrame={handleCopyNextStartFrame}
             useAIEnhancement={useAIEnhancement}
             onToggleAIEnhancement={() => setUseAIEnhancement(!useAIEnhancement)}
-          onGenerateVideo={(aspectRatio, duration, modelId, quality) => handleGenerateVideo(activeShot, aspectRatio, duration, modelId, quality)}
+            onGenerateVideo={(aspectRatio: AspectRatio, duration: VideoDuration, modelId: string, quality: 'standard' | 'turbo' = 'standard') => handleGenerateVideo(activeShot, aspectRatio, duration, modelId, quality)}
             onCancelVideo={() => handleCancelVideo(activeShot)}
             onCancelKeyframe={(type) => handleCancelKeyframe(activeShot, type)}
             onGenerateDubbing={(mode, text, modelId, speakerId) => handleGenerateDubbing(activeShot, mode, text, modelId, speakerId)}
@@ -2161,22 +2458,31 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
                   activeShot.nineGrid?.imageUrl &&
                   startKf?.imageUrl === activeShot.nineGrid.imageUrl
                 );
-                promptValue = buildVideoPrompt(
-                  activeShot.actionSummary,
-                  activeShot.cameraMovement,
-                  selectedModel,
-                  projectLanguage,
-                  visualStyle,
-                  isNineGridMode ? activeShot.nineGrid : undefined,
-                  promptDuration,
-                  {
-                    hasStartFrame: !!routedFrames.startImage,
-                    hasEndFrame: !!routedFrames.endImage,
-                    dialogue: activeShot.dialogue,
-                    nativeAudio: buildShotNativeAudioContext(activeShot, project.scriptData),
-                  },
-                  promptTemplates
-                );
+                if (isMiniMaxH3Ref2VAModel(selectedModel)) {
+                  const referenceResult = getRefImagesForShot(activeShot, project.scriptData);
+                  promptValue = buildMiniMaxH3Ref2VAPrompt(activeShot, project.scriptData, {
+                    durationSeconds: promptDuration,
+                    aspectRatio: project.aspectRatio,
+                    referenceEntries: referenceResult.entries,
+                  });
+                } else {
+                  promptValue = buildVideoPrompt(
+                    activeShot.actionSummary,
+                    activeShot.cameraMovement,
+                    selectedModel,
+                    projectLanguage,
+                    visualStyle,
+                    isNineGridMode ? activeShot.nineGrid : undefined,
+                    promptDuration,
+                    {
+                      hasStartFrame: !!routedFrames.startImage,
+                      hasEndFrame: !!routedFrames.endImage,
+                      dialogue: activeShot.dialogue,
+                      nativeAudio: buildShotNativeAudioContext(activeShot, project.scriptData),
+                    },
+                    promptTemplates
+                  );
+                }
               }
               const editProjectLanguage = project.language || project.scriptData?.language || '中文';
               const promptDuration =

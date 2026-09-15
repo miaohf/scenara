@@ -139,6 +139,9 @@ export const VideoModelSelector: React.FC<{
   disabled?: boolean;
 }> = ({ value, onChange, disabled }) => {
   const models = getVideoModels().filter(m => m.isEnabled);
+  const resolvedValue = models.some((model) => model.id === value)
+    ? value
+    : models.find((model) => (model.apiModel || model.id) === value)?.id || models[0]?.id || value;
   const selectedModel = models.find(m => m.id === value) as VideoModelDefinition | undefined;
   
   return (
@@ -196,6 +199,9 @@ export const AudioModelSelector: React.FC<{
   disabled?: boolean;
 }> = ({ value, onChange, disabled }) => {
   const models = getAudioModels().filter(m => m.isEnabled);
+  const resolvedValue = models.some((model) => model.id === value)
+    ? value
+    : models.find((model) => (model.apiModel || model.id) === value)?.id || models[0]?.id || value;
   const selectedModel = models.find(m => m.id === value) as AudioModelDefinition | undefined;
 
   return (

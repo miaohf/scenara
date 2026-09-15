@@ -85,7 +85,7 @@ export const getSceneNegativePrompt = (visualStyle: string): string => {
 
 /** 定妆生图正向构图锁：全身棚拍、不含随身道具。不写入已存储的 visualPrompt。不预设人形或动物。 */
 export const CHARACTER_CASTING_POSITIVE_LOCK =
-  'full-body character lookbook, entire figure in frame, all extremities visible, typical stance for this subject, small margin around the figure, follow the covering and garments already described, no carried items, neutral seamless studio backdrop, no environment, no location scenery';
+  'full-body character lookbook, entire figure in frame, all extremities visible, typical stance for this subject, small margin around the figure, render the specified facial structure as a primary identity anchor with distinctive asymmetry and concrete features, follow the covering and garments already described, no carried items, neutral seamless studio backdrop, no environment, no location scenery';
 
 /** 仅人形定妆追加：剧本没写衣服时补日常穿搭，避免裸模。 */
 export const CHARACTER_CASTING_HUMAN_ATTIRE_LOCK =
@@ -93,7 +93,7 @@ export const CHARACTER_CASTING_HUMAN_ATTIRE_LOCK =
 
 /** 定妆生图专用负面词：只在定妆/变体请求里追加，禁止写入 character.negativePrompt（会被首尾帧继承）。 */
 export const CHARACTER_CASTING_NEGATIVE =
-  'cropped, close-up, medium shot, bust shot, cut-off, incomplete body, busy background, scenic environment, location scenery, hybridized subject, mixed identity';
+  'cropped, close-up, medium shot, bust shot, cut-off, incomplete body, busy background, scenic environment, location scenery, hybridized subject, mixed identity, generic face, same face as another character, duplicated facial features, identical face, beauty-filter face, interchangeable model face';
 
 /** 仅人形定妆追加的衣着负面词。不要用于动物，避免反向催生服装。 */
 export const CHARACTER_CASTING_HUMAN_ATTIRE_NEGATIVE =

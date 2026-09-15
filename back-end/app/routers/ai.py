@@ -48,6 +48,7 @@ async def ai_chat(
             registry,
             prompt=body.prompt,
             system_prompt=body.system_prompt,
+            image_urls=body.image_urls,
             model_id=body.model_id,
             response_format=body.response_format,
             timeout=body.timeout,
@@ -80,6 +81,8 @@ async def ai_image(
             prompt=body.prompt,
             model_id=body.model_id,
             aspect_ratio=body.aspect_ratio,
+            reference_images=body.reference_images,
+            reference_annotations=body.reference_annotations,
         )
     except AiConfigError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -101,10 +104,10 @@ async def ai_comfyui_image(
                 "negativePrompt": body.negative_prompt,
                 "modelId": body.model_id,
                 "aspectRatio": body.aspect_ratio,
+                "referenceImages": body.reference_images,
                 "continuityReferenceImage": body.continuity_reference_image,
                 "characterReferenceImage": body.character_reference_image,
                 "img2imgDenoise": body.img2img_denoise,
-                "seed": body.seed,
                 "steps": body.steps,
                 "workflowName": body.workflow_name,
             },
@@ -138,7 +141,13 @@ async def ai_comfyui_video(
                 "duration": body.duration,
                 "startImage": body.start_image,
                 "endImage": body.end_image,
+                "referenceImages": body.reference_images,
+                "referenceVideos": body.reference_videos,
+                "referenceAudios": body.reference_audios,
                 "audioUrl": body.audio_url,
+                "seed": body.seed,
+                "steps": body.steps,
+                "workflowName": body.workflow_name,
             },
             user_id=current_user.id,
         )

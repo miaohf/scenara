@@ -209,6 +209,19 @@ const ModelCard: React.FC<ModelCardProps> = ({
               : 'Gemini GenerateContent'
         }
       </div>
+      {params.apiFormat !== 'comfyui' && (
+        <div>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">输出分辨率</label>
+          <select
+            value={editParams.outputResolution || '1K'}
+            onChange={(e) => handleParamChange('outputResolution', e.target.value)}
+            className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)]"
+          >
+            <option value="1K">1K</option>
+          </select>
+          <p className="text-[9px] text-[var(--text-muted)] mt-1">Gemini 使用 imageSize；兼容接口使用对应宽高。</p>
+        </div>
+      )}
       {params.apiFormat === 'comfyui' && (
         <div>
           <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">工作流名称（定妆/通用文生图）</label>
@@ -235,6 +248,38 @@ const ModelCard: React.FC<ModelCardProps> = ({
             onChange={(e) => handleParamChange('steps', parseInt(e.target.value) || 20)}
             className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)]"
           />
+        </div>
+      )}
+      {params.apiFormat === 'comfyui' && (
+        <div className="rounded border border-[var(--border-secondary)] bg-[var(--bg-hover)]/30 p-3 space-y-3">
+          <div>
+            <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">参考图定妆工作流</label>
+            <input
+              type="text"
+              value={editParams.referenceWorkflowName || ''}
+              onChange={(e) => handleParamChange('referenceWorkflowName', e.target.value.trim() || undefined)}
+              className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] font-mono"
+              placeholder="image_qwen_image_edit_2511_20260908"
+            />
+            <p className="text-[9px] text-[var(--text-muted)] mt-1">
+              角色、形体、场景或道具带参考图时使用。需包含 Reference Image 输入槽；留空回退上方文生图工作流。
+            </p>
+          </div>
+          <div>
+            <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">Steps（参考图定妆）</label>
+            <input
+              type="number"
+              min="1"
+              max="100"
+              value={editParams.referenceSteps ?? ''}
+              onChange={(e) => {
+                const value = e.target.value;
+                handleParamChange('referenceSteps', value === '' ? undefined : parseInt(value) || 40);
+              }}
+              placeholder="默认回退定妆 Steps"
+              className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)]"
+            />
+          </div>
         </div>
       )}
       {params.apiFormat === 'comfyui' && (

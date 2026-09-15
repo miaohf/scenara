@@ -16,6 +16,8 @@ interface CharacterCardProps {
   character: Character;
   isGenerating: boolean;
   shapeReferenceImage?: string;
+  referenceWorkflowName?: string;
+  referenceSteps?: number;
   onGenerate: () => void;
   onUpload: (file: File) => void;
   onUploadShapeReference: (file: File) => void;
@@ -26,7 +28,7 @@ interface CharacterCardProps {
   onOpenWardrobe: () => void;
   onOpenTurnaround: () => void;
   onOpenThreeView: () => void;
-  onImageClick: (imageUrl: string) => void;
+  onImageClick: (imageUrl: string, imageUrls?: string[]) => void;
   onDelete: () => void;
   onUpdateInfo: (updates: { name?: string; gender?: string; age?: string; personality?: string; species?: string }) => void;
   onAddToLibrary: () => void;
@@ -38,6 +40,8 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
   character,
   isGenerating,
   shapeReferenceImage,
+  referenceWorkflowName,
+  referenceSteps,
   onGenerate,
   onUpload,
   onUploadShapeReference,
@@ -323,7 +327,14 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
               className="mt-2 w-full flex items-center gap-2 p-2 rounded border border-[var(--border-primary)] hover:border-[var(--border-secondary)] transition-colors text-left"
             >
               <img src={shapeReferenceImage} alt={text('角色参考图', 'Character reference')} className="w-10 h-10 rounded object-cover object-top" />
-              <span className="text-[10px] text-[var(--text-secondary)]">{text('已设置角色参考图，下次生成将生效', 'Reference set; it will apply to the next generation')}</span>
+              <span className="text-[10px] text-[var(--text-secondary)]">
+                {referenceWorkflowName
+                  ? text(
+                    `已设置角色参考图；下次走 ${referenceWorkflowName}${referenceSteps ? ` · ${referenceSteps} Steps` : ''}`,
+                    `Reference set; next generation uses ${referenceWorkflowName}${referenceSteps ? ` · ${referenceSteps} steps` : ''}`
+                  )
+                  : text('已设置角色参考图，下次生成将生效', 'Reference set; it will apply to the next generation')}
+              </span>
             </button>
           )}
         </div>
@@ -345,7 +356,7 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
                 return (
                   <div key={entry.id} className="w-[4.75rem] shrink-0">
                     <button
-                      onClick={() => onImageClick(entry.imageUrl)}
+                      onClick={() => onImageClick(entry.imageUrl, imageHistory.map((item) => item.imageUrl))}
                       className={`aspect-square w-full overflow-hidden rounded border bg-[var(--bg-deep)] transition-colors ${isCurrent ? 'border-[var(--accent)]' : 'border-[var(--border-primary)] hover:border-[var(--border-secondary)]'}`}
                       aria-label={text(`历史版本 ${index + 1}`, `History version ${index + 1}`)}
                     >

@@ -28,12 +28,16 @@ def _api_key_for_model(registry: dict[str, Any], model: dict[str, Any], provider
 
 
 def _resolve_speech_endpoint(base_url: str, endpoint: str | None) -> tuple[str, str]:
+    """拼接 speech URL，兼容 base 带/不带 `/v1` 两种写法。"""
     url = (base_url or "").rstrip("/")
     if not url:
         raise AiConfigError("TTS API Base URL 未配置")
     path = endpoint or "/v1/audio/speech"
     if not path.startswith("/"):
         path = f"/{path}"
+    # base=http://host:8002/v1 + endpoint=/v1/audio/speech → 避免 /v1/v1/...
+    if url.endswith("/v1") and path.startswith("/v1/"):
+        path = path[3:]
     return url, path
 
 
@@ -76,37 +80,43 @@ async def generate_speech(
         headers["Authorization"] = f"Bearer {api_key}"
 
     url = f"{base_url}{endpoint}"
-    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
-        res = await client.post(url, headers=headers, json=body)
-        if not res.is_success:
-            detail = res.text
-            try:
-                detail = res.json().get("error", {}).get("message", detail)
-            except Exception:
-                pass
-            raise AiConfigError(f"TTS API 错误: {detail}")
+    try:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+            res = await client.post(url, headers=headers, json=body)
+    except httpx.TimeoutException as exc:
+        raise AiConfigError(f"TTS 请求超时（{timeout}s）：{url}") from exc
+    except httpx.HTTPError as exc:
+        raise AiConfigError(f"无法连接 TTS 服务（{url}）：{exc}") from exc
 
-        content_type = res.headers.get("content-type", "")
-        mime = _mime_for_format(used_format)
-        if "application/json" in content_type:
-            payload = res.json()
-            import base64
+    if not res.is_success:
+        detail = res.text
+        try:
+            detail = res.json().get("error", {}).get("message", detail)
+        except Exception:
+            pass
+        raise AiConfigError(f"TTS API 错误: {detail}")
 
-            b64 = payload.get("audio") or payload.get("data") or ""
-            if not b64:
-                raise AiConfigError("TTS API 未返回音频数据")
-            return {
-                "audio_base64": b64,
-                "audio_data_url": f"data:{mime};base64,{b64}",
-                "mime_type": mime,
-            }
-
+    content_type = res.headers.get("content-type", "")
+    mime = _mime_for_format(used_format)
+    if "application/json" in content_type:
+        payload = res.json()
         import base64
 
-        raw = res.content
-        b64 = base64.b64encode(raw).decode("ascii")
+        b64 = payload.get("audio") or payload.get("data") or ""
+        if not b64:
+            raise AiConfigError("TTS API 未返回音频数据")
         return {
             "audio_base64": b64,
             "audio_data_url": f"data:{mime};base64,{b64}",
             "mime_type": mime,
         }
+
+    import base64
+
+    raw = res.content
+    b64 = base64.b64encode(raw).decode("ascii")
+    return {
+        "audio_base64": b64,
+        "audio_data_url": f"data:{mime};base64,{b64}",
+        "mime_type": mime,
+    }

@@ -14,7 +14,7 @@ interface Props {
   onPrevShot: () => void;
   onNextShot: () => void;
   onShotChange: (index: number) => void;
-  videoRef: React.RefObject<HTMLVideoElement>;
+  videoRef: React.RefObject<HTMLVideoElement | null>;
 }
 
 const VideoPlayerModal: React.FC<Props> = ({

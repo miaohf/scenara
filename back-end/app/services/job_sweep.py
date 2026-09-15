@@ -16,9 +16,11 @@ from app.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 SWEEP_EVERY_SEC = 8
-STALE_ORPHAN_SEC = 45
-STALE_COMFY_IDLE_SEC = 90
-STALE_PENDING_SEC = 90
+# 任务可能在 Worker/ComfyUI 重连期间暂时无法被探测到；短暂探测失败不能回收任务。
+# 真正的孤儿任务仍会被清理，但给足重连和 GPU 任务恢复时间。
+STALE_ORPHAN_SEC = 15 * 60
+STALE_COMFY_IDLE_SEC = 15 * 60
+STALE_PENDING_SEC = 10 * 60
 _last_sweep_at: dict[int, float] = {}
 
 
