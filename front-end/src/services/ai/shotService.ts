@@ -9,6 +9,7 @@ import {
   PromptTemplateConfig,
   StoryboardGridPanelCount,
 } from "../../types";
+import type { GenerationJobStatus } from "../../types/model";
 import { addRenderLogWithTokens } from '../renderLogService';
 import {
   retryOperation,
@@ -750,20 +751,15 @@ export const reviseNineGridPanelsByInstruction = async (
 /**
  * 使用图像模型生成网格分镜图片（4/6/9）
  */
-export const generateNineGridImage = async (
+export const buildNineGridImagePrompt = (
   panels: NineGridPanel[],
-  referenceImages: string[] = [],
   visualStyle: string,
-  aspectRatio: AspectRatio = '16:9',
   options?: {
-    hasTurnaround?: boolean;
     panelCount?: StoryboardGridPanelCount;
     promptTemplates?: PromptTemplateConfig;
     referenceAnnotations?: string[];
-    target?: import("../../types/model").GenerationTarget;
   }
-): Promise<string> => {
-  const startTime = Date.now();
+): { prompt: string; negativePrompt: string; layoutLabel: string; panelCount: number } => {
   const layout = resolveStoryboardGridLayout(options?.panelCount || panels.length);
   const gridPromptContext = buildStoryboardGridPromptContext(layout);
   const {
@@ -801,14 +797,12 @@ export const generateNineGridImage = async (
     templates.nineGrid.imageNoTextConstraint,
     DEFAULT_PROMPT_TEMPLATE_CONFIG.nineGrid.imageNoTextConstraint
   );
-  console.log(`🎬 ${layout.label}分镜 - 开始生成网格图片...`);
-
-  const stylePrompt = getStylePrompt(visualStyle);
 
   if (panels.length !== layout.panelCount) {
     throw new Error(`网格图片生成前校验失败：panels 数量为 ${panels.length}，必须为 ${layout.panelCount}`);
   }
 
+  const stylePrompt = getStylePrompt(visualStyle);
   const panelDescriptions = panels.map((panel, idx) =>
     renderPromptTemplate(
       imagePanelTemplate,
@@ -822,7 +816,22 @@ export const generateNineGridImage = async (
     )
   ).join('\n');
 
-  const nineGridPrompt = `${renderPromptTemplate(
+  const referenceMapping = (options?.referenceAnnotations || [])
+    .map((annotation, index) => {
+      const label = String(annotation || '').trim();
+      return label ? `- Image ${index + 1}: ${label}` : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+
+  const referenceBlock = referenceMapping
+    ? `[REFERENCE IMAGES]
+Use each reference only for the role described below. Do not mix identities across images.
+${referenceMapping}
+`
+    : '';
+
+  const prompt = `${referenceBlock}${renderPromptTemplate(
     imagePrefixTemplate,
     {
       gridLayout,
@@ -852,26 +861,57 @@ ${renderPromptTemplate(
 
 ${imageNoTextConstraintTemplate}`;
 
+  return {
+    prompt,
+    negativePrompt: layoutNegativePrompt,
+    layoutLabel: layout.label,
+    panelCount: layout.panelCount,
+  };
+};
+
+export const generateNineGridImage = async (
+  panels: NineGridPanel[],
+  referenceImages: string[] = [],
+  visualStyle: string,
+  aspectRatio: AspectRatio = '16:9',
+  options?: {
+    hasTurnaround?: boolean;
+    panelCount?: StoryboardGridPanelCount;
+    promptTemplates?: PromptTemplateConfig;
+    referenceAnnotations?: string[];
+    target?: import("../../types/model").GenerationTarget;
+    onJobCreated?: (job: GenerationJobStatus) => void;
+  }
+): Promise<{ imageUrl: string; prompt: string }> => {
+  const startTime = Date.now();
+  const built = buildNineGridImagePrompt(panels, visualStyle, {
+    panelCount: options?.panelCount,
+    promptTemplates: options?.promptTemplates,
+    referenceAnnotations: options?.referenceAnnotations,
+  });
+  console.log(`🎬 ${built.layoutLabel}分镜 - 开始生成网格图片...`);
+
   try {
     const imageUrl = await generateImage(
-      nineGridPrompt,
+      built.prompt,
       referenceImages,
       aspectRatio,
       false,
       !!options?.hasTurnaround,
-      layoutNegativePrompt,
+      built.negativePrompt,
       {
         referencePackType: 'shot',
         referenceAnnotations: options?.referenceAnnotations,
         target: options?.target,
+        onJobCreated: options?.onJobCreated,
       }
     );
     const duration = Date.now() - startTime;
 
-    console.log(`✅ ${layout.label}分镜 - 图片生成完成，耗时: ${duration}ms`);
-    return imageUrl;
+    console.log(`✅ ${built.layoutLabel}分镜 - 图片生成完成，耗时: ${duration}ms`);
+    return { imageUrl, prompt: built.prompt };
   } catch (error: any) {
-    console.error(`❌ ${layout.label}分镜 - 图片生成失败:`, error);
-    throw new Error(`${layout.label}图片生成失败: ${error.message}`);
+    console.error(`❌ ${built.layoutLabel}分镜 - 图片生成失败:`, error);
+    throw new Error(`${built.layoutLabel}图片生成失败: ${error.message}`);
   }
 };

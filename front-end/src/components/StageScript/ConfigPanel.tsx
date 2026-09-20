@@ -171,12 +171,12 @@ const ConfigPanel: React.FC<Props> = ({
             value={model}
             onChange={onModelChange}
             disabled={isProcessing}
-            label="分镜生成模型"
+            label="分镜描述模型"
           />
           <p className="text-[9px] text-[var(--text-muted)]">
-            仅作用于当前项目，与「模型配置 → 对话模型」中的「当前使用」相互独立。当前 API 模型：
+            与「模型配置 → CHAT → 当前使用」同步，剧本分镜与九宫格镜头描述共用此模型。当前 API：
             <span className="font-mono text-[var(--text-secondary)] ml-1">{getChatModelApiName(model) || '未配置'}</span>
-            。在
+            。可在
             <button
               type="button"
               onClick={onShowModelConfig}
@@ -184,7 +184,7 @@ const ConfigPanel: React.FC<Props> = ({
             >
               模型配置
             </button>
-            中可添加更多模型。
+            中切换或添加模型。
           </p>
         </div>
 
@@ -243,7 +243,7 @@ const ConfigPanel: React.FC<Props> = ({
             </span>
           </label>
           <p className="text-[10px] text-[var(--text-muted)]">
-            开启后会在分镜生成完成时自动打分并修复坏点（字段缺失、关键帧结构问题、资产ID非法等）。
+            开启后按目标态执行：故事层门禁 → 结构审片（可自动删/并叠戏）→ 字段审片（改文案，不增删镜）。
           </p>
         </div>
       </div>

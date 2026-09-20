@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Key, Loader2, CheckCircle, AlertCircle, Link } from 'lucide-react';
+import { Key, Loader2, CheckCircle, AlertCircle, Link, Eye, EyeOff } from 'lucide-react';
 import {
   getDefaultProvider,
   getGlobalApiKey,
@@ -37,6 +37,7 @@ const BUILTIN_DEFAULT_BASE_URL = '';
 
 const GlobalSettings: React.FC<GlobalSettingsProps> = ({ onRefresh }) => {
   const [apiKey, setApiKey] = useState(DEFAULT_GLOBAL_API_KEY);
+  const [showApiKey, setShowApiKey] = useState(false);
   const [baseUrl, setBaseUrl] = useState(DEFAULT_GLOBAL_BASE_URL);
   const [verifyModelName, setVerifyModelName] = useState(DEFAULT_GLOBAL_MODEL_NAME);
   const [isVerifying, setIsVerifying] = useState(false);
@@ -217,18 +218,32 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({ onRefresh }) => {
                 API Key
               </label>
             </div>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => {
-                setApiKey(e.target.value);
-                setVerifyStatus('idle');
-                setVerifyMessage('');
-              }}
-              placeholder="sk-xxxxxxxxxxxxxxxxxxx"
-              className="w-full bg-[var(--bg-surface)] border border-[var(--border-primary)] text-[var(--text-primary)] px-4 py-3 text-sm rounded-lg focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-hover)] transition-all font-mono placeholder:text-[var(--text-muted)]"
-              disabled={isVerifying}
-            />
+            <div className="relative">
+              <input
+                type={showApiKey ? 'text' : 'password'}
+                value={apiKey}
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                  setVerifyStatus('idle');
+                  setVerifyMessage('');
+                }}
+                placeholder="sk-xxxxxxxxxxxxxxxxxxx"
+                autoComplete="off"
+                spellCheck={false}
+                className="w-full bg-[var(--bg-surface)] border border-[var(--border-primary)] text-[var(--text-primary)] px-4 py-3 pr-11 text-sm rounded-lg focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-hover)] transition-all font-mono placeholder:text-[var(--text-muted)]"
+                disabled={isVerifying}
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey((prev) => !prev)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+                title={showApiKey ? '隐藏 API Key' : '显示 API Key'}
+                aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'}
+                disabled={isVerifying}
+              >
+                {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
           </div>
 
           {verifyMessage && (
@@ -261,7 +276,7 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({ onRefresh }) => {
             <button
               onClick={handleVerifyAndSave}
               disabled={isVerifying || !apiKey.trim() || !baseUrl.trim() || !verifyModelName.trim()}
-              className="flex-1 py-3 bg-[var(--accent)] text-[var(--text-primary)] font-bold text-xs uppercase tracking-wider rounded-lg hover:bg-[var(--accent-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              className="flex-1 py-3 bg-[var(--accent)] text-[var(--accent-on)] font-bold text-xs uppercase tracking-wider rounded-lg hover:bg-[var(--accent-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {isVerifying ? (
                 <>

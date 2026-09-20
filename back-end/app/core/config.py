@@ -41,6 +41,10 @@ class Settings(BaseSettings):
 
     default_api_key: str = ""
 
+    # API易（gpt-image-2 / 2.5 等）；写入 model_registry 的 apiyi provider
+    apiyi_base_url: str = "https://api.apiyi.com"
+    apiyi_api_key: str = ""
+
     # 本地推理基础设施（写入 model_registry，前端从服务端拉取）
     vllm_base_url: str = "http://100.64.0.32:8000/v1"
     vllm_api_key: str = "VLLM_API_KEY"

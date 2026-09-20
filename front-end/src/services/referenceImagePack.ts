@@ -1,4 +1,4 @@
-export type ReferenceImageKind = 'scene' | 'character' | 'prop' | 'turnaround';
+export type ReferenceImageKind = 'scene' | 'character' | 'prop' | 'turnaround' | 'storyboard';
 
 export interface ReferenceImageEntry {
   image: string;
@@ -56,7 +56,13 @@ interface BuildReferenceImagePackOptions {
   maxReferenceImages?: number;
   reservedReferenceSlots?: number;
   continuityReferenceImage?: string;
+  /** 强制把同类参考图合成全景（用于 UI 预览）；生图链路请勿开启 */
   alwaysCompositeTypes?: ReferenceImageKind[];
+  /**
+   * 生图链路禁用拼装：即使超出槽位也不合并为全景图，只按上限截取单图。
+   * 拼装图可另由 alwaysCompositeTypes 在预览侧生成，勿混入 referenceImages。
+   */
+  disableCompositing?: boolean;
 }
 
 const DEFAULT_MAX_REFERENCES = 5;
@@ -203,6 +209,9 @@ const annotationForEntry = (entry: ReferenceImageEntry): string => {
       ? `角色多视图合并图：从左到右依次为 ${labels}。按角色和目标机位选择对应分区，禁止混合身份。`
       : `角色多视图参考图：${entry.label}。选择与目标机位最接近的视图，保持身份、服装和比例。`;
   }
+  if (entry.type === 'storyboard') {
+    return `九宫格分镜参考：${entry.label}。这是同一段连续视频的视觉节拍表；按从左到右、从上到下的顺序演绎关键动作与镜头变化，但最终只输出一段连续画面，禁止输出分屏、拼贴或格线。`;
+  }
   return entry.isComposite
     ? `道具全景参考图：从左到右依次为 ${labels}。分别保持各道具的造型、材质、颜色和关键细节。`
     : `道具参考图：${entry.label}。锁定造型、材质、颜色和关键细节。`;
@@ -220,6 +229,9 @@ const annotationForEntryEn = (entry: ReferenceImageEntry): string => {
     return entry.isComposite
       ? `Character view-sheet panorama, left to right: ${labels}. Use the matching subject and camera angle without mixing identities.`
       : `Character view-sheet: ${entry.label}. Use the closest camera angle and preserve identity, wardrobe, and proportions.`;
+  }
+  if (entry.type === 'storyboard') {
+    return `Storyboard-grid reference: ${entry.label}. Treat its panels left-to-right, top-to-bottom as successive visual beats for one continuous video. Do not render a grid, collage, split screen, or panel borders.`;
   }
   return entry.isComposite
     ? `Prop panorama, left to right: ${labels}. Preserve each object's form, material, color, and defining details.`
@@ -243,7 +255,7 @@ const replaceKindWithComposite = (
   }, []);
 };
 
-/** 按模型槽位上限整理参考图，并在需要时自动把同类图片合成一张全景图。 */
+/** 按模型槽位上限整理参考图；默认在超出上限时才合并同类图，生图可用 disableCompositing 强制单图。 */
 export const buildReferenceImagePack = async (
   inputEntries: ReferenceImageEntry[],
   options: BuildReferenceImagePackOptions = {},
@@ -262,19 +274,22 @@ export const buildReferenceImagePack = async (
   const continuityIsExtra = !!continuityReferenceImage &&
     !originalEntries.some((entry) => entry.image === continuityReferenceImage);
   const alwaysComposite = new Set(options.alwaysCompositeTypes || []);
+  const disableCompositing = options.disableCompositing === true;
   let workingEntries = [...originalEntries];
   const compositeGroups: ReferenceCompositeSummary[] = [];
 
-  for (const type of ['character', 'prop', 'turnaround'] as const) {
-    const sameType = workingEntries.filter((entry) => entry.type === type);
-    const requestedNow = workingEntries.length + (continuityIsExtra ? 1 : 0) + reservedReferenceSlots;
-    if (sameType.length <= 1 || (requestedNow <= maxReferenceImages && !alwaysComposite.has(type))) continue;
-    try {
-      const composite = await composeReferencePanorama(sameType, type);
-      workingEntries = replaceKindWithComposite(workingEntries, type, composite);
-      compositeGroups.push({ type, count: sameType.length, entry: composite });
-    } catch (error) {
-      console.warn(`[ReferencePack] ${type} 合并失败，继续使用单张参考图。`, error);
+  if (!disableCompositing) {
+    for (const type of ['character', 'prop', 'turnaround'] as const) {
+      const sameType = workingEntries.filter((entry) => entry.type === type);
+      const requestedNow = workingEntries.length + (continuityIsExtra ? 1 : 0) + reservedReferenceSlots;
+      if (sameType.length <= 1 || (requestedNow <= maxReferenceImages && !alwaysComposite.has(type))) continue;
+      try {
+        const composite = await composeReferencePanorama(sameType, type);
+        workingEntries = replaceKindWithComposite(workingEntries, type, composite);
+        compositeGroups.push({ type, count: sameType.length, entry: composite });
+      } catch (error) {
+        console.warn(`[ReferencePack] ${type} 合并失败，继续使用单张参考图。`, error);
+      }
     }
   }
 
@@ -373,6 +388,7 @@ export const describeReferencePack = (
     character: { zh: '角色图', en: 'character references' },
     prop: { zh: '道具图', en: 'prop references' },
     turnaround: { zh: '角色多视图', en: 'character view sheets' },
+    storyboard: { zh: '九宫格分镜', en: 'storyboard grid' },
   };
   const merged = pack.compositeGroups
     .map((group) => language === 'zh'

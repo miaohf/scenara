@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Edit3, Save, AlertCircle, Camera, RefreshCw } from 'lucide-react';
+import { Edit3, Save, AlertCircle, Camera, RefreshCw, Copy, Check } from 'lucide-react';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface PromptEditorProps {
@@ -12,6 +12,88 @@ interface PromptEditorProps {
   placeholder?: string;
   maxHeight?: string;
 }
+
+/** 图标悬停提示延迟（比浏览器原生 title 更晚弹出） */
+const HOVER_TIP_DELAY_MS = 2200;
+/** 提示词大号预览延迟 */
+const PREVIEW_DELAY_MS = 2500;
+
+interface HoverTipButtonProps {
+  tip: string;
+  ariaLabel: string;
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}
+
+const HoverTipButton: React.FC<HoverTipButtonProps> = ({
+  tip,
+  ariaLabel,
+  onClick,
+  disabled,
+  children,
+}) => {
+  const [visible, setVisible] = useState(false);
+  const [position, setPosition] = useState({ left: 0, top: 0 });
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+
+  const clearTimer = () => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const hide = () => {
+    clearTimer();
+    setVisible(false);
+  };
+
+  const showSoon = () => {
+    clearTimer();
+    timerRef.current = setTimeout(() => {
+      const rect = buttonRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setPosition({
+        left: rect.left + rect.width / 2,
+        top: rect.top - 8,
+      });
+      setVisible(true);
+    }, HOVER_TIP_DELAY_MS);
+  };
+
+  useEffect(() => () => clearTimer(), []);
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        onMouseEnter={showSoon}
+        onMouseLeave={hide}
+        onFocus={showSoon}
+        onBlur={hide}
+        className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors p-1 hover:bg-[var(--bg-hover)] rounded disabled:opacity-40 disabled:cursor-not-allowed"
+        aria-label={ariaLabel}
+      >
+        {children}
+      </button>
+      {visible && tip && typeof document !== 'undefined' && createPortal(
+        <div
+          role="tooltip"
+          className="pointer-events-none fixed z-[110] max-w-[240px] -translate-x-1/2 -translate-y-full rounded-md border border-[var(--border-secondary)] bg-[var(--bg-elevated)] px-2 py-1.5 text-[10px] leading-snug text-[var(--text-secondary)] shadow-lg"
+          style={{ left: position.left, top: position.top }}
+        >
+          {tip}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+};
 
 const PromptEditor: React.FC<PromptEditorProps> = ({
   prompt,
@@ -29,7 +111,9 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
   const [editedPrompt, setEditedPrompt] = useState(prompt);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [previewPosition, setPreviewPosition] = useState({ left: 16, top: 16, width: 640 });
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearPreviewTimer = () => {
     if (previewTimer.current) {
@@ -58,10 +142,13 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
       ? rect.bottom + 10
       : Math.max(viewportPadding, rect.top - estimatedHeight - 10);
     setPreviewPosition({ left, top, width });
-    previewTimer.current = setTimeout(() => setIsPreviewOpen(true), 1200);
+    previewTimer.current = setTimeout(() => setIsPreviewOpen(true), PREVIEW_DELAY_MS);
   };
 
-  useEffect(() => () => clearPreviewTimer(), []);
+  useEffect(() => () => {
+    clearPreviewTimer();
+    if (copyResetTimer.current) clearTimeout(copyResetTimer.current);
+  }, []);
 
   useEffect(() => {
     if (!isPreviewOpen) return;
@@ -89,6 +176,58 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
     setEditedPrompt(prompt || '');
   };
 
+  const handleCopyPrompt = async () => {
+    const content = (prompt || '').trim();
+    if (!content) {
+      setCopyStatus('failed');
+      return;
+    }
+
+    if (copyResetTimer.current) {
+      clearTimeout(copyResetTimer.current);
+      copyResetTimer.current = null;
+    }
+
+    const markResult = (ok: boolean) => {
+      setCopyStatus(ok ? 'copied' : 'failed');
+      copyResetTimer.current = setTimeout(() => {
+        setCopyStatus('idle');
+        copyResetTimer.current = null;
+      }, ok ? 1800 : 2800);
+    };
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
+        markResult(true);
+        return;
+      }
+    } catch {
+      // fall through
+    }
+
+    try {
+      const helper = document.createElement('textarea');
+      helper.value = content;
+      helper.setAttribute('readonly', '');
+      helper.style.position = 'fixed';
+      helper.style.left = '-9999px';
+      document.body.appendChild(helper);
+      helper.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(helper);
+      markResult(ok);
+    } catch {
+      markResult(false);
+    }
+  };
+
+  const copyTip = copyStatus === 'copied'
+    ? text('已复制', 'Copied')
+    : copyStatus === 'failed'
+      ? text('复制失败', 'Copy failed')
+      : text('复制提示词', 'Copy prompt');
+
   return (
     <div className="flex flex-col">
       <div className="flex items-center justify-between mb-2 gap-2">
@@ -99,25 +238,31 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
         {!isEditing && (
           <div className="flex items-center gap-0.5 shrink-0">
             {onRegenerate && (
-              <button
-                onClick={onRegenerate}
+              <HoverTipButton
+                tip={text('重新生成提示词（按当前项目风格，不会自动生图）', 'Regenerate the prompt in the current project style without generating an image')}
+                ariaLabel={text('重新生成提示词', 'Regenerate prompt')}
+                onClick={() => onRegenerate()}
                 disabled={isRegenerating}
-                className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors p-1 hover:bg-[var(--bg-hover)] rounded disabled:opacity-40 disabled:cursor-not-allowed"
-                title={text('重新生成提示词（按当前项目风格，不会自动生图）', 'Regenerate the prompt in the current project style without generating an image')}
-                aria-label={text('重新生成提示词', 'Regenerate prompt')}
               >
                 <RefreshCw className={`w-3 h-3 ${isRegenerating ? 'animate-spin' : ''}`} />
-              </button>
+              </HoverTipButton>
             )}
-            <button
+            <HoverTipButton
+              tip={copyTip}
+              ariaLabel={text('复制提示词', 'Copy prompt')}
+              onClick={() => void handleCopyPrompt()}
+              disabled={!prompt?.trim() || isRegenerating}
+            >
+              {copyStatus === 'copied' ? <Check className="w-3 h-3 text-[var(--success)]" /> : <Copy className="w-3 h-3" />}
+            </HoverTipButton>
+            <HoverTipButton
+              tip={text('手工改写提示词', 'Edit prompt manually')}
+              ariaLabel={text('手工改写提示词', 'Edit prompt manually')}
               onClick={handleStartEdit}
               disabled={isRegenerating}
-              className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors p-1 hover:bg-[var(--bg-hover)] rounded disabled:opacity-40"
-              title={text('手工改写提示词', 'Edit prompt manually')}
-              aria-label={text('手工改写提示词', 'Edit prompt manually')}
             >
               <Edit3 className="w-3 h-3" />
-            </button>
+            </HoverTipButton>
           </div>
         )}
       </div>
@@ -174,27 +319,15 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
 
       {isPreviewOpen && prompt && typeof document !== 'undefined' && createPortal(
         <div
-          className="fixed z-[100] rounded-xl border border-[var(--border-secondary)] border-t-2 border-t-[var(--accent)] bg-[var(--bg-deep)] shadow-2xl"
+          className="fixed z-[100] rounded-xl border border-sky-300/60 bg-slate-100 shadow-2xl"
           style={{ left: previewPosition.left, top: previewPosition.top, width: previewPosition.width }}
           onMouseEnter={clearPreviewTimer}
           onMouseLeave={closePreviewSoon}
           role="dialog"
           aria-label={resolvedLabel}
         >
-          <div className="flex items-center justify-between gap-3 border-b border-[var(--border-secondary)] bg-[var(--bg-elevated)] px-4 py-2.5">
-            <span className="text-xs font-bold uppercase tracking-widest text-[var(--accent-text)]">
-              {resolvedLabel}
-            </span>
-            <button
-              type="button"
-              onClick={handleStartEdit}
-              className="rounded-md px-2.5 py-1 text-xs font-bold text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-            >
-              {text('编辑', 'Edit')}
-            </button>
-          </div>
-          <div className="max-h-[60vh] overflow-y-auto px-4 py-3">
-            <p className="whitespace-pre-wrap break-words text-sm leading-7 text-[var(--text-primary)] font-mono">
+          <div className="max-h-[60vh] overflow-y-auto px-5 py-4">
+            <p className="whitespace-pre-wrap break-words text-sm leading-7 text-slate-800 font-mono">
               {prompt}
             </p>
           </div>

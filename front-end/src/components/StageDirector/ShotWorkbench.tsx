@@ -99,6 +99,7 @@ interface ShotWorkbenchProps {
   onVideoInputModeChange: (mode: 'keyframes' | 'storyboard-grid') => void;
   onGenerateNineGrid: (panelCount?: StoryboardGridPanelCount) => void;
   nineGrid?: NineGridData;
+  onSelectNineGridLayout?: (panelCount: StoryboardGridPanelCount) => void;
   onSelectNineGridPanel: (panel: NineGridPanel) => void;
   onShowNineGrid: () => void;
 }
@@ -154,6 +155,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   onVideoInputModeChange,
   onGenerateNineGrid,
   nineGrid,
+  onSelectNineGridLayout,
   onSelectNineGridPanel,
   onShowNineGrid,
 }) => {
@@ -220,7 +222,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
 
   useEffect(() => {
     setLocalVideoModelId(currentVideoModelId || resolveEffectiveVideoModelId(shot.videoModel));
-  }, [currentVideoModelId, shot.id, shot.videoModel]);
+  }, [currentVideoModelId, shot.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -302,12 +304,16 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
     !!nineGrid?.panels?.length && existingGridLayout.panelCount === selectedGridLayout.panelCount;
 
   useEffect(() => {
-    setSelectedGridPanelCount(resolvePreferredGridPanelCount());
+    // 切换到一个尚未生成的布局时，nineGrid 会暂时为空；保留用户刚选择的
+    // 4/6/9 布局，不能因为默认值又跳回九宫格。
+    if (nineGrid?.panels?.length) {
+      setSelectedGridPanelCount(resolvePreferredGridPanelCount());
+    }
   }, [shot.id, nineGrid?.layout?.panelCount, nineGrid?.panels?.length]);
 
-  // 默认镜头边界策略：首镜只建立首帧锚点，尾镜才生成尾帧作为收束目标；
-  // 中间镜头走参考图视频，不要求额外关键帧。用户仍可手动切换模型或覆盖图片。
-  const showEndFrame = modelRouting.supportsEndFrame && shotIndex === totalShots - 1;
+  // 「首尾帧」模式下始终展示尾帧槽位，不跟当前视频模型的 supportsEndFrame 绑定；
+  // 模型不支持时，生成阶段会自动忽略尾帧并提示。尾帧本身仍可选。
+  const showEndFrame = effectiveVideoInputMode === 'keyframes';
   const hasStartFrame = !!startKf?.imageUrl;
   const hasEndFrame = !!endKf?.imageUrl;
   const startFrameReviewed = Boolean(
@@ -326,7 +332,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
     ? previewEntries.length > 0 && (startFrameReviewed || endFrameReviewed)
     : effectiveVideoInputMode === 'storyboard-grid'
     ? startFrameReviewed
-    : startFrameReviewed && (!showEndFrame || endFrameReviewed);
+    : startFrameReviewed && (!hasEndFrame || endFrameReviewed);
   const hasActionSummary = (shot.actionSummary || '').trim().length > 0;
   const hasVideo = !!shot.interval?.videoUrl;
   const isVideoGenerating = shot.interval?.status === 'generating';
@@ -507,18 +513,6 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
       };
     }
 
-    if (!isR2VModel && effectiveVideoInputMode === 'keyframes' && showEndFrame && !hasEndFrame) {
-      return {
-        label: text('下一步：生成尾帧', 'Next: generate end frame'),
-        hint: text('补齐首尾关键帧后，再做视频会更稳定。', 'Complete both keyframes for a more stable video.'),
-        disabled: endKf?.status === 'generating',
-        onClick: () => {
-          openSection('keyframe');
-          onGenerateKeyframe('end');
-        },
-      };
-    }
-
     if (!hasVideo) {
       return {
         label: isVideoGenerating ? text('视频生成中…', 'Generating video…') : text('下一步：进入视频生成', 'Next: generate video'),
@@ -550,9 +544,6 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
     isGridGenerating,
     openOrGenerateGridStoryboard,
     startKf?.status,
-    showEndFrame,
-    hasEndFrame,
-    endKf?.status,
     hasVideo,
     isVideoGenerating,
     isAIReassessing,
@@ -1191,7 +1182,10 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                         <button
                           key={count}
                           type="button"
-                          onClick={() => setSelectedGridPanelCount(count)}
+                          onClick={() => {
+                            setSelectedGridPanelCount(count);
+                            onSelectNineGridLayout?.(count);
+                          }}
                           className={`px-2 py-1.5 rounded border text-[10px] font-semibold transition-colors ${
                             selectedGridPanelCount === count
                               ? 'border-[var(--accent-border)] bg-[var(--accent-bg)] text-[var(--accent-text)]'

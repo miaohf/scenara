@@ -118,6 +118,87 @@ export const loadRegistry = (): ModelRegistryState => {
           : parsed.activeModels.image;
         chatModelAliasMigrated = true;
       }
+
+      // Seedream 5.0 Lite → Pro（已开通 Pro；保留 Key / 启用状态）
+      const SEEDREAM_LITE_ID = 'doubao-seedream-5-0-260128';
+      const SEEDREAM_PRO_ID = 'doubao-seedream-5-0-pro-260628';
+      if (
+        parsed.models.some((model) => model.id === SEEDREAM_LITE_ID)
+        && !parsed.models.some((model) => model.id === SEEDREAM_PRO_ID)
+      ) {
+        parsed.models = parsed.models.map((model) => {
+          if (model.id !== SEEDREAM_LITE_ID) return model;
+          const builtin = ALL_BUILTIN_MODELS.find((item) => item.id === SEEDREAM_PRO_ID) as
+            | ImageModelDefinition
+            | undefined;
+          return {
+            ...model,
+            id: SEEDREAM_PRO_ID,
+            apiModel: builtin?.apiModel || 'ep-20260919034202-p2zx8',
+            name: builtin?.name || 'Doubao Seedream 5.0 Pro',
+            description: builtin?.description || model.description,
+            endpoint: '/api/v3/images/generations',
+            providerId: 'volcengine',
+            baseUrl: (() => {
+              const bad = (model.baseUrl || '').trim().replace(/\/+$/, '');
+              if (bad && (/192\.168\./.test(bad) || /:3000$/i.test(bad))) return undefined;
+              return model.baseUrl;
+            })(),
+            params: {
+              ...(builtin?.params || {}),
+              ...(model.params || {}),
+              supportedOutputResolutions:
+                builtin?.params?.supportedOutputResolutions
+                || ['1K', '2K', '1344x768'],
+              outputResolution:
+                (model.params as ImageModelParams | undefined)?.outputResolution
+                || builtin?.params?.outputResolution
+                || '1344x768',
+            },
+          } as ImageModelDefinition;
+        });
+        if (parsed.activeModels.image === SEEDREAM_LITE_ID) {
+          parsed.activeModels.image = SEEDREAM_PRO_ID;
+        }
+        chatModelAliasMigrated = true;
+      } else if (parsed.models.some((model) => model.id === SEEDREAM_LITE_ID)) {
+        // Pro 已存在时去掉旧 Lite，避免双卡片
+        parsed.models = parsed.models.filter((model) => model.id !== SEEDREAM_LITE_ID);
+        if (parsed.activeModels.image === SEEDREAM_LITE_ID) {
+          parsed.activeModels.image = SEEDREAM_PRO_ID;
+        }
+        chatModelAliasMigrated = true;
+      }
+
+      // Seedance 1.5 Pro 下架 → 1.0 Pro 接入点（保留卡片 id / Key / 启用状态）
+      const SEEDANCE_VOLC_ID = 'doubao-seedance-1-5-pro-251215';
+      {
+        const builtin = ALL_BUILTIN_MODELS.find((item) => item.id === SEEDANCE_VOLC_ID) as
+          | VideoModelDefinition
+          | undefined;
+        const desiredApi = builtin?.apiModel || 'ep-20260919140814-hwwtt';
+        const desiredName = builtin?.name || 'Doubao Seedance 1.0 Pro';
+        parsed.models = parsed.models.map((model) => {
+          if (model.id !== SEEDANCE_VOLC_ID) return model;
+          if (
+            model.apiModel === desiredApi
+            && model.name === desiredName
+            && model.providerId === 'volcengine'
+          ) {
+            return model;
+          }
+          chatModelAliasMigrated = true;
+          return {
+            ...model,
+            apiModel: desiredApi,
+            name: desiredName,
+            description: builtin?.description || model.description,
+            endpoint: '/api/v3/contents/generations/tasks',
+            providerId: 'volcengine',
+          } as VideoModelDefinition;
+        });
+      }
+
       const hasBuiltinGpt54 = parsed.models.some(m => m.type === 'chat' && m.id === 'gpt-5.4');
       parsed.models = parsed.models.flatMap((model) => {
         if (!(model.type === 'chat' && model.id === 'gpt-41')) {
@@ -148,15 +229,40 @@ export const loadRegistry = (): ModelRegistryState => {
         chatModelAliasMigrated = true;
       }
 
-      // 只补齐空的 Comfy 工作流；内置 MiniMax H3 R2V 的旧默认值迁移到多参考图工作流。
+      // 只补齐空的 Comfy 工作流；内置 MiniMax H3 R2V / FLF2V 固定到当前受支持模板。
       // 其他已填写的自定义工作流一律保留。
       parsed.models = parsed.models.map((model) => {
         if (model.type === 'video') {
           const videoModel = model as VideoModelDefinition;
           const nextParams = { ...videoModel.params };
           const workflowName = String(nextParams.workflowName || '').trim();
-          const isLegacyMinimaxR2V = model.id === 'comfyui-minimax-h3-r2v'
+          const isMiniMaxR2V = model.id === 'comfyui-minimax-h3-r2v';
+          const isMiniMaxFlf2v = model.id === 'comfyui-minimax-h3-flft2v';
+          const isLegacyMinimaxR2V = isMiniMaxR2V
             && workflowName.replace(/\.json$/i, '') === 'video_minimax_h3_r2v';
+          if (isMiniMaxR2V) {
+            // R2V 统一使用官方多参考图模板；它声明了最多 9 个图像槽位。
+            nextParams.workflowName = MINIMAX_H3_R2V_WORKFLOW_NAME;
+            nextParams.maxReferenceImages = 9;
+            chatModelAliasMigrated = true;
+            return { ...videoModel, params: nextParams };
+          }
+          if (isMiniMaxFlf2v) {
+            // 首尾帧固定走 video_minimax_h3_fl2v，并刷新展示名/说明，清掉旧的「768p Turbo」文案。
+            const builtin = ALL_BUILTIN_MODELS.find((item) => item.id === model.id) as
+              | VideoModelDefinition
+              | undefined;
+            nextParams.workflowName = 'video_minimax_h3_fl2v';
+            chatModelAliasMigrated = true;
+            return {
+              ...videoModel,
+              apiModel: 'video_minimax_h3_fl2v',
+              name: builtin?.name || 'ComfyUI MiniMax H3 FL2V (video_minimax_h3_fl2v)',
+              description: builtin?.description
+                || '工作流 video_minimax_h3_fl2v.json；首尾帧原生音视频；高质量 20 steps / 快速预览 8-step Lightning；24fps',
+              params: nextParams,
+            };
+          }
           if (!workflowName || isLegacyMinimaxR2V) {
             const builtin = ALL_BUILTIN_MODELS.find((item) => item.id === model.id) as
               | VideoModelDefinition
@@ -277,7 +383,13 @@ export const loadRegistry = (): ModelRegistryState => {
 
       // 修复被误设为 ComfyUI/前端地址/空值的默认云端提供商
       parsed.providers = parsed.providers.map(p => {
-        if (p.id !== 'default' && p.id !== 'antsk' && p.id !== 'volcengine') return p;
+        if (p.id !== 'default' && p.id !== 'antsk' && p.id !== 'volcengine' && p.id !== 'apiyi') return p;
+        if (p.id === 'apiyi') {
+          const builtin = BUILTIN_PROVIDERS.find(bp => bp.id === 'apiyi');
+          const base = (p.baseUrl || '').trim();
+          if (base && isValidCloudApiBaseUrl(base)) return p;
+          return builtin ? { ...p, baseUrl: builtin.baseUrl } : p;
+        }
         if (isValidCloudApiBaseUrl(p.baseUrl)) return p;
         const builtin = BUILTIN_PROVIDERS.find(bp => bp.id === p.id);
         return builtin ? { ...p, baseUrl: builtin.baseUrl } : p;
@@ -341,8 +453,20 @@ export const loadRegistry = (): ModelRegistryState => {
             apiKey: existing.apiKey?.trim() || undefined,
             baseUrl: existing.baseUrl?.trim() || undefined,
             params: mergedParams as any,
-            name: existing.name?.trim() || bm.name,
-            description: existing.description !== undefined ? existing.description : bm.description,
+            // Seedance 1.5→1.0 下架迁移：名称/说明始终跟代码，避免 UI 仍显示 1.5 Pro
+            // API易 gpt-image 系列：名称始终跟代码（按量/按次标签）
+            name: (
+              bm.id === 'doubao-seedance-1-5-pro-251215'
+              || bm.id.startsWith('gpt-image-')
+            )
+              ? bm.name
+              : (existing.name?.trim() || bm.name),
+            description: (
+              bm.id === 'doubao-seedance-1-5-pro-251215'
+              || bm.id.startsWith('gpt-image-')
+            )
+              ? bm.description
+              : (existing.description !== undefined ? existing.description : bm.description),
           } as ModelDefinition;
           if (
             isComfyUiModel({ ...mergedModel, endpoint: existing.endpoint }) &&
@@ -1169,17 +1293,10 @@ export const getConfiguredChatModelApiName = (): string => {
 };
 
 /**
- * 解析项目/流程使用的对话模型 ID。
- * 优先使用项目保存的 shotGenerationModel；无效或误配 ComfyUI 提供商时回退到模型配置页的激活项。
+ * 解析分镜/剧本等文字生成使用的对话模型 ID。
+ * 统一使用「模型配置 → CHAT → 当前使用」；`stored` 仅保留签名兼容，不再作为覆盖项。
  */
-export const resolveShotGenerationModel = (stored?: string | null): string => {
-  const resolved = resolveChatModelId(stored);
-  if (resolved) {
-    const model = getModelById(resolved);
-    if (model?.type === 'chat' && model.providerId !== 'comfyui-local') {
-      return resolved;
-    }
-  }
+export const resolveShotGenerationModel = (_stored?: string | null): string => {
   return getConfiguredChatModelId();
 };
 

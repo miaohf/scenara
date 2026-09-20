@@ -206,9 +206,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   const language = getProjectLanguage(project.language, project.scriptData?.language);
   const visualStyle = getProjectVisualStyle(project.visualStyle, project.scriptData?.visualStyle);
   const genre = project.scriptData?.genre || DEFAULTS.genre;
-  const shotPromptModel = resolveShotGenerationModel(
-    project.shotGenerationModel || project.scriptData?.shotGenerationModel
-  );
+  const shotPromptModel = resolveShotGenerationModel();
 
   /**
    * 上报生成状态给父组件，用于导航锁定
@@ -490,6 +488,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           const s = newData.scenes.find(s => compareIds(s.id, id));
           if (s) {
             s.referenceImage = imageUrl;
+            s.referenceImageUpdatedAt = Date.now();
             s.status = 'completed';
           }
         }
@@ -1291,6 +1290,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         const updated = (updatedData.props || []).find(p => compareIds(p.id, propId));
         if (updated) {
           updated.referenceImage = imageUrl;
+          updated.referenceImageUpdatedAt = Date.now();
           updated.status = 'completed';
           if (!updated.visualPrompt) {
             updated.promptVersions = updatePromptWithVersion(
@@ -1965,7 +1965,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                       onClick={() => setLibraryFilter(type)}
                       className={`px-3 py-2 text-[10px] font-bold uppercase tracking-widest border rounded ${
                         libraryFilter === type
-                          ? 'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] border-[var(--btn-primary-bg)]'
+                          ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border-[var(--btn-selected-border)]'
                           : 'bg-transparent text-[var(--text-tertiary)] border-[var(--border-primary)] hover:text-[var(--text-primary)] hover:border-[var(--border-secondary)]'
                       }`}
                     >

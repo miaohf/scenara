@@ -11,6 +11,7 @@ interface NineGridPreviewProps {
   onUseWholeImage: () => void;  // 整张九宫格图直接用作首帧
   onRegenerate: () => void;
   onRegenerateImage: () => void; // 仅重新生成图片（保留已有的面板文案描述）
+  onViewImagePrompt?: () => void; // 查看即将/已用于生图的完整提示词与参考图
   onConfirmPanels: (panels: NineGridPanel[]) => void; // 用户确认面板后生成图片
   onUpdatePanel: (index: number, panel: Partial<NineGridPanel>) => void; // 编辑单个面板
   onTranslatePanels?: () => Promise<void> | void; // AI翻译英文描述为中文展示（不替换英文原文）
@@ -79,6 +80,7 @@ const NineGridPreview: React.FC<NineGridPreviewProps> = ({
   onUseWholeImage,
   onRegenerate,
   onRegenerateImage,
+  onViewImagePrompt,
   onConfirmPanels,
   onUpdatePanel,
   onTranslatePanels,
@@ -251,6 +253,16 @@ const NineGridPreview: React.FC<NineGridPreviewProps> = ({
             )}
           </div>
           <div className="flex items-center gap-2">
+            {(isCompleted || isPanelsReady) && onViewImagePrompt && (
+              <button
+                onClick={onViewImagePrompt}
+                className="px-3 py-1.5 bg-[var(--bg-hover)] hover:bg-[var(--border-secondary)] text-[var(--text-secondary)] rounded-lg text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center gap-1.5"
+                title="查看即将/已用于生图的完整提示词与参考图"
+              >
+                <Edit2 className="w-3 h-3" />
+                查看生图提示词
+              </button>
+            )}
             {isCompleted && (
               <button
                 onClick={onRegenerateImage}

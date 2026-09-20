@@ -173,7 +173,7 @@ const DubbingPanel: React.FC<DubbingPanelProps> = ({ shot, voiceCharacters = [],
           type="button"
           onClick={handleGenerateDubbing}
           disabled={!canGenerateDubbing || !audioModels.length}
-          className="flex-1 py-2 rounded-lg bg-[var(--accent)] text-[var(--text-primary)] text-[10px] font-bold uppercase tracking-wider hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          className="flex-1 py-2 rounded-lg bg-[var(--accent)] text-[var(--accent-on)] text-[10px] font-bold uppercase tracking-wider hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
         >
           {isGeneratingDubbing ? (
             <>

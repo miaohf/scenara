@@ -24,8 +24,24 @@ def _media_url(job_type: str, result: dict[str, Any] | None) -> str | None:
     if not result:
         return None
     if job_type in {"video", "comfyui_video"}:
-        return result.get("video_url") or result.get("video_data_url")
-    return result.get("image_url") or result.get("image_data_url")
+        return (
+            result.get("video_url")
+            or result.get("video_data_url")
+            or (
+                f"data:video/mp4;base64,{result['video_base64']}"
+                if result.get("video_base64")
+                else None
+            )
+        )
+    return (
+        result.get("image_url")
+        or result.get("image_data_url")
+        or (
+            f"data:image/png;base64,{result['image_base64']}"
+            if result.get("image_base64")
+            else None
+        )
+    )
 
 
 def _find_shot(shots: list[dict[str, Any]], shot_id: Any) -> dict[str, Any] | None:
@@ -133,6 +149,13 @@ def _merge_named_assets(old_items: list[Any], new_items: list[Any]) -> list[Any]
             continue
         old = old_by_id.get(str(item.get("id")), {})
         next_item = _preserve_completed_media(old, item, "referenceImage")
+        # 资产图的旧 completed 快照也会晚于 Worker 回写抵达；按生成时间裁决，
+        # 避免刷新后把刚生成的新场景/道具图刷回旧图。
+        if int(old.get("referenceImageUpdatedAt") or 0) > int(
+            next_item.get("referenceImageUpdatedAt") or 0
+        ):
+            next_item["referenceImage"] = old.get("referenceImage")
+            next_item["referenceImageUpdatedAt"] = old.get("referenceImageUpdatedAt")
         for view_key in ("turnaround", "threeView"):
             if isinstance(old.get(view_key), dict) and isinstance(next_item.get(view_key), dict):
                 next_item[view_key] = _preserve_completed_media(old[view_key], next_item[view_key], "imageUrl")
@@ -208,6 +231,7 @@ def apply_target_to_payload(
             if kind == "character":
                 _append_character_history(item, item.get("referenceImage"))
             item["referenceImage"] = url
+            item["referenceImageUpdatedAt"] = int(datetime.now(timezone.utc).timestamp() * 1000)
             item["status"] = "completed"
             if kind == "character":
                 item["activeImageView"] = "casting"

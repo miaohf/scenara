@@ -25,7 +25,7 @@ const isNewerMedia = (current: string | undefined, incoming: string | undefined)
 };
 
 const isImageJob = (jobType?: string): boolean =>
-  !jobType || jobType === "comfyui_image";
+  !jobType || jobType === "image" || jobType === "comfyui_image";
 
 export const episodeHasGeneratingWork = (episode: Episode | null | undefined): boolean => {
   if (!episode) return false;
@@ -127,13 +127,16 @@ export function reconcileEpisodeWithJobs(
             : next.scriptData?.props;
       const item = list?.find((row) => sameId(row.id, target.id));
       if (!item) continue;
-      // 用户手动选择历史定妆照后会把资源标记为 completed。此时即使旧的
-      // 生成任务稍后完成，也不能把它的结果写回 referenceImage；否则会在
-      // 任务完成的几秒后把用户刚选的图片刷掉。只有空媒体或仍在生成时才回写。
+      // 角色有手动历史选图，completed 时不能被旧任务覆盖；场景/道具没有
+      // 历史选择，按 created_at 顺序处理任务后，最后一个完成结果就是当前图。
+      // 否则刷新时数据库中的旧 completed 图片会让所有新任务结果被跳过。
+      const shouldApplyGeneratedAsset = target.kind === "character"
+        ? !item.referenceImage || item.status === "generating"
+        : true;
       if (
         url &&
         isNewerMedia(item.referenceImage, url) &&
-        (!item.referenceImage || item.status === "generating")
+        shouldApplyGeneratedAsset
       ) {
         if (target.kind === "character") {
           const character = item as Character;
@@ -143,6 +146,10 @@ export function reconcileEpisodeWithJobs(
           if (shouldActivate) character.activeImageView = "casting";
         }
         item.referenceImage = url;
+        if (target.kind === "scene" || target.kind === "prop") {
+          (item as typeof item & { referenceImageUpdatedAt?: number }).referenceImageUpdatedAt =
+            job.created_at ? Date.parse(job.created_at) : Date.now();
+        }
         item.status = "completed";
         changed = true;
       } else if ((job.status === "failed" || job.status === "cancelled") && item.status === "generating" && !url) {
@@ -407,7 +414,7 @@ export function reconcileEpisodeWithJobs(
 
 const hasMediaUrl = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 
-function takeServerMedia<T extends { status?: string }>(
+function takeServerMedia<T extends { status?: string; referenceImageUpdatedAt?: number }>(
   local: T,
   server: T | undefined,
   urlKey: keyof T,
@@ -417,16 +424,19 @@ function takeServerMedia<T extends { status?: string }>(
   const serverUrl = server[urlKey];
   const localUrl = local[urlKey];
   const localStatus = String(local.status || "");
+  const localUpdatedAt = Number(local.referenceImageUpdatedAt || 0);
+  const serverUpdatedAt = Number(server.referenceImageUpdatedAt || 0);
   const localIsGenerating = ["generating", "generating_image", "generating_panels"].includes(localStatus);
   // 服务端刷新只负责补齐空媒体或替换“本地正在生成”的旧预览。
   // 如果用户刚手动复制/上传了一张 completed 图片，不能因为服务端快照
   // 仍是旧 URL 就把用户的选择覆盖掉。
   if (
     hasMediaUrl(serverUrl) &&
+    serverUpdatedAt >= localUpdatedAt &&
     isNewerMedia(hasMediaUrl(localUrl) ? String(localUrl) : undefined, String(serverUrl)) &&
     (!hasMediaUrl(localUrl) || localIsGenerating)
   ) {
-    return { ...local, [urlKey]: serverUrl, status: doneStatus };
+    return { ...local, [urlKey]: serverUrl, status: doneStatus, ...(serverUpdatedAt ? { referenceImageUpdatedAt: serverUpdatedAt } : {}) };
   }
   return local;
 }
@@ -438,7 +448,7 @@ export function mergeEpisodeMediaFromServer(
 ): { episode: Episode; changed: boolean } {
   let changed = false;
 
-  const mergeAsset = <T extends { id: string; status?: string; referenceImage?: string }>(
+  const mergeAsset = <T extends { id: string; status?: string; referenceImage?: string; referenceImageUpdatedAt?: number }>(
     localItems: T[] | undefined,
     serverItems: T[] | undefined,
   ): T[] | undefined => {

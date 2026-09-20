@@ -22,18 +22,24 @@
   --glass-border: rgba(46, 43, 39, 0.08);
   --nav-active-bg: rgba(180, 174, 164, 0.75);
   --nav-hover-bg: rgba(180, 174, 164, 0.45);
-  --btn-primary-bg: #3d3a36;
-  --btn-primary-text: #ccc6bc;
-  --btn-primary-hover: #524e48;
-  --btn-primary-shadow: rgba(46, 43, 39, 0.08);
-  --btn-selected-bg: #b4aea4;
-  --btn-selected-border: #b4aea4;
+  /* 主按钮：暖棕实心，避免近黑块在浅底上过重 */
+  --btn-primary-bg: #8f7a5c;
+  --btn-primary-text: #f5f0e8;
+  --btn-primary-hover: #7a6548;
+  --btn-primary-shadow: rgba(143, 122, 92, 0.18);
+  /* 分段/选项选中：浅底+描边，与 accent-bg 一致，不再用深色实心块 */
+  --btn-selected-bg: rgba(168, 144, 114, 0.22);
+  --btn-selected-text: #5e4d36;
+  --btn-selected-border: rgba(168, 144, 114, 0.42);
   --overlay-heavy: rgba(30, 28, 25, 0.5);
   --overlay-medium: rgba(30, 28, 25, 0.35);
   --overlay-light: rgba(30, 28, 25, 0.18);
   --overlay-full: rgba(30, 28, 25, 0.8);
   --overlay-border: rgba(46, 43, 39, 0.08);
   --selection-bg: rgba(46, 43, 39, 0.12);
+  /* 分镜卡片等选中描边：浅底用深线，保证一眼可辨 */
+  --selected-outline: #2a2723;
+  --selected-outline-ring: rgba(42, 39, 35, 0.22);
   /* 主题强调色 (accent) - 低饱和暖棕 */
   --accent: #a89072;
   --accent-hover: #967d62;

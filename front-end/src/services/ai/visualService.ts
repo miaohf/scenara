@@ -18,13 +18,10 @@ import { addRenderLogWithTokens } from '../renderLogService';
 import {
   retryOperation,
   chatCompletion,
-  checkApiKey,
-  getApiBase,
   getActiveModel,
   getActiveChatModelName,
   resolveModel,
   logScriptProgress,
-  parseHttpError,
   parseJsonWithRecovery,
 } from './apiCore';
 import {
@@ -37,14 +34,8 @@ import {
   CHARACTER_ATTIRE_INSTRUCTION,
 } from './promptConstants';
 import { compressPromptWithLLM } from './promptCompressionService';
-import {
-  getImageApiFormat,
-  getDefaultImageEndpoint,
-  resolveOpenAiImageEndpoint,
-  mapAspectRatioToOpenAiImageSize,
-} from '../imageModelUtils';
+import { getImageApiFormat } from '../imageModelUtils';
 import { callImageApi } from '../adapters/imageAdapter';
-import { resolveEndpointUrl } from '../urlUtils';
 
 // ============================================
 // 美术指导文档生成
@@ -561,26 +552,6 @@ const buildImageRoutingPrefix = (
 - Then apply the textual action and camera intent.`;
 };
 
-const buildImageApiError = (status: number, backendMessage?: string): Error => {
-  const detail = backendMessage?.trim();
-  const withDetail = (message: string): string => (detail ? `${message}（接口信息：${detail}）` : message);
-
-  let message: string;
-  if (status === 400) {
-    message = withDetail('图片生成失败：提示词可能被风控拦截，请修改提示词后重试。');
-  } else if (status === 500 || status === 503) {
-    message = withDetail('图片生成失败：服务器繁忙，请稍后重试。');
-  } else if (status === 429) {
-    message = withDetail('图片生成失败：请求过于频繁，请稍后再试。');
-  } else {
-    message = withDetail(`图片生成失败：接口请求异常（HTTP ${status}）。`);
-  }
-
-  const err: any = new Error(message);
-  err.status = status;
-  return err;
-};
-
 const MAX_IMAGE_PROMPT_CHARS = 5000;
 const IMAGE_PROMPT_SOFT_TARGET_CHARS = 4700;
 const MAX_NEGATIVE_PROMPT_TERMS = 64;
@@ -590,9 +561,6 @@ const MAX_REFERENCE_IMAGES_PER_REQUEST = 5;
  * 前端按 5 截断会让日志说“保留 5 张”，实际后端又静默丢掉第 5 张。
  */
 const MAX_COMFY_REFERENCE_IMAGES = 5;
-const OPENAI_IMAGE_QUALITY = 'medium';
-const OPENAI_IMAGE_OUTPUT_FORMAT = 'png';
-const OPENAI_IMAGE_OUTPUT_COMPRESSION = 100;
 
 const CJK_CHAR_RE = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g;
 
@@ -890,36 +858,6 @@ const countEnglishWords = (text: string): number => {
   return matches ? matches.length : 0;
 };
 
-const dataUrlToImageFile = (dataUrl: string, filename: string): File | null => {
-  const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-  if (!match) return null;
-
-  try {
-    const mimeType = match[1];
-    const binary = atob(match[2]);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return new File([bytes], filename, { type: mimeType });
-  } catch {
-    return null;
-  }
-};
-
-const extractImageFromOpenAiResponse = (response: any): string | null => {
-  const first = response?.data?.[0];
-  if (!first) return null;
-  if (first.b64_json) {
-    const format = first.output_format || OPENAI_IMAGE_OUTPUT_FORMAT;
-    return `data:image/${format};base64,${first.b64_json}`;
-  }
-  if (first.url) {
-    return String(first.url);
-  }
-  return null;
-};
-
 export const generateImage = async (
   prompt: string,
   referenceImages: string[] = [],
@@ -994,11 +932,6 @@ export const generateImage = async (
       referenceCount: effectiveReferenceImages.length,
     });
   }
-
-  const imageModelEndpointTemplate = activeImageModel?.endpoint || getDefaultImageEndpoint(imageApiFormat, imageModelId);
-  const imageModelEndpoint = imageModelEndpointTemplate.replace('{model}', imageModelId);
-  const apiKey = imageApiFormat === 'comfyui' ? '' : checkApiKey('image', activeImageModel?.id);
-  const apiBase = getApiBase('image', activeImageModel?.id);
 
   try {
     const normalizedUserPrompt = normalizePromptWhitespace(prompt);
@@ -1269,176 +1202,31 @@ NEGATIVE PROMPT (strictly avoid): ${compactNegativePrompt}`;
       ...effectiveReferenceImages,
       ...(continuityReferenceImage ? [continuityReferenceImage] : []),
     ];
-    const openAiReferenceSources = nonComfyReferenceSources;
 
-    if (imageApiFormat === 'openai') {
-      const hasOpenAiReferences = openAiReferenceSources.length > 0;
-      const openAiEndpoint = resolveOpenAiImageEndpoint(imageModelEndpoint, hasOpenAiReferences);
-      const openAiSize = mapAspectRatioToOpenAiImageSize(aspectRatio);
-
-      const response = await retryOperation(async () => {
-        let res: Response;
-        if (hasOpenAiReferences) {
-          const files = openAiReferenceSources
-            .map((img, index) => dataUrlToImageFile(img, `reference-${index + 1}.png`))
-            .filter((file): file is File => Boolean(file));
-          if (files.length === 0) {
-            throw new Error('图片生成失败：参考图格式无效，请重新上传后重试。');
-          }
-
-          const formData = new FormData();
-          formData.append('model', imageModelId);
-          formData.append('prompt', finalPrompt);
-          formData.append('size', openAiSize);
-          formData.append('quality', OPENAI_IMAGE_QUALITY);
-          formData.append('output_format', OPENAI_IMAGE_OUTPUT_FORMAT);
-          formData.append('output_compression', String(OPENAI_IMAGE_OUTPUT_COMPRESSION));
-          formData.append('n', '1');
-          files.forEach(file => formData.append('image[]', file));
-
-          res = await fetch(resolveEndpointUrl(apiBase, openAiEndpoint), {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${apiKey}`,
-              'Accept': '*/*'
-            },
-            body: formData
-          });
-        } else {
-          const requestBody = {
-            model: imageModelId,
-            prompt: finalPrompt,
-            size: openAiSize,
-            quality: OPENAI_IMAGE_QUALITY,
-            output_format: OPENAI_IMAGE_OUTPUT_FORMAT,
-            output_compression: OPENAI_IMAGE_OUTPUT_COMPRESSION,
-            n: 1,
-          };
-
-          res = await fetch(resolveEndpointUrl(apiBase, openAiEndpoint), {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${apiKey}`,
-              'Accept': '*/*'
-            },
-            body: JSON.stringify(requestBody)
-          });
-        }
-
-        if (!res.ok) {
-          const parsedError = await parseHttpError(res);
-          const parsedAny: any = parsedError;
-          const status = parsedAny.status || res.status;
-          throw buildImageApiError(status, parsedError.message);
-        }
-
-        return await res.json();
-      });
-
-      const openAiImage = extractImageFromOpenAiResponse(response);
-      if (openAiImage) {
-        addRenderLogWithTokens({
-          type: 'keyframe',
-          resourceId: 'image-' + Date.now(),
-          resourceName: prompt.substring(0, 50) + '...',
-          status: 'success',
-          model: imageModelId,
-          prompt: prompt,
-          duration: Date.now() - startTime
-        });
-        return openAiImage;
-      }
-
-      throw new Error('图片生成失败：OpenAI Images 未返回有效图片数据。');
+    // OpenAI / Gemini 等云端格式统一走 callImageApi，API 模式下会创建 Celery 任务并回落盘 URL，
+    // 避免在本文件内再直连第三方 API（绕过任务队列后前端拿到 base64，episode 自动保存会 500）。
+    const imageUrl = await callImageApi({
+      prompt: finalPrompt,
+      aspectRatio,
+      referenceImages: nonComfyReferenceSources,
+      referenceAnnotations: options?.referenceAnnotations,
+      target: options?.target,
+      onJobCreated: options?.onJobCreated,
+      waitForResult: options?.waitForResult,
+    }, activeImageModel as any);
+    if (options?.waitForResult === false) {
+      return imageUrl;
     }
-
-    // Gemini generateContent protocol
-    const parts: any[] = [{ text: finalPrompt }];
-    nonComfyReferenceSources.forEach((imgUrl, index) => {
-      const match = imgUrl.match(/^data:(image\/[a-zA-Z]+);base64,(.+)$/);
-      if (match) {
-        const annotation = options?.referenceAnnotations?.[index]?.trim()
-          || `Reference image ${index + 1}`;
-        parts.push({
-          text: `${annotation}. Use this image only for the specified identity or reference; do not mix it with other subjects.`,
-        });
-        parts.push({
-          inlineData: {
-            mimeType: match[1],
-            data: match[2]
-          }
-        });
-      }
+    addRenderLogWithTokens({
+      type: 'keyframe',
+      resourceId: 'image-' + Date.now(),
+      resourceName: prompt.substring(0, 50) + '...',
+      status: 'success',
+      model: imageModelId,
+      prompt,
+      duration: Date.now() - startTime
     });
-
-    const requestBody: any = {
-      contents: [{
-        role: "user",
-        parts: parts
-      }],
-      generationConfig: {
-        responseModalities: ["TEXT", "IMAGE"],
-        imageConfig: {
-          aspectRatio: aspectRatio
-        }
-      }
-    };
-
-    const response = await retryOperation(async () => {
-      const res = await fetch(resolveEndpointUrl(apiBase, imageModelEndpoint), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-          'Accept': '*/*'
-        },
-        body: JSON.stringify(requestBody)
-      });
-
-      if (!res.ok) {
-        const parsedError = await parseHttpError(res);
-        const parsedAny: any = parsedError;
-        const status = parsedAny.status || res.status;
-        throw buildImageApiError(status, parsedError.message);
-      }
-
-      return await res.json();
-    });
-
-    const candidates = response.candidates || [];
-    if (candidates.length > 0 && candidates[0].content && candidates[0].content.parts) {
-      for (const part of candidates[0].content.parts) {
-        if (part.inlineData) {
-          const result = `data:image/png;base64,${part.inlineData.data}`;
-
-          addRenderLogWithTokens({
-            type: 'keyframe',
-            resourceId: 'image-' + Date.now(),
-            resourceName: prompt.substring(0, 50) + '...',
-            status: 'success',
-            model: imageModelId,
-            prompt: prompt,
-            duration: Date.now() - startTime
-          });
-
-          return result;
-        }
-      }
-    }
-
-    const hasSafetyBlock =
-      !!response?.promptFeedback?.blockReason ||
-      candidates.some((candidate: any) => {
-        const finishReason = String(candidate?.finishReason || '').toUpperCase();
-        return finishReason.includes('SAFETY') || finishReason.includes('BLOCK');
-      });
-
-    if (hasSafetyBlock) {
-      throw new Error('图片生成失败：提示词可能被风控拦截，请修改提示词后重试。');
-    }
-
-    throw new Error('图片生成失败：未返回有效图片数据，请重试或调整提示词。');
+    return imageUrl;
   } catch (error: any) {
     addRenderLogWithTokens({
       type: 'keyframe',

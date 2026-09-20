@@ -63,7 +63,7 @@ const SceneCard: React.FC<SceneCardProps> = ({
         {scene.referenceImage ? (
           <>
             <img src={scene.referenceImage} alt={scene.location} className="w-full h-full object-cover" />
-            <div className="absolute top-2 right-2 p-1 bg-[var(--accent)] text-[var(--text-primary)] rounded shadow-lg backdrop-blur">
+            <div className="absolute top-2 right-2 p-1 bg-[var(--accent)] text-[var(--accent-on)] rounded shadow-lg backdrop-blur">
               <Check className="w-3 h-3" />
             </div>
           </>

@@ -161,15 +161,34 @@ export const normalizeCharacterWardrobeInPrompt = (
   prompt: string,
   character?: CharacterSpeciesSource
 ): string => {
+  const cleanedPrompt = dedupeRepeatedPromptClauses(prompt || '');
   const wardrobe = character?.wardrobe?.trim();
-  if (!prompt || !wardrobe) return prompt;
+  if (!cleanedPrompt || !wardrobe) return cleanedPrompt;
 
-  const attire = `Attire: ${wardrobe}`;
-  const attirePattern = /Attire:\s*.*?(?=,\s*Pose\s*&\s*Framing:|\n|$)/i;
-  if (attirePattern.test(prompt)) {
-    return prompt.replace(attirePattern, attire);
+  // Older saves may already contain a generated Attire block. Remove that
+  // block before writing it back so loading/saving remains idempotent.
+  const withoutAttire = prompt
+    .replace(/\n\s*Attire:\s*[\s\S]*$/i, '')
+    .trim();
+  const promptWithoutAttire = dedupeRepeatedPromptClauses(withoutAttire);
+  const attire = `Attire: ${dedupeRepeatedPromptClauses(wardrobe)}`;
+  return `${promptWithoutAttire}\n\n${attire}. Preserve every garment, color, material, and silhouette exactly.`;
+};
+
+/**
+ * Repair prompts polluted by repeated list-like clauses (for example
+ * "短刀；短刀；短刀"). This deliberately only collapses adjacent identical
+ * clauses, so repeated words in normal prose keep their meaning.
+ */
+export const dedupeRepeatedPromptClauses = (value: string): string => {
+  let next = value;
+  const repeatedClause = /([^,，、;；。.!！?？\n]{1,40})(?:\s*[,，、;；]\s*\1)+(?![^,，、;；。.!！?？\n])/gu;
+  let previous = '';
+  while (next !== previous) {
+    previous = next;
+    next = next.replace(repeatedClause, '$1');
   }
-  return `${prompt}\n\n${attire}. Preserve every garment, color, material, and silhouette exactly.`;
+  return next.replace(/[ \t]{2,}/g, ' ').trim();
 };
 
 export const stripProjectPropsFromPrompt = (prompt: string, propNames: string[]): string => {

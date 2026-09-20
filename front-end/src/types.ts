@@ -224,6 +224,7 @@ export interface Scene {
   negativePrompt?: string; // 负面提示词，用于排除不想要的元素
   shapeReferenceImage?: string; // Optional reference image used only for shape/silhouette guidance during generation
   referenceImage?: string; // 场景参考图，存储为base64格式（data:image/png;base64,...）
+  referenceImageUpdatedAt?: number;
   status?: 'pending' | 'generating' | 'completed' | 'failed'; // 生成状态，用于loading状态持久化
   libraryId?: string;
   libraryVersion?: number;
@@ -277,6 +278,7 @@ export interface Prop {
   negativePrompt?: string; // 负面提示词，用于排除不想要的元素
   shapeReferenceImage?: string; // Optional reference image used only for shape/silhouette guidance during generation
   referenceImage?: string; // 道具参考图，存储为base64格式（data:image/png;base64,...）
+  referenceImageUpdatedAt?: number;
   status?: 'pending' | 'generating' | 'completed' | 'failed'; // 生成状态，用于loading状态持久化
   libraryId?: string;
   libraryVersion?: number;
@@ -493,6 +495,51 @@ export interface ShotSemanticReview {
   reviewedAt: number;
 }
 
+export type StoryboardStructureActionType = 'remove' | 'merge' | 'reorder' | 'regenerateBeat';
+
+export interface StoryboardStructureIssue {
+  kind: 'duplicate_beat' | 'missing_transition' | 'empty_progress' | 'pacing' | 'other';
+  shotIds: string[];
+  summary: string;
+  severity: 'warning' | 'fail';
+}
+
+export interface StoryboardStructureAction {
+  type: StoryboardStructureActionType;
+  shotIds: string[];
+  /** merge：保留的镜头；reorder：可忽略 */
+  keepShotId?: string;
+  /** reorder：该范围内的新顺序（须覆盖 shotIds 或为全片顺序） */
+  orderedShotIds?: string[];
+  reason: string;
+  /** 低风险删/并/重排，生成时可自动应用 */
+  autoSafe: boolean;
+  applied?: boolean;
+}
+
+/** 结构审片结果：允许删/并/重排；与字段级 semanticReview 互补。 */
+export interface StoryboardStructureReview {
+  version: number;
+  score: number;
+  verdict: 'pass' | 'warning' | 'fail';
+  issues: StoryboardStructureIssue[];
+  actions: StoryboardStructureAction[];
+  appliedActionCount: number;
+  removedShotIds: string[];
+  reviewedAt: number;
+  summary: string;
+}
+
+/** 故事层软门禁：改写/分镜前相对大纲查缺口，不阻断流程。 */
+export interface StoryOutlineReview {
+  version: number;
+  score: number;
+  verdict: 'pass' | 'warning' | 'fail';
+  issues: string[];
+  reviewedAt: number;
+  summary: string;
+}
+
 /** 单镜头 Agent 产物；由分镜生成、语义审片和 H3 编译器共同消费。 */
 export interface ShotAgentMetadata {
   directorPurpose: string;
@@ -509,6 +556,7 @@ export type StoryboardAgentStage =
   | 'development'
   | 'director-plan'
   | 'shot-generation'
+  | 'structure-review'
   | 'semantic-review'
   | 'completed';
 
@@ -543,6 +591,8 @@ export interface Shot {
   videoModel?: 'veo' | 'sora-2' | 'veo_3_1-fast' | 'veo_3_1-fast-4K' | 'veo_3_1_t2v_fast_landscape' | 'veo_3_1_t2v_fast_portrait' | 'veo_3_1_i2v_s_fast_fl_landscape' | 'veo_3_1_i2v_s_fast_fl_portrait' | 'doubao-seedance-1-5-pro' | 'doubao-seedance-1-5-pro-251215' | 'doubao-seedance-2-0-260128'; // Video generation model selection
   videoInputMode?: 'keyframes' | 'storyboard-grid'; // 视频驱动方式：首尾帧 / 网格分镜（互斥）
   nineGrid?: NineGridData; // 可选的九宫格分镜预览数据（高级功能）
+  /** 已生成的 4/6/9 格分镜版本；nineGrid 始终指向当前正在查看/使用的版本。 */
+  nineGridVariants?: Partial<Record<StoryboardGridPanelCount, NineGridData>>;
   dubbing?: ShotDubbing; // 镜头配音（旁白/对话）
 }
 
@@ -603,13 +653,15 @@ export interface ScriptData {
   targetDuration?: string;
   language?: string;
   visualStyle?: string; // Visual style: live-action, anime, 3d-animation, etc.
-  shotGenerationModel?: string; // Model used for shot generation
+  shotGenerationModel?: string; // 生成时快照的对话模型；实际请求统一走模型配置 CHAT「当前使用」
   planningShotDuration?: number; // Locked shot duration baseline (seconds) used for shot count planning
   artDirection?: ArtDirection; // 全局美术指导文档，用于统一角色和场景的视觉风格
   productionBible?: ProductionBible; // 项目圣经：事实、服装、场景与制作约束
   creativeDevelopment?: CreativeDevelopmentPlan; // 编剧 Agent 的全片创作意图
   storyboardDirectorPlan?: StoryboardDirectorPlan; // 全片分镜规划，供并发场景生成共享
   storyboardAgentRun?: StoryboardAgentRun; // 可恢复、可诊断的 Agent 运行状态
+  storyboardStructureReview?: StoryboardStructureReview; // 结构审片（删/并/重排）最近一次结果
+  storyOutlineReview?: StoryOutlineReview; // 故事层软门禁最近一次结果
   characters: Character[];
   scenes: Scene[];
   props: Prop[]; // 道具列表，用于保持多分镜间物品视觉一致性
@@ -715,7 +767,7 @@ export interface Episode {
   visualStyle: string;
   /** 当前剧集/项目的统一画幅；旧数据缺失时由前端兼容回退。 */
   aspectRatio?: AspectRatio;
-  shotGenerationModel: string;
+  shotGenerationModel: string; // 生成快照；请求时统一解析为模型配置 CHAT「当前使用」
   scriptData: ScriptData | null;
   shots: Shot[];
   isParsingScript: boolean;

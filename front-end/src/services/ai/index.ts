@@ -87,6 +87,8 @@ export {
   normalizeShotAgentMetadata,
   attachShotAgentMetadata,
   reviewAndRepairStoryboard,
+  reviewStoryboardStructure,
+  reviewStoryOutline,
   completeStoryboardAgentRun,
 } from './storyboardAgent';
 
@@ -106,9 +108,19 @@ export {
 // MiniMax H3 Ref2VA 提示词编译器
 export {
   isMiniMaxH3Ref2VAModel,
+  isMiniMaxH3Ref2VAPrompt,
+  isMiniMaxH3OfficialSkillPrompt,
   buildMiniMaxH3Ref2VAPrompt,
+  formatH3CameraMotion,
   type MiniMaxH3Ref2VAPromptOptions,
+  type MiniMaxH3NativeAudioOptions,
 } from './h3PromptCompiler';
+
+export {
+  detectComfyUiPromptWorkflowKind,
+  toComfyUiPastePrompt,
+  type ComfyUiPromptWorkflowKind,
+} from './comfyUiPromptExport';
 
 // 视觉资产生成服务
 export {
@@ -147,6 +159,7 @@ export {
   translateNineGridPanels,
   reviseNineGridPanelsByInstruction,
   generateNineGridImage,
+  buildNineGridImagePrompt,
   type NineGridRewriteContext,
 } from './shotService';
 

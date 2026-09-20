@@ -48,17 +48,18 @@ export async function apiCallChat(
   return data.content;
 }
 
-export async function apiCallImage(options: ImageGenerateOptions): Promise<string> {
-  const data = await apiFetch<JobMediaResult>("/v1/ai/image", {
-    method: "POST",
-    body: JSON.stringify({
-      prompt: options.prompt,
-      aspect_ratio: options.aspectRatio || "16:9",
-      reference_images: options.referenceImages || [],
-      reference_annotations: options.referenceAnnotations || [],
-    }),
-  });
-  return resolveImageResult(data);
+export async function apiCallImage(options: ImageGenerateOptions, modelId?: string): Promise<string> {
+  const payload = {
+    prompt: options.prompt,
+    modelId,
+    aspectRatio: options.aspectRatio || "16:9",
+    referenceImages: options.referenceImages || [],
+    referenceAnnotations: options.referenceAnnotations || [],
+  };
+  const job = await createJob("image", payload, options.episodeId, options.target);
+  options.onJobCreated?.(job);
+  if (options.waitForResult === false) return "";
+  return waitForJobResult(job.id, "image", (next) => options.onJobCreated?.(next));
 }
 
 /**
@@ -157,6 +158,8 @@ export interface JobStatus {
   target?: GenerationTarget | null;
   queue_position?: number | null;
   queue_running?: boolean | null;
+  /** 渠道摘要：ComfyUI · workflow / gpt-image-2 等 */
+  channel?: string | null;
 }
 
 /** 创建异步任务。带上 episode_id 后，离开页面也能按剧集把结果找回来。 */
@@ -254,6 +257,7 @@ function mergeJobEvent(jobId: string, event: Partial<JobStatus>, previous?: JobS
     created_at: event.created_at ?? previous?.created_at,
     queue_position: event.queue_position ?? previous?.queue_position,
     queue_running: event.queue_running ?? previous?.queue_running,
+    channel: event.channel ?? previous?.channel,
   };
 }
 
@@ -399,11 +403,12 @@ async function waitForJobResult(
   throw new Error("任务未完成");
 }
 
-export async function apiCallVideo(options: VideoGenerateOptions): Promise<string> {
+export async function apiCallVideo(options: VideoGenerateOptions, modelId?: string): Promise<string> {
   const job = await createJob(
     "video",
     {
       prompt: options.prompt,
+      modelId,
       aspectRatio: options.aspectRatio,
       duration: options.duration,
       imageBase64: options.startImage,
@@ -426,6 +431,7 @@ export async function apiCallComfyVideo(
       aspectRatio: options.aspectRatio || "16:9",
       duration: options.duration ?? 5,
       steps: options.steps,
+      enableStage2Upscaling: options.enableStage2Upscaling,
       startImage: options.startImage,
       endImage: options.endImage,
       referenceImages: options.referenceImages,

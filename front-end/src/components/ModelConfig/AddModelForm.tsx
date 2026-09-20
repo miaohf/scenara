@@ -262,8 +262,8 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
               onClick={() => setImageApiFormat('gemini')}
               className={`flex-1 py-2 text-xs rounded transition-colors ${
                 imageApiFormat === 'gemini'
-                  ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)]'
+                  ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)]'
               }`}
             >
               Gemini GenerateContent
@@ -272,8 +272,8 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
               onClick={() => setImageApiFormat('openai')}
               className={`flex-1 py-2 text-xs rounded transition-colors ${
                 imageApiFormat === 'openai'
-                  ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)]'
+                  ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)]'
               }`}
             >
               OpenAI Images（支持参考图）
@@ -282,8 +282,8 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
               onClick={() => setImageApiFormat('comfyui')}
               className={`flex-1 py-2 text-xs rounded transition-colors ${
                 imageApiFormat === 'comfyui'
-                  ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)]'
+                  ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)]'
               }`}
             >
               ComfyUI Workflow（本地）
@@ -409,8 +409,8 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
             onClick={() => setProviderMode('existing')}
             className={`flex-1 py-2 text-xs rounded transition-colors ${
               providerMode === 'existing'
-                ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)]'
+                ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)]'
             }`}
           >
             使用已有提供商
@@ -419,8 +419,8 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
             onClick={() => setProviderMode('custom')}
             className={`flex-1 py-2 text-xs rounded transition-colors ${
               providerMode === 'custom'
-                ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)]'
+                ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)]'
             }`}
           >
             添加新提供商
@@ -489,8 +489,8 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
               onClick={() => setVideoMode('sync')}
               className={`flex-1 py-2 text-xs rounded transition-colors ${
                 videoMode === 'sync'
-                  ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)]'
+                  ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)]'
               }`}
             >
               同步模式（Chat Completion 类）
@@ -499,8 +499,8 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
               onClick={() => setVideoMode('async')}
               className={`flex-1 py-2 text-xs rounded transition-colors ${
                 videoMode === 'async'
-                  ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)]'
+                  ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)]'
               }`}
             >
               异步模式（Sora 类）
@@ -509,8 +509,8 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
               onClick={() => setVideoMode('task')}
               className={`flex-1 py-2 text-xs rounded transition-colors ${
                 videoMode === 'task'
-                  ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)]'
+                  ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)]'
               }`}
             >
               异步模式（火山任务类）
@@ -519,8 +519,8 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
               onClick={() => setVideoMode('comfyui')}
               className={`flex-1 py-2 text-xs rounded transition-colors ${
                 videoMode === 'comfyui'
-                  ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)]'
+                  ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)]'
               }`}
             >
               ComfyUI Workflow（本地）
@@ -552,7 +552,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({ type, onSave, onCancel }) =
       <div className="flex gap-3 pt-2">
         <button
           onClick={handleSave}
-          className="flex-1 py-2.5 bg-[var(--accent)] text-[var(--text-primary)] text-xs font-bold rounded hover:bg-[var(--accent-hover)] transition-colors flex items-center justify-center gap-1"
+          className="flex-1 py-2.5 bg-[var(--accent)] text-[var(--accent-on)] text-xs font-bold rounded hover:bg-[var(--accent-hover)] transition-colors flex items-center justify-center gap-1"
         >
           <Check className="w-3 h-3" />
           添加模型

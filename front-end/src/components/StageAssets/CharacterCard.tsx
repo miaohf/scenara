@@ -107,7 +107,7 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
                   </div>
                 )}
                 {!isGenerating && (
-                  <div className="absolute top-1.5 right-1.5 p-1 bg-[var(--accent)] text-[var(--text-primary)] rounded shadow-lg">
+                  <div className="absolute top-1.5 right-1.5 p-1 bg-[var(--accent)] text-[var(--accent-on)] rounded shadow-lg">
                     <Check className="w-3 h-3" />
                   </div>
                 )}

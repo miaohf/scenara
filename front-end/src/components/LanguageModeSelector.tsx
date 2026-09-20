@@ -13,23 +13,34 @@ export default function LanguageModeSelector({
   className = "",
 }: LanguageModeSelectorProps) {
   const { language, setLanguage, t } = useInterfaceLanguage();
+  const title = language === "zh" ? t('common.switchToEnglish') : t('common.switchToChinese');
 
-  return (
-    <div className={`flex w-full items-center justify-between gap-2 rounded-lg px-2 py-2 ${className}`}>
-      {!compact && (
-        <span className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
-          {t('common.language')}
-        </span>
-      )}
+  if (compact) {
+    return (
       <button
         type="button"
         onClick={() => setLanguage(language === "zh" ? "en" : "zh")}
-        className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
-        title={language === "zh" ? t('common.switchToEnglish') : t('common.switchToChinese')}
-        aria-label={language === "zh" ? t('common.switchToEnglish') : t('common.switchToChinese')}
+        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] ${className}`}
+        title={title}
+        aria-label={title}
       >
         <Languages className="h-4 w-4" aria-hidden="true" />
       </button>
-    </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setLanguage(language === "zh" ? "en" : "zh")}
+      className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-[var(--text-muted)] hover:bg-[var(--nav-hover-bg)] hover:text-[var(--text-primary)] cursor-pointer transition-colors ${className}`}
+      title={title}
+      aria-label={title}
+    >
+      <span className="font-mono text-[10px] uppercase tracking-widest">
+        {t('common.language')}
+      </span>
+      <Languages className="h-4 w-4" aria-hidden="true" />
+    </button>
   );
 }

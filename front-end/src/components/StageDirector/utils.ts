@@ -58,7 +58,19 @@ export interface RefImagesResult {
 
 export const isQwenEditKeyframeWorkflow = (workflowName?: string): boolean => {
   const name = String(workflowName || '').toLowerCase();
-  return name.includes('qwen_image_edit') && !name.includes('turnaround');
+  if (name.includes('turnaround')) return false;
+  return (
+    name.includes('qwen_image_edit')
+    || name.includes('qwen_image_2_1_image_edit')
+    || name.includes('image_qwen_image_2_1_image_edit')
+  );
+};
+
+/** Qwen Edit 2511 最多 3 张；Qwen Image 2.1 Edit 官方最多 10 张。 */
+export const qwenEditKeyframeMaxReferences = (workflowName?: string): number => {
+  const name = String(workflowName || '').toLowerCase();
+  if (name.includes('qwen_image_2_1')) return 10;
+  return 3;
 };
 
 const dedupeImageRefs = (images: string[]): string[] => {
@@ -222,7 +234,83 @@ export const buildNativeAudioDirective = (
   return `${NATIVE_AUDIO_DIRECTIVE_MARKER}\nAudio: Generate environmental sound effects only. Absolutely no human voice, speech, dialogue, narration, singing, humming, whispering, murmuring, vocalization, or speech-like/gibberish sounds. No subtitles and no on-screen text.`;
 };
 
-/** H3 既有提示词也统一重写音频块，避免旧的“无旁白”规则残留。 */
+const H3_SKILL_SOUNDSCAPE_PATTERN =
+  /\noverall_soundscape:\n[\s\S]*?(?=\nnon_diegetic_music:|\s*$)/u;
+const H3_SKILL_MUSIC_PATTERN = /\nnon_diegetic_music:\n[\s\S]*$/u;
+
+const dialogueLanguageTag = (language: string): string => {
+  const value = String(language || '').trim();
+  if (!value) return 'Chinese';
+  if (/中文|chinese|^zh\b/i.test(value)) return 'Chinese';
+  if (/english|英文|^en\b/i.test(value)) return 'English';
+  return value;
+};
+
+const isOfficialH3SkillPrompt = (prompt: string): boolean =>
+  /^\s*subject_definitions:/m.test(prompt)
+  || /^\s*integrated_multimodal_description:/m.test(prompt);
+
+/** Rewrite FLF2V/base skill audio sections; Ref2VA already embeds speech in detailed_description. */
+const finalizeOfficialH3SkillAudio = (
+  prompt: string,
+  audio: VideoPromptContext['nativeAudio'],
+  language: string,
+): string => {
+  const spoken = String(audio?.text || '').trim();
+  const isRef2VA = /^\s*subject_definitions:/m.test(prompt);
+
+  let next = prompt.replace(NATIVE_AUDIO_DIRECTIVE_PATTERN, '').replace(WORKFLOW_AUDIO_BLOCK_PATTERN, '').trimEnd();
+
+  if (!isRef2VA && spoken) {
+    const dialogue = `<d>[${dialogueLanguageTag(language)}] ${spoken}</d>`;
+    const speechSentence = audio?.mode === 'narration'
+      ? ` A restrained off-screen narrator says ${dialogue}, while on-screen lips remain closed.`
+      : audio?.speakerName
+        ? ` ${audio.speakerName} (S1) says ${dialogue}, with natural lip sync if visible.`
+        : ` A clearly identified speaker (S1) says ${dialogue}.`;
+    if (!next.includes('<d>[')) {
+      next = next.replace(
+        /\n\noverall_soundscape:/,
+        `${speechSentence}\n\noverall_soundscape:`,
+      );
+    }
+  }
+
+  const existingSoundscape = (next.match(H3_SKILL_SOUNDSCAPE_PATTERN)?.[0] || '')
+    .replace(/^\noverall_soundscape:\n?/i, '')
+    .trim();
+  const existingMusic = (next.match(H3_SKILL_MUSIC_PATTERN)?.[0] || '')
+    .replace(/^\nnon_diegetic_music:\n?/i, '')
+    .trim();
+
+  // Only fill missing / empty audio sections. Never overwrite compiler-written
+  // concrete SFX / music with the old generic “restrained ambience / N/A” stub —
+  // that stub was collapsing native audio toward near-silence.
+  const needsSpeechBed = audio?.mode === 'narration' || audio?.mode === 'dialogue' || Boolean(spoken);
+  const fallbackSoundscape = needsSpeechBed
+    ? 'Keep diegetic ambience audible but low under the spoken line: soft environmental texture, fabric/object contact, and room tone. No extra voices.'
+    : 'Continuous diegetic ambience with soft wind, distant water or room tone, and physical contact sounds clearly audible and synced to the action. No human speech, narration, singing, or speech-like vocalization.';
+
+  if (!existingSoundscape) {
+    if (H3_SKILL_SOUNDSCAPE_PATTERN.test(next)) {
+      next = next.replace(H3_SKILL_SOUNDSCAPE_PATTERN, `\noverall_soundscape:\n${fallbackSoundscape}`);
+    } else {
+      next = `${next}\n\noverall_soundscape:\n${fallbackSoundscape}`;
+    }
+  }
+
+  if (!existingMusic) {
+    if (H3_SKILL_MUSIC_PATTERN.test(next)) {
+      next = next.replace(H3_SKILL_MUSIC_PATTERN, '\nnon_diegetic_music:\nN/A');
+    } else {
+      next = `${next}\n\nnon_diegetic_music:\nN/A`;
+    }
+  }
+
+  return fitVideoPromptLength(next);
+};
+
+/** H3 prompts: prefer official skill audio fields; legacy prompts keep NATIVE_AUDIO_DIRECTIVE. */
 export const finalizeMiniMaxH3VideoPrompt = (
   prompt: string,
   audio: VideoPromptContext['nativeAudio'],
@@ -237,6 +325,11 @@ export const finalizeMiniMaxH3VideoPrompt = (
     .replace(/\{duration\}/g, String(totalDuration))
     .replace(/\{midDuration\}/g, midDuration)
     .trimEnd();
+
+  if (isOfficialH3SkillPrompt(basePrompt)) {
+    return finalizeOfficialH3SkillAudio(basePrompt, audio, language);
+  }
+
   const directive = buildNativeAudioDirective(audio, language);
   const budget = Math.max(400, MAX_VIDEO_PROMPT_CHARS - Array.from(directive).length - 2);
   return `${fitVideoPromptLength(basePrompt, budget)}\n\n${directive}`;

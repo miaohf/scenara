@@ -15,6 +15,10 @@ import type {
   StoryboardAgentStage,
   StoryboardDirectorBeat,
   StoryboardDirectorPlan,
+  StoryboardStructureAction,
+  StoryboardStructureIssue,
+  StoryboardStructureReview,
+  StoryOutlineReview,
 } from '../../types';
 import { formatProductionBibleForPrompt } from '../productionBibleService';
 import {
@@ -28,6 +32,8 @@ import {
 const STORYBOARD_AGENT_VERSION = 1;
 const STORYBOARD_DIRECTOR_PLAN_VERSION = 1;
 const SEMANTIC_QUALITY_VERSION = 2;
+const STRUCTURE_REVIEW_VERSION = 1;
+const STORY_OUTLINE_REVIEW_VERSION = 1;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -779,7 +785,7 @@ const applyRepair = (
 
 /**
  * 导演审片 Agent：一次批量语义审查，仅允许按 shotId 做局部修复。
- * 结构校验仍由原有确定性管线负责，两者职责互补。
+ * 结构审片（删/并/重排）由 reviewStoryboardStructure 负责，应先于本函数执行。
  */
 export const reviewAndRepairStoryboard = async (
   shots: Shot[],
@@ -790,7 +796,7 @@ export const reviewAndRepairStoryboard = async (
 ): Promise<Shot[]> => {
   if (shots.length === 0) return shots;
   updateAgentRun(scriptData, 'semantic-review');
-  logScriptProgress('审片 Agent：正在检查叙事推进、表演、动作可执行性和镜头连续性...');
+  logScriptProgress('字段审片 Agent：正在检查叙事推进、表演、动作可执行性和镜头连续性...');
   const durationSeconds = Math.max(1, plan.shotDurationSeconds || scriptData.planningShotDuration || 5);
   const compactShots = shots.map((shot) => ({
     id: shot.id,
@@ -808,10 +814,11 @@ export const reviewAndRepairStoryboard = async (
     agent: shot.agent,
   }));
   const prompt = `You are the final storyboard continuity editor for an AI-generated short film.
-Review all shots as one sequence, then repair only the shots that materially need it.
+The structural pass (remove/merge/reorder) already ran. Do NOT add or remove shots.
+Review all shots as one sequence, then repair only the shots that materially need field-level fixes.
 
 Evaluate:
-1. Every shot contributes new story information and matches the whole-film director plan.
+1. Every remaining shot contributes new story information and matches the whole-film director plan.
 2. Emotional progression and character behavior are visible, specific, and causally motivated.
 3. One dominant action is physically achievable within ${durationSeconds} seconds.
 4. Camera movement is motivated, not repetitive, and preserves screen direction/eyelines.
@@ -905,19 +912,444 @@ Required JSON shape:
     const reviewedShotCount = shots.filter((shot) => reviewByShotId.has(String(shot.id))).length;
     const missingReviewCount = shots.length - reviewedShotCount;
     const warning = missingReviewCount > 0
-      ? `审片 Agent 缺少 ${missingReviewCount} 个镜头的结果，未对这些镜头做语义修改。`
+      ? `字段审片 Agent 缺少 ${missingReviewCount} 个镜头的结果，未对这些镜头做语义修改。`
       : undefined;
     updateAgentRun(scriptData, 'semantic-review', { completedStage: true, warning });
     updateAgentRun(scriptData, 'completed', { completedStage: true, finish: true });
-    logScriptProgress(`审片 Agent：完成 ${shots.length} 个镜头审查，发现 ${issueCount} 项，局部修复 ${repairedCount} 个镜头。`);
+    logScriptProgress(`字段审片 Agent：完成 ${shots.length} 个镜头审查，发现 ${issueCount} 项，局部修复 ${repairedCount} 个镜头。`);
     return reviewedShots;
   } catch (error: unknown) {
-    const warning = `审片 Agent 调用失败，保留规则校验结果：${clean(errorMessage(error), 260)}`;
+    const warning = `字段审片 Agent 调用失败，保留规则校验结果：${clean(errorMessage(error), 260)}`;
     updateAgentRun(scriptData, 'semantic-review', { completedStage: true, warning });
     updateAgentRun(scriptData, 'completed', { completedStage: true, finish: true });
     console.warn('[storyboard-agent] semantic review fallback:', error);
-    logScriptProgress('审片 Agent：调用失败，已保留规则校验结果并继续。');
+    logScriptProgress('字段审片 Agent：调用失败，已保留规则校验结果并继续。');
     return shots;
+  }
+};
+
+const STRUCTURE_ACTION_TYPES = new Set(['remove', 'merge', 'reorder', 'regenerateBeat']);
+
+const normalizeStructureIssues = (raw: unknown): StoryboardStructureIssue[] =>
+  asRecordArray(raw).slice(0, 24).map((item): StoryboardStructureIssue | null => {
+    const kindRaw = clean(item.kind, 40);
+    const kind: StoryboardStructureIssue['kind'] =
+      kindRaw === 'duplicate_beat'
+      || kindRaw === 'missing_transition'
+      || kindRaw === 'empty_progress'
+      || kindRaw === 'pacing'
+        ? kindRaw
+        : 'other';
+    const summary = clean(item.summary, 420);
+    if (!summary) return null;
+    return {
+      kind,
+      shotIds: cleanStringArray(item.shotIds, 12, 160),
+      summary,
+      severity: item.severity === 'fail' ? 'fail' : 'warning',
+    };
+  }).filter((issue): issue is StoryboardStructureIssue => issue !== null);
+
+const normalizeStructureActions = (
+  raw: unknown,
+  validShotIds: Set<string>,
+): StoryboardStructureAction[] => {
+  const actions: StoryboardStructureAction[] = [];
+  for (const item of asRecordArray(raw).slice(0, 24)) {
+    const typeRaw = clean(item.type, 40);
+    if (!STRUCTURE_ACTION_TYPES.has(typeRaw)) continue;
+    const type = typeRaw as StoryboardStructureAction['type'];
+    const shotIds = cleanStringArray(item.shotIds, 24, 160).filter((id) => validShotIds.has(id));
+    const orderedShotIds = cleanStringArray(item.orderedShotIds, 80, 160).filter((id) => validShotIds.has(id));
+    const keepShotIdRaw = clean(item.keepShotId, 160);
+    const keepShotId = keepShotIdRaw && validShotIds.has(keepShotIdRaw) ? keepShotIdRaw : undefined;
+    if (type === 'reorder') {
+      if (orderedShotIds.length < 2) continue;
+      actions.push({
+        type,
+        shotIds: orderedShotIds,
+        orderedShotIds,
+        reason: clean(item.reason, 420) || 'Reorder for clearer narrative progression',
+        autoSafe: item.autoSafe !== false,
+      });
+      continue;
+    }
+    if (shotIds.length === 0) continue;
+    if (type === 'merge' && shotIds.length < 2) continue;
+    actions.push({
+      type,
+      shotIds,
+      keepShotId: type === 'merge' ? (keepShotId || shotIds[0]) : keepShotId,
+      orderedShotIds: orderedShotIds.length ? orderedShotIds : undefined,
+      reason: clean(item.reason, 420) || 'Structure fix',
+      autoSafe: Boolean(item.autoSafe) && type !== 'regenerateBeat',
+    });
+  }
+  return actions;
+};
+
+const countShotsByScene = (shots: Shot[]): Map<string, number> => {
+  const counts = new Map<string, number>();
+  for (const shot of shots) {
+    const sceneId = String(shot.sceneId || '');
+    counts.set(sceneId, (counts.get(sceneId) || 0) + 1);
+  }
+  return counts;
+};
+
+const applyStructureActions = (
+  shots: Shot[],
+  actions: StoryboardStructureAction[],
+  options?: { applyUnsafe?: boolean },
+): { shots: Shot[]; actions: StoryboardStructureAction[]; removedShotIds: string[]; appliedCount: number } => {
+  let next = [...shots];
+  const removedShotIds: string[] = [];
+  let appliedCount = 0;
+  const maxRemovable = Math.max(1, Math.floor(shots.length * 0.4));
+
+  const annotated = actions.map((action) => ({ ...action, applied: false }));
+
+  for (const action of annotated) {
+    const shouldApply = action.autoSafe || options?.applyUnsafe;
+    if (!shouldApply || action.type === 'regenerateBeat') continue;
+
+    if (action.type === 'remove') {
+      const sceneCounts = countShotsByScene(next);
+      const removable = action.shotIds.filter((id) => {
+        const shot = next.find((item) => String(item.id) === id);
+        if (!shot) return false;
+        const sceneId = String(shot.sceneId || '');
+        return (sceneCounts.get(sceneId) || 0) > 1;
+      });
+      if (removable.length === 0) continue;
+      if (removedShotIds.length + removable.length > maxRemovable) continue;
+      const removeSet = new Set(removable);
+      next = next.filter((shot) => !removeSet.has(String(shot.id)));
+      removedShotIds.push(...removable);
+      action.applied = true;
+      appliedCount += 1;
+      continue;
+    }
+
+    if (action.type === 'merge') {
+      const keepId = String(action.keepShotId || action.shotIds[0] || '');
+      const mergeIds = action.shotIds.filter((id) => id !== keepId);
+      if (!keepId || mergeIds.length === 0) continue;
+      if (removedShotIds.length + mergeIds.length > maxRemovable) continue;
+      const keepIndex = next.findIndex((shot) => String(shot.id) === keepId);
+      if (keepIndex < 0) continue;
+      const keepShot = next[keepIndex];
+      const mergedBits = mergeIds
+        .map((id) => next.find((shot) => String(shot.id) === id)?.actionSummary)
+        .map((text) => clean(text, 220))
+        .filter(Boolean);
+      const mergedDialogue = [
+        clean(keepShot.dialogue, 400),
+        ...mergeIds.map((id) => clean(next.find((shot) => String(shot.id) === id)?.dialogue, 200)),
+      ].filter(Boolean);
+      next[keepIndex] = {
+        ...keepShot,
+        actionSummary: clean(
+          [clean(keepShot.actionSummary, 600), ...mergedBits].filter(Boolean).join(' / '),
+          1200,
+        ) || keepShot.actionSummary,
+        dialogue: mergedDialogue[0] || keepShot.dialogue,
+      };
+      const removeSet = new Set(mergeIds);
+      next = next.filter((shot) => !removeSet.has(String(shot.id)));
+      removedShotIds.push(...mergeIds);
+      action.applied = true;
+      appliedCount += 1;
+      continue;
+    }
+
+    if (action.type === 'reorder' && action.orderedShotIds && action.orderedShotIds.length >= 2) {
+      const order = action.orderedShotIds;
+      const orderSet = new Set(order);
+      const moving = next.filter((shot) => orderSet.has(String(shot.id)));
+      if (moving.length !== order.length) continue;
+      const byId = new Map(moving.map((shot) => [String(shot.id), shot]));
+      const reordered = order.map((id) => byId.get(id)!);
+      let cursor = 0;
+      next = next.map((shot) => {
+        if (!orderSet.has(String(shot.id))) return shot;
+        const replacement = reordered[cursor];
+        cursor += 1;
+        return replacement;
+      });
+      action.applied = true;
+      appliedCount += 1;
+    }
+  }
+
+  return { shots: next, actions: annotated, removedShotIds, appliedCount };
+};
+
+export interface ReviewStoryboardStructureResult {
+  shots: Shot[];
+  review: StoryboardStructureReview;
+}
+
+/**
+ * 结构审片 Agent：检查叠戏/缺转场/空推进，并可自动应用低风险删并重排。
+ * 应在字段级审片之前调用。
+ */
+export const reviewStoryboardStructure = async (
+  shots: Shot[],
+  scriptData: ScriptData,
+  plan: StoryboardDirectorPlan,
+  model: string = getActiveChatModelName(),
+  abortSignal?: AbortSignal,
+  options?: { autoApplySafeActions?: boolean },
+): Promise<ReviewStoryboardStructureResult> => {
+  if (shots.length === 0) {
+    const empty: StoryboardStructureReview = {
+      version: STRUCTURE_REVIEW_VERSION,
+      score: 100,
+      verdict: 'pass',
+      issues: [],
+      actions: [],
+      appliedActionCount: 0,
+      removedShotIds: [],
+      reviewedAt: Date.now(),
+      summary: '无镜头，跳过结构审片。',
+    };
+    scriptData.storyboardStructureReview = empty;
+    return { shots, review: empty };
+  }
+
+  updateAgentRun(scriptData, 'structure-review');
+  logScriptProgress('结构审片 Agent：正在检查叠戏、缺转场、空推进与 beat 节奏...');
+  const autoApply = options?.autoApplySafeActions !== false;
+  const validShotIds = new Set(shots.map((shot) => String(shot.id)));
+  const compactShots = shots.map((shot, index) => ({
+    index,
+    id: shot.id,
+    sceneId: shot.sceneId,
+    actionSummary: clean(shot.actionSummary, 520),
+    dialogue: clean(shot.dialogue, 280),
+    cameraMovement: clean(shot.cameraMovement, 180),
+    shotSize: clean(shot.shotSize, 80),
+    characters: shot.characters,
+    directorPurpose: clean(shot.agent?.directorPurpose, 280),
+    emotionalBeat: clean(shot.agent?.emotionalBeat, 280),
+  }));
+
+  const prompt = `You are a storyboard STRUCTURE editor for an AI short film.
+Your job is structural narrative integrity — NOT wording polish.
+
+Find and fix:
+1. duplicate_beat: the same story beat / first meeting / reveal happens twice in a row.
+2. missing_transition: a required causal bridge is absent (e.g. character leaves then is suddenly elsewhere).
+3. empty_progress: a shot adds no new story information.
+4. pacing: too many nearly identical reaction/coverage shots.
+
+ACTIONS (prefer smallest change):
+- remove: delete redundant shotIds (autoSafe=true when clearly duplicate/empty).
+- merge: combine near-duplicate shots into keepShotId (autoSafe=true when safe).
+- reorder: provide orderedShotIds for a contiguous misplaced subsequence (autoSafe=true when local).
+- regenerateBeat: mark shots that need creative rewrite but MUST set autoSafe=false (do not invent new shot ids).
+
+HARD RULES:
+- Never invent shot ids. Only use ids from the supplied list.
+- Prefer remove/merge over regenerateBeat when the beat is simply repeated.
+- Do not change dialogue language or plot outcome.
+- Keep at least one shot per scene that currently has shots.
+- Output JSON only.
+
+Script title: ${clean(scriptData.title, 120)}
+Logline: ${clean(scriptData.logline, 400)}
+Creative development:
+${JSON.stringify(scriptData.creativeDevelopment || {}, null, 2)}
+
+Director plan:
+${JSON.stringify({
+    openingHook: plan.openingHook,
+    escalation: plan.escalation,
+    climax: plan.climax,
+    payoff: plan.payoff,
+    pacingNotes: plan.pacingNotes,
+    beats: plan.beats,
+  }, null, 2)}
+
+Shots in order:
+${JSON.stringify(compactShots, null, 2)}
+
+Required JSON shape:
+{
+  "score": 0,
+  "verdict": "pass|warning|fail",
+  "summary": "one-line overall assessment",
+  "issues": [{
+    "kind": "duplicate_beat|missing_transition|empty_progress|pacing|other",
+    "shotIds": ["id"],
+    "summary": "what is wrong",
+    "severity": "warning|fail"
+  }],
+  "actions": [{
+    "type": "remove|merge|reorder|regenerateBeat",
+    "shotIds": ["id"],
+    "keepShotId": "optional for merge",
+    "orderedShotIds": ["optional for reorder"],
+    "reason": "why",
+    "autoSafe": true
+  }]
+}`;
+
+  try {
+    const responseText = await retryOperation(
+      () => chatCompletion(prompt, model, 0.2, 8192, 'json_object', 600000, abortSignal),
+      2,
+      1800,
+      abortSignal,
+    );
+    const parsed = parseJsonWithRecovery<UnknownRecord>(responseText, {});
+    const score = Math.round(clamp(parsed.score, 0, 100, 70));
+    const issues = normalizeStructureIssues(parsed.issues);
+    const actions = normalizeStructureActions(parsed.actions, validShotIds);
+    const verdict: StoryboardStructureReview['verdict'] =
+      parsed.verdict === 'pass' || parsed.verdict === 'fail'
+        ? parsed.verdict
+        : score >= 80 ? 'pass' : score >= 60 ? 'warning' : 'fail';
+
+    const applied = autoApply
+      ? applyStructureActions(shots, actions)
+      : { shots, actions: actions.map((item) => ({ ...item, applied: false })), removedShotIds: [] as string[], appliedCount: 0 };
+
+    const review: StoryboardStructureReview = {
+      version: STRUCTURE_REVIEW_VERSION,
+      score,
+      verdict,
+      issues,
+      actions: applied.actions,
+      appliedActionCount: applied.appliedCount,
+      removedShotIds: applied.removedShotIds,
+      reviewedAt: Date.now(),
+      summary: clean(parsed.summary, 500)
+        || (applied.appliedCount > 0
+          ? `结构审片应用 ${applied.appliedCount} 项修复，移除 ${applied.removedShotIds.length} 镜。`
+          : issues.length > 0
+            ? `发现 ${issues.length} 项结构问题，未自动改动镜头列表。`
+            : '结构审片通过。'),
+    };
+    scriptData.storyboardStructureReview = review;
+    const warning = issues.some((issue) => issue.severity === 'fail')
+      ? `结构审片存在 fail 级问题：${issues.filter((i) => i.severity === 'fail').map((i) => i.summary).join('；')}`
+      : applied.appliedCount === 0 && actions.some((a) => a.type === 'regenerateBeat')
+        ? '结构审片建议局部重写部分镜头（regenerateBeat，未自动应用）。'
+        : undefined;
+    updateAgentRun(scriptData, 'structure-review', { completedStage: true, warning });
+    logScriptProgress(
+      `结构审片 Agent：${review.summary}（问题 ${issues.length} · 自动修复 ${applied.appliedCount} · 删镜 ${applied.removedShotIds.length}）`,
+    );
+    return { shots: applied.shots, review };
+  } catch (error: unknown) {
+    const warning = `结构审片 Agent 调用失败，跳过结构修复：${clean(errorMessage(error), 260)}`;
+    const review: StoryboardStructureReview = {
+      version: STRUCTURE_REVIEW_VERSION,
+      score: 0,
+      verdict: 'warning',
+      issues: [],
+      actions: [],
+      appliedActionCount: 0,
+      removedShotIds: [],
+      reviewedAt: Date.now(),
+      summary: warning,
+    };
+    scriptData.storyboardStructureReview = review;
+    updateAgentRun(scriptData, 'structure-review', { completedStage: true, warning });
+    console.warn('[storyboard-agent] structure review fallback:', error);
+    logScriptProgress('结构审片 Agent：调用失败，已跳过结构修复并继续字段审片。');
+    return { shots, review };
+  }
+};
+
+/**
+ * 故事层软门禁：在分镜生成前对照创作意图，只记警告不阻断。
+ */
+export const reviewStoryOutline = async (
+  scriptData: ScriptData,
+  rawScript: string,
+  model: string = getActiveChatModelName(),
+  abortSignal?: AbortSignal,
+): Promise<StoryOutlineReview> => {
+  updateAgentRun(scriptData, 'development');
+  logScriptProgress('故事层门禁：正在对照大纲检查叙事缺口与断层...');
+  const development = scriptData.creativeDevelopment;
+  const prompt = `You are a story continuity gate for a short-film script before storyboard generation.
+Soft-check only: list material gaps vs the creative development plan. Do not rewrite the script.
+
+Flag:
+- missing causal bridges (e.g. character never leaves but later is gone)
+- duplicate first-meeting / reveal that will force the storyboard to stack beats
+- climax/payoff absent from the script body
+- major characters introduced without payoff
+
+Script (truncated):
+${cleanLines(rawScript, 6000)}
+
+Creative development:
+${JSON.stringify(development || {}, null, 2)}
+
+Scenes:
+${JSON.stringify((scriptData.scenes || []).map((scene) => ({
+    id: scene.id,
+    location: scene.location,
+    time: scene.time,
+    atmosphere: clean(scene.atmosphere, 160),
+    purpose: clean(scene.creativeDirection?.narrativePurpose, 200),
+  })), null, 2)}
+
+Return JSON only:
+{
+  "score": 0,
+  "verdict": "pass|warning|fail",
+  "issues": ["specific gap in original language of the script if Chinese"],
+  "summary": "one-line assessment"
+}`;
+
+  try {
+    const responseText = await retryOperation(
+      () => chatCompletion(prompt, model, 0.2, 4096, 'json_object', 300000, abortSignal),
+      2,
+      1200,
+      abortSignal,
+    );
+    const parsed = parseJsonWithRecovery<UnknownRecord>(responseText, {});
+    const score = Math.round(clamp(parsed.score, 0, 100, 75));
+    const issues = cleanStringArray(parsed.issues, 10, 360);
+    const verdict: StoryOutlineReview['verdict'] =
+      parsed.verdict === 'pass' || parsed.verdict === 'fail'
+        ? parsed.verdict
+        : score >= 80 ? 'pass' : score >= 60 ? 'warning' : 'fail';
+    const review: StoryOutlineReview = {
+      version: STORY_OUTLINE_REVIEW_VERSION,
+      score,
+      verdict,
+      issues,
+      reviewedAt: Date.now(),
+      summary: clean(parsed.summary, 420) || (issues.length ? `发现 ${issues.length} 项故事缺口` : '故事层门禁通过'),
+    };
+    scriptData.storyOutlineReview = review;
+    if (issues.length) {
+      logScriptProgress(`故事层门禁：${review.summary} — ${issues.slice(0, 3).join('；')}`);
+    } else {
+      logScriptProgress(`故事层门禁：${review.summary}`);
+    }
+    return review;
+  } catch (error: unknown) {
+    const review: StoryOutlineReview = {
+      version: STORY_OUTLINE_REVIEW_VERSION,
+      score: 0,
+      verdict: 'warning',
+      issues: [],
+      reviewedAt: Date.now(),
+      summary: `故事层门禁调用失败（不阻断）：${clean(errorMessage(error), 200)}`,
+    };
+    scriptData.storyOutlineReview = review;
+    console.warn('[storyboard-agent] story outline review fallback:', error);
+    logScriptProgress('故事层门禁：调用失败，已跳过并继续分镜。');
+    return review;
   }
 };
 

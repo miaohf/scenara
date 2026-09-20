@@ -49,6 +49,8 @@ import {
   formatDirectorPlanForScene,
   generateStoryboardDirectorPlan,
   reviewAndRepairStoryboard,
+  reviewStoryboardStructure,
+  reviewStoryOutline,
 } from './storyboardAgent';
 
 // Re-export 日志回调函数（保持外部 API 兼容）
@@ -953,6 +955,14 @@ interface GenerateShotListOptions {
   previousShots?: Shot[];
   reuseUnchangedScenes?: boolean;
   enableQualityCheck?: boolean;
+  /** 分镜前故事层软门禁；默认跟随 enableQualityCheck */
+  enableStoryOutlineGate?: boolean;
+  /** 结构审片；默认跟随 enableQualityCheck */
+  enableStructureReview?: boolean;
+  /** 自动应用结构审片中 autoSafe 的删/并/重排；默认 true */
+  autoApplyStructureFixes?: boolean;
+  /** 可选：用于故事层门禁对照的原稿正文 */
+  rawScript?: string;
   promptTemplates?: PromptTemplateConfig;
   /**
    * 每个场景完成后立即通知调用方，使调用方可以持久化已完成的部分。
@@ -1437,6 +1447,9 @@ export const generateShotList = async (
   const previousScriptData = options.previousScriptData || null;
   const previousShots = Array.isArray(options.previousShots) ? options.previousShots : [];
   const enableQualityCheck = options.enableQualityCheck !== false;
+  const enableStructureReview = options.enableStructureReview ?? enableQualityCheck;
+  const enableStoryOutlineGate = options.enableStoryOutlineGate ?? enableQualityCheck;
+  const autoApplyStructureFixes = options.autoApplyStructureFixes !== false;
   const promptTemplates = options.promptTemplates || resolvePromptTemplateConfig();
   const shouldReuseUnchangedScenes =
     !!options.reuseUnchangedScenes &&
@@ -1528,6 +1541,20 @@ export const generateShotList = async (
       );
   if (canReuseDirectorPlan) {
     logScriptProgress('导演 Agent：已复用当前全片分镜规划。');
+  }
+
+  if (enableStoryOutlineGate) {
+    ensureNotAborted();
+    const paragraphScript = (scriptData.storyParagraphs || [])
+      .map((paragraph) => String(paragraph.text || '').trim())
+      .filter(Boolean)
+      .join('\n\n');
+    await reviewStoryOutline(
+      scriptData,
+      options.rawScript || paragraphScript || scriptData.logline || scriptData.title || '',
+      model,
+      abortSignal,
+    );
   }
 
   const getSceneNameForLog = (scene: Scene, index: number): string => {
@@ -2138,9 +2165,38 @@ export const generateShotList = async (
         return rest as Shot;
       });
   if (!enableQualityCheck) {
-    logScriptProgress('分镜质量校验已关闭，跳过自动打分与修复。');
-    completeStoryboardAgentRun(scriptData, '用户关闭了分镜质量校验，未运行语义审片 Agent。');
+    logScriptProgress('分镜质量校验已关闭，跳过结构审片与字段审片。');
+    completeStoryboardAgentRun(scriptData, '用户关闭了分镜质量校验，未运行结构/字段审片 Agent。');
   } else {
+    // 目标态顺序：确定性管线 → 结构审片 → 字段终审
+    if (enableStructureReview) {
+      ensureNotAborted();
+      const structureResult = await reviewStoryboardStructure(
+        qualityCheckedShots,
+        scriptData,
+        directorPlan,
+        model,
+        abortSignal,
+        { autoApplySafeActions: autoApplyStructureFixes },
+      );
+      qualityCheckedShots = structureResult.shots;
+      if (structureResult.review.appliedActionCount > 0) {
+        qualityCheckedShots = attachShotAgentMetadata(
+          qualityCheckedShots,
+          scriptData,
+          directorPlan,
+          shotDurationSeconds,
+        );
+        qualityCheckedShots = applyScriptStageQualityPipeline(
+          qualityCheckedShots,
+          scriptData,
+          validCharacterIds,
+          validPropIds,
+          visualStyle,
+        );
+      }
+    }
+    ensureNotAborted();
     qualityCheckedShots = await reviewAndRepairStoryboard(
       qualityCheckedShots,
       scriptData,

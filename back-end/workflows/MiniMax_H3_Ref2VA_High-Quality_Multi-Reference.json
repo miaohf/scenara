@@ -19,29 +19,29 @@
   },
   "28": {
     "inputs": {
-      "image": "1.jpg"
+      "image": "r2v-reference-01.png"
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "Reference Image 1"
     }
   },
   "29": {
     "inputs": {
-      "image": "2.jpg"
+      "image": "r2v-reference-02.png"
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "Reference Image 2"
     }
   },
   "30": {
     "inputs": {
-      "image": "3.jpg"
+      "image": "r2v-reference-03.png"
     },
     "class_type": "LoadImage",
     "_meta": {
-      "title": "Load Image"
+      "title": "Reference Image 3"
     }
   },
   "32": {
@@ -396,11 +396,11 @@
       "pingpong": false,
       "save_output": true,
       "images": [
-        "74",
+        "155",
         0
       ],
       "audio": [
-        "75",
+        "156",
         0
       ]
     },
@@ -487,6 +487,38 @@
       "ref_images.ref_image_2": [
         "30",
         0
+      ],
+      "ref_images.ref_image_3": [
+        "146",
+        0
+      ],
+      "ref_images.ref_image_4": [
+        "147",
+        0
+      ],
+      "ref_images.ref_image_5": [
+        "148",
+        0
+      ],
+      "ref_images.ref_image_6": [
+        "149",
+        0
+      ],
+      "ref_images.ref_image_7": [
+        "150",
+        0
+      ],
+      "ref_images.ref_image_8": [
+        "151",
+        0
+      ],
+      "ref_videos.ref_video_0": [
+        "152",
+        0
+      ],
+      "ref_audios.ref_audio_0": [
+        "153",
+        0
       ]
     },
     "class_type": "MiniMaxH3ReferenceToVideo",
@@ -502,5 +534,81 @@
     "_meta": {
       "title": "Prompt"
     }
+  },
+  "146": {
+    "inputs": { "image": "r2v-reference-04.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference Image 4" }
+  },
+  "147": {
+    "inputs": { "image": "r2v-reference-05.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference Image 5" }
+  },
+  "148": {
+    "inputs": { "image": "r2v-reference-06.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference Image 6" }
+  },
+  "149": {
+    "inputs": { "image": "r2v-reference-07.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference Image 7" }
+  },
+  "150": {
+    "inputs": { "image": "r2v-reference-08.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference Image 8" }
+  },
+  "151": {
+    "inputs": { "image": "r2v-reference-09.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference Image 9" }
+  },
+  "152": {
+    "inputs": {
+      "video": "r2v-reference-video-01.mp4",
+      "force_rate": 0,
+      "custom_width": 0,
+      "custom_height": 0,
+      "frame_load_cap": 362,
+      "skip_first_frames": 0,
+      "select_every_nth": 1,
+      "format": "AnimateDiff"
+    },
+    "class_type": "VHS_LoadVideo",
+    "_meta": { "title": "Reference Video 1" }
+  },
+  "153": {
+    "inputs": {
+      "audio": "r2v-reference-audio-01.wav",
+      "start_time": 0,
+      "duration": 15
+    },
+    "class_type": "VHS_LoadAudioUpload",
+    "_meta": { "title": "Reference Audio 1" }
+  },
+  "154": {
+    "inputs": { "value": true },
+    "class_type": "PrimitiveBoolean",
+    "_meta": { "title": "Enable Stage 2 Second Upscaling" }
+  },
+  "155": {
+    "inputs": {
+      "switch": ["154", 0],
+      "on_false": ["42", 0],
+      "on_true": ["74", 0]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": { "title": "Stage 2 Video Output Switch" }
+  },
+  "156": {
+    "inputs": {
+      "switch": ["154", 0],
+      "on_false": ["41", 0],
+      "on_true": ["75", 0]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": { "title": "Stage 2 Audio Output Switch" }
   }
 }

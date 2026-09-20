@@ -3,6 +3,7 @@ import { Video, Loader2, Edit2 } from 'lucide-react';
 import { Shot, AspectRatio, VideoDuration } from '../../types';
 import { VideoSettingsPanel } from '../AspectRatioSelector';
 import { isMiniMaxH3VideoModel, resolveVideoModelRouting } from './utils';
+import { isMiniMaxH3Ref2VAModel } from '../../services/ai/h3PromptCompiler';
 import {
   getDefaultAspectRatio,
   getVideoModels,
@@ -67,17 +68,20 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   const videoModels = getVideoModels().filter((m) => m.isEnabled);
   const activeVideoModel = getActiveVideoModel();
 
-  const resolveInitialModelId = (): string => {
-    const perShot = normalizeModelId(shot.videoModel);
-    if (perShot && videoModels.some((m) => m.id === perShot)) return perShot;
-    if (defaultModelId && videoModels.some((m) => m.id === defaultModelId)) return defaultModelId;
+  const resolvePreferredModelId = (): string => {
+    // 模型设置中的全局激活模型优先；镜头历史里的 ComfyUI 等不应盖过 Seedance。
     if (activeVideoModel?.id && videoModels.some((m) => m.id === activeVideoModel.id)) {
       return activeVideoModel.id;
     }
+    if (defaultModelId && videoModels.some((m) => m.id === defaultModelId)) {
+      return defaultModelId;
+    }
+    const perShot = normalizeModelId(shot.videoModel);
+    if (perShot && videoModels.some((m) => m.id === perShot)) return perShot;
     return videoModels[0]?.id || 'sora-2';
   };
 
-  const [selectedModelId, setSelectedModelId] = useState<string>(resolveInitialModelId);
+  const [selectedModelId, setSelectedModelId] = useState<string>(resolvePreferredModelId);
   const [veoFastQuality, setVeoFastQuality] = useState<'standard' | '4k'>(
     resolveVeoFastQuality(shot.videoModel)
   );
@@ -106,8 +110,10 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
       : selectedModelId;
   const modelRouting = resolveVideoModelRouting(effectiveModelId || selectedModelId || 'sora-2');
   const routingLabel =
-    isMiniMaxH3VideoModel(effectiveModelId || selectedModelId)
-      ? 'ComfyUI H3'
+    isMiniMaxH3Ref2VAModel(effectiveModelId || selectedModelId)
+      ? 'ComfyUI Ref2VA'
+      : isMiniMaxH3VideoModel(effectiveModelId || selectedModelId)
+      ? 'ComfyUI FL2V'
       : modelRouting.family === 'sora'
       ? 'Sora'
       : modelRouting.family === 'doubao-task'
@@ -172,23 +178,18 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
     selectedModelId,
   ]);
 
+  // 切换镜头或全局激活模型时，默认回到模型设置中的激活项。
+  // 不监听 shot.videoModel：避免历史镜头里的 ComfyUI 覆盖 Seedance；
+  // 用户在下拉里手动改模型仍通过 selectedModelId 生效，直到切换镜头/全局模型。
   useEffect(() => {
-    const perShot = normalizeModelId(shot.videoModel);
-    if (perShot && videoModels.some((m) => m.id === perShot)) {
-      setSelectedModelId(perShot);
-      setVeoFastQuality(resolveVeoFastQuality(shot.videoModel));
-      return;
+    const preferred = resolvePreferredModelId();
+    setSelectedModelId(preferred);
+    setVeoFastQuality(resolveVeoFastQuality(preferred));
+    if (normalizeModelId(shot.videoModel) !== preferred) {
+      onModelChange?.(preferred);
     }
-    if (defaultModelId && videoModels.some((m) => m.id === defaultModelId)) {
-      setSelectedModelId(defaultModelId);
-      return;
-    }
-    if (activeVideoModel?.id && videoModels.some((m) => m.id === activeVideoModel.id)) {
-      setSelectedModelId(activeVideoModel.id);
-      onModelChange?.(activeVideoModel.id);
-      return;
-    }
-  }, [shot.id, shot.videoModel, defaultModelId, activeVideoModel?.id, videoModels.map((m) => m.id).join('|')]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在镜头/全局激活模型变化时重置
+  }, [shot.id, defaultModelId, activeVideoModel?.id, videoModels.map((m) => m.id).join('|')]);
 
   const handleGenerate = () => {
     onGenerate(aspectRatio, duration, effectiveModelId, h3Quality);
@@ -319,15 +320,22 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
                   disabled={isGenerating}
                   className={`px-3 py-1.5 rounded-md text-xs transition-all ${
                     h3Quality === quality
-                      ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                      : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)] hover:text-[var(--text-secondary)]'
+                      ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                      : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)] hover:text-[var(--text-secondary)]'
                   } ${isGenerating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
                 >
-                  {quality === 'standard' ? text('高质量', 'High') : text('快速预览', 'Turbo')}
+                  {quality === 'standard'
+                    ? text('高质量', 'High')
+                    : text('快速预览', 'Preview')}
                 </button>
               ))}
             </div>
           </div>
+        )}
+        {isRef2VModel && (
+          <p className="text-[10px] text-[var(--text-muted)]">
+            {text('固定采样：Stage 1 为 8 steps，Stage 2 为 4 steps；此开关仅控制二次上采样。', 'Fixed sampling: Stage 1 is 8 steps and Stage 2 is 4 steps; this toggle only controls second-pass upscaling.')}
+          </p>
         )}
         {selectedModelId === 'veo_3_1-fast' && (
           <div className="flex items-center gap-2">
@@ -340,8 +348,8 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
                   px-3 py-1.5 rounded-md text-xs transition-all
                   ${
                     veoFastQuality === 'standard'
-                      ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                      : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)] hover:text-[var(--text-secondary)]'
+                      ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                      : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)] hover:text-[var(--text-secondary)]'
                   }
                   ${isGenerating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
                 `}
@@ -355,8 +363,8 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
                   px-3 py-1.5 rounded-md text-xs transition-all
                   ${
                     veoFastQuality === '4k'
-                      ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                      : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)] hover:text-[var(--text-secondary)]'
+                      ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                      : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)] hover:text-[var(--text-secondary)]'
                   }
                   ${isGenerating ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
                 `}
@@ -393,7 +401,7 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
           className={`flex-1 py-2.5 rounded-lg font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all ${
             hasVideo
               ? 'bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:bg-[var(--border-secondary)]'
-              : 'bg-[var(--accent)] text-[var(--text-primary)] hover:bg-[var(--accent-hover)] shadow-lg shadow-[var(--accent-shadow)]'
+              : 'bg-[var(--accent)] text-[var(--accent-on)] hover:bg-[var(--accent-hover)] shadow-lg shadow-[var(--accent-shadow)]'
           } ${!canGenerate || isGenerating ? 'opacity-50 cursor-not-allowed' : ''}`}
         >
           {isGenerating ? (

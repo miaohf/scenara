@@ -10,6 +10,11 @@ import {
   getDefaultImageEndpoint,
   resolveOpenAiImageEndpoint,
   mapAspectRatioToOpenAiImageSize,
+  mapAspectRatioToSeedreamImageSize,
+  mapAspectRatioToApiyiVipImageSize,
+  getOpenAiImageParamProfile,
+  prependAspectHintForPerRequestAll,
+  isVolcengineSeedreamImageModel,
 } from '../imageModelUtils';
 import { ApiKeyError } from './chatAdapter';
 import { resolveComfyApiBaseUrl, buildComfyApiUrl, resolveEndpointUrl } from '../urlUtils';
@@ -232,8 +237,10 @@ const extractImageFromOpenAiResponse = (response: any): string | null => {
   const first = response?.data?.[0];
   if (!first) return null;
   if (first.b64_json) {
+    const raw = String(first.b64_json);
+    if (raw.startsWith('data:')) return raw;
     const format = first.output_format || OPENAI_IMAGE_OUTPUT_FORMAT;
-    return `data:image/${format};base64,${first.b64_json}`;
+    return `data:image/${format};base64,${raw}`;
   }
   if (first.url) {
     return String(first.url);
@@ -557,12 +564,15 @@ export const callImageApi = async (
     }
   }
   if (isApiAiMode() && apiFormat !== 'comfyui') {
-    return apiCallImage(options);
+    return apiCallImage(options, activeModel.id);
   }
 
   const apiBase = getApiBaseUrlForModel(activeModel.id);
   const apiModel = activeModel.apiModel || activeModel.id;
-  const endpointTemplate = activeModel.endpoint || getDefaultImageEndpoint(apiFormat, apiModel);
+  const isSeedream = isVolcengineSeedreamImageModel(activeModel);
+  const endpointTemplate = activeModel.endpoint || getDefaultImageEndpoint(apiFormat, apiModel, {
+    volcengine: isSeedream,
+  });
   const endpoint = endpointTemplate.replace('{model}', apiModel);
   
   // 确定宽高比
@@ -592,36 +602,8 @@ export const callImageApi = async (
     });
   }
   
-  // 构建提示词
+  // 构建提示词：调用方（visualService）已按资产类型组装好一致性指令，这里不再二次改写。
   let finalPrompt = options.prompt;
-  
-  // 如果有参考图，添加一致性指令
-  if (options.referenceImages && options.referenceImages.length > 0) {
-    finalPrompt = `
-      ⚠️⚠️⚠️ CRITICAL REQUIREMENTS - CHARACTER CONSISTENCY ⚠️⚠️⚠️
-      
-      Reference Images Information:
-      - The FIRST image is the Scene/Environment reference.
-      - Any subsequent images are Character references (Base Look or Variation).
-      
-      Task:
-      Generate a cinematic shot matching this prompt: "${options.prompt}".
-      
-      ⚠️ ABSOLUTE REQUIREMENTS (NON-NEGOTIABLE):
-      1. Scene Consistency:
-         - STRICTLY maintain the visual style, lighting, and environment from the scene reference.
-      
-      2. Character Consistency - HIGHEST PRIORITY:
-         If characters are present in the prompt, they MUST be IDENTICAL to the character reference images:
-         • Facial Features: Eyes (color, shape, size), nose structure, mouth shape, facial contours must be EXACTLY the same
-         • Hairstyle & Hair Color: Length, color, texture, and style must be PERFECTLY matched
-         • Clothing & Outfit: Style, color, material, and accessories must be IDENTICAL
-         • Body Type: Height, build, proportions must remain consistent
-         
-      ⚠️ DO NOT create variations or interpretations of the character - STRICT REPLICATION ONLY!
-      ⚠️ Character appearance consistency is THE MOST IMPORTANT requirement!
-    `;
-  }
 
   const promptLimitResult = truncatePromptToMaxChars(finalPrompt, MAX_IMAGE_PROMPT_CHARS);
   if (promptLimitResult.wasTruncated) {
@@ -640,8 +622,74 @@ export const callImageApi = async (
 
   if (apiFormat === 'openai') {
     const hasReferenceImages = Boolean(options.referenceImages?.length);
-    const resolvedEndpoint = resolveOpenAiImageEndpoint(endpoint, hasReferenceImages);
-    const openAiSize = mapAspectRatioToOpenAiImageSize(aspectRatio);
+    const resolvedEndpoint = resolveOpenAiImageEndpoint(endpoint, hasReferenceImages, {
+      keepGenerationsForReferences: isSeedream,
+    });
+
+    if (isSeedream) {
+      const seedreamSize = mapAspectRatioToSeedreamImageSize(
+        aspectRatio,
+        outputResolution || '2K'
+      );
+      const response = await retryOperation(async () => {
+        const requestBody: Record<string, unknown> = {
+          model: apiModel,
+          prompt: finalPrompt,
+          size: seedreamSize,
+          response_format: 'b64_json',
+          watermark: false,
+        };
+        // 组图仅 Lite / 4.x 支持；5.0 Pro 传了会 400
+        if (!/pro/i.test(apiModel)) {
+          requestBody.sequential_image_generation = 'disabled';
+        }
+        if (hasReferenceImages) {
+          const images = (options.referenceImages || []).filter(Boolean);
+          if (images.length === 0) {
+            throw new Error('图片生成失败：参考图格式无效，请上传图片后重试。');
+          }
+          requestBody.image = images.length === 1 ? images[0] : images;
+        }
+
+        const res = await fetch(resolveEndpointUrl(apiBase, resolvedEndpoint), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            'Accept': '*/*',
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        if (!res.ok) {
+          const backendMessage = await parseHttpErrorBody(res);
+          throw buildImageApiError(res.status, backendMessage);
+        }
+
+        return await res.json();
+      });
+
+      const imageData = extractImageFromOpenAiResponse(response);
+      if (imageData) {
+        return imageData;
+      }
+
+      throw new Error('图片生成失败：Seedream 未返回有效图片数据。');
+    }
+
+    const paramProfile = getOpenAiImageParamProfile(activeModel);
+    const openAiSize =
+      paramProfile === 'per_request_vip'
+        ? mapAspectRatioToApiyiVipImageSize(aspectRatio, outputResolution)
+        : mapAspectRatioToOpenAiImageSize(aspectRatio, outputResolution);
+    let requestPrompt = finalPrompt;
+    if (paramProfile === 'per_request_all') {
+      requestPrompt = prependAspectHintForPerRequestAll(
+        finalPrompt,
+        aspectRatio,
+        outputResolution
+      );
+    }
 
     const response = await retryOperation(async () => {
       let res: Response;
@@ -657,12 +705,20 @@ export const callImageApi = async (
 
         const formData = new FormData();
         formData.append('model', apiModel);
-        formData.append('prompt', finalPrompt);
-        formData.append('size', openAiSize);
-        formData.append('quality', OPENAI_IMAGE_QUALITY);
-        formData.append('output_format', OPENAI_IMAGE_OUTPUT_FORMAT);
-        formData.append('output_compression', String(OPENAI_IMAGE_OUTPUT_COMPRESSION));
-        formData.append('n', '1');
+        formData.append('prompt', requestPrompt);
+        if (paramProfile === 'official') {
+          formData.append('size', openAiSize);
+          formData.append('quality', OPENAI_IMAGE_QUALITY);
+          formData.append('output_format', OPENAI_IMAGE_OUTPUT_FORMAT);
+          formData.append('output_compression', String(OPENAI_IMAGE_OUTPUT_COMPRESSION));
+          formData.append('n', '1');
+        } else if (paramProfile === 'per_request_vip') {
+          formData.append('response_format', 'b64_json');
+          formData.append('size', openAiSize);
+          formData.append('quality', OPENAI_IMAGE_QUALITY);
+        } else {
+          formData.append('response_format', 'b64_json');
+        }
         resolvedFiles.forEach(file => formData.append('image[]', file));
 
         res = await fetch(resolveEndpointUrl(apiBase, resolvedEndpoint), {
@@ -674,15 +730,23 @@ export const callImageApi = async (
           body: formData,
         });
       } else {
-        const requestBody = {
+        const requestBody: Record<string, unknown> = {
           model: apiModel,
-          prompt: finalPrompt,
-          size: openAiSize,
-          quality: OPENAI_IMAGE_QUALITY,
-          output_format: OPENAI_IMAGE_OUTPUT_FORMAT,
-          output_compression: OPENAI_IMAGE_OUTPUT_COMPRESSION,
-          n: 1,
+          prompt: requestPrompt,
         };
+        if (paramProfile === 'official') {
+          requestBody.size = openAiSize;
+          requestBody.quality = OPENAI_IMAGE_QUALITY;
+          requestBody.output_format = OPENAI_IMAGE_OUTPUT_FORMAT;
+          requestBody.output_compression = OPENAI_IMAGE_OUTPUT_COMPRESSION;
+          requestBody.n = 1;
+        } else if (paramProfile === 'per_request_vip') {
+          requestBody.response_format = 'b64_json';
+          requestBody.size = openAiSize;
+          requestBody.quality = OPENAI_IMAGE_QUALITY;
+        } else {
+          requestBody.response_format = 'b64_json';
+        }
 
         res = await fetch(resolveEndpointUrl(apiBase, resolvedEndpoint), {
           method: 'POST',

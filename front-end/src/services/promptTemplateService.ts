@@ -695,32 +695,20 @@ Camera Movement: {cameraMovement}
 Visual Style Anchor: {visualStyle}
 The video must start from the start frame composition and progress naturally to a final state that matches the end frame.
 Any spoken audio must be in-scene character dialogue only; no narrator voiceover.`,
-    minimaxH3StartOnly: `{visualStyle} cinematic look.
+    minimaxH3StartOnly: `For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
 
-Scene overview: {actionSummary}
+integrated_multimodal_description: [Shot 1] {visualStyle} cinematic look. Begin from the exact opening composition of <Picture 1>, preserving subject identity, wardrobe, lighting, and spatial layout. {actionSummary} The camera performs a motivated move ({cameraMovement}) with readable body mechanics and continuous geography. Keep one coherent full-screen shot through {duration}.00 seconds with no dissolves, montage cuts, subtitles, logos, watermarks, or on-screen text.
 
-CRITICAL: The first frame MUST match the provided start-frame composition exactly. Animate naturally from that opening state.
+overall_soundscape: Diegetic environmental sound only, synchronized to the action. No extra voices beyond any spoken line already written in the multimodal description.
 
-Timeline ({duration}s total):
-[0s-{midDuration}s] Hold the opening composition, begin smooth natural motion described in the scene overview.
-[{midDuration}s-{duration}s] Continue motion with stable identity, lighting, and environment continuity.
+non_diegetic_music: N/A`,
+    minimaxH3StartEnd: `How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot 1) aligns with the {duration}.00-second mark of the target video.
 
-Camera: {cameraMovement}. Clean motivated movement, no dissolves.
+integrated_multimodal_description: [Shot 1] {visualStyle} cinematic look. Begin from the exact opening composition of Picture 1, then continuously progress toward the final pose, spacing, and composition of Picture 2 at {duration}.00 seconds. {actionSummary} Intermediate motion must remain physically achievable. The camera performs a motivated move ({cameraMovement}) with small-to-medium amplitude and readable continuity. Keep one coherent full-screen shot with no dissolves, montage cuts, subtitles, logos, watermarks, or on-screen text.
 
-No subtitles, logos, watermarks, or any on-screen text.`,
-    minimaxH3StartEnd: `{visualStyle} cinematic look.
+overall_soundscape: Diegetic environmental sound only, synchronized to the action. No extra voices beyond any spoken line already written in the multimodal description.
 
-Scene overview: {actionSummary}
-
-CRITICAL: The video MUST start from the provided first-frame composition and end matching the provided last-frame composition. Transition naturally between them.
-
-Timeline ({duration}s total):
-[0s-{midDuration}s] Hold the first-frame composition, begin motion toward the scene goal.
-[{midDuration}s-{duration}s] Continue motion and settle into the last-frame composition.
-
-Camera: {cameraMovement}. Clean motivated movement, no dissolves.
-
-No subtitles, logos, watermarks, or any on-screen text.`,
+non_diegetic_music: N/A`,
     nineGridGuardrailsChinese: `HARD RULES（最高优先级）：
 - 视频必须始终为单画面全屏输出，任意时刻只能有一个镜头占满100%画面。
 - 严禁九宫格/六宫格/四宫格分屏、拼贴、画中画、多窗口、缩略图墙、多面板并行动画。
@@ -1054,14 +1042,14 @@ export const PROMPT_TEMPLATE_FIELD_DEFINITIONS: PromptTemplateFieldDefinition[] 
     path: 'video.minimaxH3StartOnly',
     category: 'video',
     title: '视频模板-MiniMax H3 首帧模式',
-    description: 'MiniMax H3 原生音视频工作流（仅首帧）使用的 timeline 模板。',
+    description: 'MiniMax H3 FLF2V/I2VA 官方 skill 结构（Picture 对齐句 + integrated_multimodal_description / overall_soundscape / non_diegetic_music）。',
     placeholders: ['actionSummary', 'cameraMovement', 'visualStyle', 'duration', 'midDuration'],
   },
   {
     path: 'video.minimaxH3StartEnd',
     category: 'video',
     title: '视频模板-MiniMax H3 首尾帧模式',
-    description: 'MiniMax H3 FLF2V 工作流使用的 timeline 模板。',
+    description: 'MiniMax H3 FLF2V 官方 skill 结构（首尾 Picture 对齐 + 三核心字段）。',
     placeholders: ['actionSummary', 'cameraMovement', 'visualStyle', 'duration', 'midDuration'],
   },
   {

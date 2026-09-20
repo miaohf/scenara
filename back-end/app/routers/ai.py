@@ -147,6 +147,7 @@ async def ai_comfyui_video(
                 "audioUrl": body.audio_url,
                 "seed": body.seed,
                 "steps": body.steps,
+                "enableStage2Upscaling": body.enable_stage2_upscaling,
                 "workflowName": body.workflow_name,
             },
             user_id=current_user.id,

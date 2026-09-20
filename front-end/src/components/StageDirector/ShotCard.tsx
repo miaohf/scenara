@@ -1,12 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { Image as ImageIcon, Video, Trash2, Loader2, Clock3, CircleAlert } from 'lucide-react';
+import { Image as ImageIcon, Video, Trash2, Loader2, Clock3, CircleAlert, Grid3x3 } from 'lucide-react';
 import { Shot } from '../../types';
 import { getShotDisplayLabel } from '../../services/storyboardIdUtils';
 import { useGenerationQueue } from '../../contexts/GenerationQueueContext';
 import { formatJobProgressLabel, resolveShotKeyframeBadge, resolveShotVideoBadge } from '../../services/generationQueue';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
-const ShotThumb: React.FC<{ url: string; alt: string; unavailableLabel: string }> = ({ url, alt, unavailableLabel }) => {
+const ShotThumb: React.FC<{
+  url: string;
+  alt: string;
+  unavailableLabel: string;
+  fit?: 'cover' | 'contain';
+}> = ({ url, alt, unavailableLabel, fit = 'cover' }) => {
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
 
@@ -38,7 +43,7 @@ const ShotThumb: React.FC<{ url: string; alt: string; unavailableLabel: string }
     <img
       key={src}
       src={src}
-      className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+      className={`w-full h-full ${fit === 'contain' ? 'object-contain' : 'object-cover'} transition-transform duration-700 group-hover:scale-105`}
       alt={alt}
       onError={() => setFailed(true)}
     />
@@ -59,8 +64,10 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
   const { status: videoStatus, job: videoJob, queuePosition } = resolveShotVideoBadge(shot, jobs, index);
   const startFrameBadge = resolveShotKeyframeBadge(shot, jobs, 'start', index);
   const sKf = shot.keyframes?.find(k => k.type === 'start');
-  const hasImage = !!sKf?.imageUrl;
-  const keyframeBusy = startFrameBadge.status === 'running' || startFrameBadge.status === 'queued';
+  const usesStoryboardGrid = shot.videoInputMode === 'storyboard-grid' && !!shot.nineGrid?.imageUrl;
+  const previewUrl = usesStoryboardGrid ? shot.nineGrid?.imageUrl : sKf?.imageUrl;
+  const hasImage = !!previewUrl;
+  const keyframeBusy = !usesStoryboardGrid && (startFrameBadge.status === 'running' || startFrameBadge.status === 'queued');
   const keyframeProgressLabel = keyframeBusy
     ? formatJobProgressLabel(startFrameBadge.job, startFrameBadge.status === 'running' ? 'running' : 'queued')
     : null;
@@ -85,7 +92,9 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
       onClick={onClick}
       className={`
         group relative flex flex-col bg-[var(--bg-elevated)] border rounded-xl overflow-hidden cursor-pointer transition-all duration-200
-        ${isActive ? 'border-[var(--accent)] ring-1 ring-[var(--accent-border)] shadow-xl scale-[0.98]' : 'border-[var(--border-primary)] hover:border-[var(--border-secondary)] hover:shadow-lg'}
+        ${isActive
+          ? 'border-[var(--selected-outline)] ring-1 ring-[var(--selected-outline-ring)] shadow-xl scale-[0.98]'
+          : 'border-[var(--border-primary)] hover:border-[var(--border-secondary)] hover:shadow-lg'}
       `}
     >
       {/* Header */}
@@ -115,7 +124,12 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
       {/* Thumbnail */}
       <div className="aspect-video bg-[var(--bg-elevated)] relative overflow-hidden">
         {hasImage ? (
-          <ShotThumb url={sKf!.imageUrl!} alt={`Shot ${index + 1}`} unavailableLabel={text('无法预览', 'Preview unavailable')} />
+          <ShotThumb
+            url={previewUrl!}
+            alt={usesStoryboardGrid ? `${text('网格分镜', 'Storyboard grid')} ${index + 1}` : `Shot ${index + 1}`}
+            unavailableLabel={text('无法预览', 'Preview unavailable')}
+            fit={usesStoryboardGrid ? 'contain' : 'cover'}
+          />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-[var(--text-muted)]">
             <ImageIcon className="w-8 h-8 opacity-20" />
@@ -143,6 +157,15 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
         
         {/* Badges */}
         <div className="absolute top-2 right-2 flex flex-col gap-1 items-end">
+          {usesStoryboardGrid && (
+            <div
+              className="px-1.5 py-1 rounded bg-[var(--accent-bg)] border border-[var(--accent-border)] text-[var(--accent-text)] text-[9px] font-bold flex items-center gap-1"
+              title={text('当前镜头使用网格分镜作为视频参考', 'This shot uses the storyboard grid as its video reference')}
+            >
+              <Grid3x3 className="w-3 h-3" />
+              {text('网格', 'GRID')}
+            </div>
+          )}
           {quality && (
             <div className={`px-2 py-1 rounded-full text-[9px] font-bold border ${qualityBadgeClass}`}>
               {text('评分', 'SCORE')} {quality.score} · {qualityGradeLabel}
@@ -158,7 +181,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
           )}
           {videoStatus === 'running' && (
             <div
-              className="min-w-7 h-7 px-1.5 rounded-full bg-[var(--accent)] text-[var(--text-primary)] flex items-center justify-center shadow-lg font-mono text-[9px]"
+              className="min-w-7 h-7 px-1.5 rounded-full bg-[var(--accent)] text-[var(--accent-on)] flex items-center justify-center shadow-lg font-mono text-[9px]"
               title={typeof videoJob?.progress === 'number' ? text(`生成中 ${videoJob.progress}%`, `Generating ${videoJob.progress}%`) : text('生成中', 'Generating')}
             >
               {typeof videoJob?.progress === 'number' ? `${videoJob.progress}%` : <Loader2 className="w-3.5 h-3.5 animate-spin" />}

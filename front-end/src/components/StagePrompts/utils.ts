@@ -4,6 +4,7 @@
 
 import { ProjectState, Character, Scene, Prop, Shot, PromptVersion } from '../../types';
 import { findPromptVersion, updatePromptWithVersion } from '../../services/promptVersionService';
+import { dedupeRepeatedPromptClauses } from '../../services/ai/promptConstants';
 
 export type PromptEditType = 'character' | 'character-variation' | 'scene' | 'prop' | 'keyframe' | 'video';
 
@@ -30,6 +31,10 @@ export const savePromptEdit = (
   project: ProjectState,
   editingPrompt: PromptEditPayload
 ): ProjectState => {
+  const nextPrompt = editingPrompt.type === 'character' || editingPrompt.type === 'character-variation'
+    ? dedupeRepeatedPromptClauses(editingPrompt.value)
+    : editingPrompt.value;
+
   switch (editingPrompt.type) {
     case 'character':
       if (!project.scriptData) return project;
@@ -41,10 +46,10 @@ export const savePromptEdit = (
             char.id === editingPrompt.id
               ? {
                   ...char,
-                  visualPrompt: editingPrompt.value,
+                  visualPrompt: nextPrompt,
                   promptVersions: buildVersionUpdate(
                     char.visualPrompt,
-                    editingPrompt.value,
+                    nextPrompt,
                     char.promptVersions,
                     'manual-edit'
                   ),
@@ -68,10 +73,10 @@ export const savePromptEdit = (
                 variation.id === editingPrompt.variationId
                   ? {
                       ...variation,
-                      visualPrompt: editingPrompt.value,
+                      visualPrompt: nextPrompt,
                       promptVersions: buildVersionUpdate(
                         variation.visualPrompt,
-                        editingPrompt.value,
+                        nextPrompt,
                         variation.promptVersions,
                         'manual-edit'
                       ),
@@ -467,4 +472,3 @@ export const filterShots = (shots: Shot[], searchQuery: string): Shot[] => {
  */
 export const getDefaultVideoPrompt = (shot: Shot): string =>
   `${shot.actionSummary}\n\nCamera: ${shot.cameraMovement}\nModel: ${shot.videoModel || 'sora-2'}`;
-

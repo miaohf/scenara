@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { ChevronDown, ChevronUp, Trash2, ToggleLeft, ToggleRight, CheckCircle, Circle, Pencil } from 'lucide-react';
+import { ChevronDown, ChevronUp, Trash2, ToggleLeft, ToggleRight, CheckCircle, Circle, Pencil, Eye, EyeOff } from 'lucide-react';
 import { 
   ModelDefinition, 
   ChatModelParams,
@@ -12,7 +12,8 @@ import {
   VideoModelParams,
   AudioModelParams,
   AspectRatio,
-  VideoDuration
+  VideoDuration,
+  ImageResolution,
 } from '../../types/model';
 import { getProviderById } from '../../services/modelRegistry';
 import { normalizeBaseUrl, resolveComfyApiBaseUrl, validateRemoteApiBaseUrl, isAbsoluteHttpUrl } from '../../services/urlUtils';
@@ -38,17 +39,20 @@ const ModelCard: React.FC<ModelCardProps> = ({
 }) => {
   const [editParams, setEditParams] = useState<any>(model.params);
   const [editApiKey, setEditApiKey] = useState<string>(model.apiKey || '');
+  const [showApiKey, setShowApiKey] = useState(false);
   const [editName, setEditName] = useState(model.name);
   const [editDescription, setEditDescription] = useState(model.description || '');
   const [editingDescription, setEditingDescription] = useState(false);
   const provider = getProviderById(model.providerId);
   const isVolcengineModel = model.providerId === 'volcengine';
+  const isApiyiModel = model.providerId === 'apiyi';
   const isComfyUiImage = model.type === 'image' && (model.params as ImageModelParams).apiFormat === 'comfyui';
   const isComfyUiVideo = model.type === 'video' && (model.params as VideoModelParams).mode === 'comfyui';
   const isComfyUiModel = isComfyUiImage || isComfyUiVideo;
   const modelHasApiKey = Boolean(model.apiKey?.trim());
   const providerHasApiKey = Boolean(provider?.apiKey?.trim());
   const isMissingVolcengineKey = isVolcengineModel && !modelHasApiKey && !providerHasApiKey;
+  const isMissingApiyiKey = isApiyiModel && !modelHasApiKey && !providerHasApiKey;
 
   const resolveModelBaseUrlDisplay = (): string => {
     if (model.baseUrl?.trim()) {
@@ -71,12 +75,16 @@ const ModelCard: React.FC<ModelCardProps> = ({
   useEffect(() => {
     setEditParams(model.params);
     setEditApiKey(model.apiKey || '');
+    setShowApiKey(false);
     setEditName(model.name);
     setEditDescription(model.description || '');
     setEditingDescription(false);
     setEditBaseUrl(resolveModelBaseUrlDisplay());
     setBaseUrlError('');
   }, [model.id, model.params, model.apiKey, model.name, model.description, model.baseUrl, model.endpoint, model.providerId, provider?.baseUrl]);
+
+  const providerFallbackBaseUrl = normalizeBaseUrl(provider?.baseUrl || '');
+  const effectiveBaseUrl = editBaseUrl.trim() || providerFallbackBaseUrl;
 
   const handleBaseUrlChange = (value: string) => {
     setEditBaseUrl(value);
@@ -100,8 +108,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
     }
 
     setBaseUrlError('');
-    const providerDefault = normalizeBaseUrl(provider?.baseUrl || '');
-    if (normalized === providerDefault) {
+    if (normalized === providerFallbackBaseUrl) {
       onUpdate({ baseUrl: undefined });
       return;
     }
@@ -117,14 +124,23 @@ const ModelCard: React.FC<ModelCardProps> = ({
         type="text"
         value={editBaseUrl}
         onChange={(e) => handleBaseUrlChange(e.target.value)}
-        placeholder={isComfyUiModel ? 'http://127.0.0.1:8188' : 'http://192.168.1.197:3000'}
+        placeholder={
+          isComfyUiModel
+            ? (providerFallbackBaseUrl || 'http://127.0.0.1:8188')
+            : (providerFallbackBaseUrl || 'https://ark.cn-beijing.volces.com')
+        }
         className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
       />
       <p className="text-[9px] text-[var(--text-muted)] mt-1">
         {isComfyUiModel
           ? '本地 ComfyUI 服务地址，每个 ComfyUI 模型可单独配置。'
-          : '留空则使用全局默认 Base URL；填写后覆盖全局地址。'}
+          : '留空则使用提供商 / 全局默认 Base URL；填写后覆盖。'}
       </p>
+      {!editBaseUrl.trim() && effectiveBaseUrl && (
+        <p className="text-[9px] text-[var(--text-tertiary)] mt-1 font-mono break-all">
+          当前生效：{effectiveBaseUrl}
+        </p>
+      )}
       {baseUrlError && (
         <p className="text-[9px] text-[var(--error-text)] mt-1">{baseUrlError}</p>
       )}
@@ -198,7 +214,21 @@ const ModelCard: React.FC<ModelCardProps> = ({
     </div>
   );
 
-  const renderImageParams = (params: ImageModelParams) => (
+  const renderImageParams = (params: ImageModelParams) => {
+    const resolutionOptions: ImageResolution[] =
+      (editParams.supportedOutputResolutions?.length
+        ? editParams.supportedOutputResolutions
+        : params.supportedOutputResolutions?.length
+          ? params.supportedOutputResolutions
+          : ['1K']) as ImageResolution[];
+    const selectedResolution = (
+      editParams.outputResolution
+      && resolutionOptions.includes(editParams.outputResolution as ImageResolution)
+    )
+      ? (editParams.outputResolution as ImageResolution)
+      : (resolutionOptions[0] || '1K');
+
+    return (
     <div className="space-y-3">
       <div className="text-[10px] text-[var(--text-muted)]">
         协议：{
@@ -213,13 +243,19 @@ const ModelCard: React.FC<ModelCardProps> = ({
         <div>
           <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">输出分辨率</label>
           <select
-            value={editParams.outputResolution || '1K'}
+            value={selectedResolution}
             onChange={(e) => handleParamChange('outputResolution', e.target.value)}
             className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)]"
           >
-            <option value="1K">1K</option>
+            {resolutionOptions.map((option) => (
+              <option key={option} value={option}>
+                {option === '1344x768' ? '1344x768（对齐 MiniMax H3）' : option}
+              </option>
+            ))}
           </select>
-          <p className="text-[9px] text-[var(--text-muted)] mt-1">Gemini 使用 imageSize；兼容接口使用对应宽高。</p>
+          <p className="text-[9px] text-[var(--text-muted)] mt-1">
+            Gemini 使用 imageSize；Seedream / OpenAI 兼容接口按所选档位或精确像素请求。
+          </p>
         </div>
       )}
       {params.apiFormat === 'comfyui' && (
@@ -356,8 +392,8 @@ const ModelCard: React.FC<ModelCardProps> = ({
               onClick={() => handleParamChange('defaultAspectRatio', ratio)}
               className={`px-3 py-1.5 text-xs rounded transition-colors ${
                 editParams.defaultAspectRatio === ratio
-                  ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)]'
+                  ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)]'
               }`}
             >
               {ratio === '16:9' ? '横屏' : ratio === '9:16' ? '竖屏' : '方形'}
@@ -366,7 +402,8 @@ const ModelCard: React.FC<ModelCardProps> = ({
         </div>
       </div>
     </div>
-  );
+    );
+  };
 
   const renderVideoParams = (params: VideoModelParams) => (
     <div className="space-y-4">
@@ -407,8 +444,8 @@ const ModelCard: React.FC<ModelCardProps> = ({
               onClick={() => handleParamChange('defaultAspectRatio', ratio)}
               className={`px-3 py-1.5 text-xs rounded transition-colors ${
                 editParams.defaultAspectRatio === ratio
-                  ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)]'
+                  ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                  : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)]'
               }`}
             >
               {ratio === '16:9' ? '横屏' : ratio === '9:16' ? '竖屏' : '方形'}
@@ -426,8 +463,8 @@ const ModelCard: React.FC<ModelCardProps> = ({
                 onClick={() => handleParamChange('defaultDuration', duration)}
                 className={`px-3 py-1.5 text-xs rounded transition-colors ${
                   editParams.defaultDuration === duration
-                    ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                    : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)]'
+                    ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                    : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)]'
                 }`}
               >
                 {duration}秒
@@ -481,7 +518,7 @@ const ModelCard: React.FC<ModelCardProps> = ({
 
   return (
     <div 
-      className={`bg-[var(--bg-elevated)]/50 border rounded-lg overflow-hidden transition-all ${
+      className={`group/card bg-[var(--bg-elevated)]/50 border rounded-lg overflow-hidden transition-all ${
         isActive ? 'border-[var(--accent-border)] bg-[var(--accent-bg)]' : 'border-[var(--border-primary)]'
       } ${!model.isEnabled ? 'opacity-60' : ''}`}
     >
@@ -557,11 +594,11 @@ const ModelCard: React.FC<ModelCardProps> = ({
 
         {/* 操作按钮 */}
         <div className="flex items-center gap-2 shrink-0">
-          {/* 使用此模型按钮 */}
+          {/* 使用此模型：仅 hover 卡片时显示，样式偏轻避免实心深色块 */}
           {model.isEnabled && !isActive && (
             <button
               onClick={onSetActive}
-              className="px-2.5 py-1 bg-[var(--accent)] text-[var(--text-primary)] text-[10px] font-bold rounded hover:bg-[var(--accent-hover)] transition-colors flex items-center gap-1"
+              className="hidden group-hover/card:inline-flex px-2.5 py-1 text-[10px] font-bold rounded border transition-colors items-center gap-1 bg-[var(--accent-bg)] text-[var(--accent-text)] border-[var(--accent-border)] hover:bg-[var(--btn-selected-bg)] hover:text-[var(--btn-selected-text)] hover:border-[var(--btn-selected-border)]"
               title="使用此模型"
             >
               <Circle className="w-3 h-3" />
@@ -590,8 +627,8 @@ const ModelCard: React.FC<ModelCardProps> = ({
             )}
           </button>
 
-          {/* 删除按钮（仅非内置模型） */}
-          {!model.isBuiltIn && (
+          {/* 删除：仅自定义模型，且禁用后才显示 */}
+          {!model.isBuiltIn && !model.isEnabled && (
             <button
               onClick={onDelete}
               className="text-[var(--text-tertiary)] hover:text-[var(--error-text)] transition-colors"
@@ -664,20 +701,47 @@ const ModelCard: React.FC<ModelCardProps> = ({
                   本地 ComfyUI 不需要 API Key；请在下方配置 ComfyUI API 地址并确保服务已启动。
                 </p>
               )}
-              <input
-                type="password"
-                value={editApiKey}
-                onChange={(e) => handleApiKeyChange(e.target.value)}
-                placeholder="留空则使用全局 API Key"
-                className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
-              />
+              <div className="relative">
+                <input
+                  type={showApiKey ? 'text' : 'password'}
+                  value={editApiKey}
+                  onChange={(e) => handleApiKeyChange(e.target.value)}
+                  placeholder={
+                    isVolcengineModel && providerHasApiKey && !modelHasApiKey
+                      ? '留空则使用 Volcengine 提供商 Key'
+                      : isApiyiModel && providerHasApiKey && !modelHasApiKey
+                        ? '留空则使用 API易 提供商 Key'
+                        : '留空则使用全局 API Key'
+                  }
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 pr-9 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] font-mono"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey((prev) => !prev)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-surface)] transition-colors"
+                  title={showApiKey ? '隐藏 API Key' : '显示 API Key'}
+                  aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'}
+                >
+                  {showApiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                </button>
+              </div>
               {isMissingVolcengineKey && (
                 <p className="text-[9px] text-[var(--error-text)] mt-1">
                   未配置火山引擎 Key，当前模型无法调用且不会回退到全局 Key。
                 </p>
               )}
+              {isMissingApiyiKey && (
+                <p className="text-[9px] text-[var(--error-text)] mt-1">
+                  未配置 API易 Key，请在模型或「API易」提供商中填写，或在服务端 .env 设置 APIYI_API_KEY。
+                </p>
+              )}
               {model.apiKey && (
                 <p className="text-[9px] text-[var(--success)] mt-1">✓ 已配置专属 Key</p>
+              )}
+              {!model.apiKey && providerHasApiKey && (
+                <p className="text-[9px] text-[var(--success)] mt-1">✓ 将使用提供商 Key</p>
               )}
             </div>
 

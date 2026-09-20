@@ -184,7 +184,7 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
         <Info className="w-4 h-4 text-[var(--text-tertiary)] flex-shrink-0 mt-0.5" />
         <p className="text-[10px] text-[var(--text-tertiary)] leading-relaxed">
           点击「使用此模型」可设置{type === 'chat' ? '全局默认' : ''}激活模型。
-          {type === 'chat' && '各项目在「剧本」阶段可单独选择分镜模型，与此处互不覆盖。'}
+          {type === 'chat' && '分镜描述、剧本生成与九宫格镜头拆分均使用此处「当前使用」的对话模型。'}
           卡片上的铅笔可改描述；展开后可改显示名称、API Key、Base URL 与参数。
           自定义模型配置了独立提供商后，请求会发往对应地址。
           {type === 'image' && (

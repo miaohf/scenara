@@ -23,7 +23,11 @@ import redis
 
 from app.core.config import get_settings
 from app.services.ai.chat import AiConfigError, _pick_model, _provider_for_model
-from app.services.model_registry import DEFAULT_IMAGE_WORKFLOW_NAME, DEFAULT_VIDEO_WORKFLOW_NAME
+from app.services.model_registry import (
+    DEFAULT_IMAGE_WORKFLOW_NAME,
+    DEFAULT_VIDEO_WORKFLOW_NAME,
+    MINIMAX_H3_R2V_WORKFLOW_NAME,
+)
 from app.services.storage import (
     MediaStoreError,
     build_media_url,
@@ -53,7 +57,9 @@ IMG2IMG_DENOISE_CONTINUITY = 0.65
 IMG2IMG_DENOISE_CHARACTER = 0.78
 FLUX2_EDIT_MAX_REFS = 4
 QWEN_EDIT_MAX_REFS = 5
+QWEN_IMAGE_21_EDIT_MAX_REFS = 10  # 官方 Image Edit (Qwen Image 2.1) 最多 image_1..image_10
 COMFY_EDIT_MAX_REFS = QWEN_EDIT_MAX_REFS
+QWEN_EDIT_SLOT_SCAN = max(QWEN_EDIT_MAX_REFS, QWEN_IMAGE_21_EDIT_MAX_REFS)
 
 
 def _collect_reference_images(payload: dict[str, Any]) -> list[str]:
@@ -195,11 +201,27 @@ def _trim_flux2_reference_slots(
         inputs["negative"] = [neg_id, 0]
 
 
-def _is_qwen_edit_workflow(nodes: dict[str, Any]) -> bool:
+def _qwen_image_input_keys(slot: int) -> tuple[str, ...]:
+    """Qwen Edit 用 imageN；Qwen Image 2.1 用 images.image_N。"""
+    return (f"images.image_{slot}", f"image{slot}")
+
+
+def _node_has_qwen_image_refs(node: dict[str, Any]) -> bool:
+    inputs = node.get("inputs") or {}
+    class_type = str(node.get("class_type", "")).lower()
+    if "textencodeqwenimageedit" in class_type:
+        return True
+    if "textencodeqwenimage21" not in class_type:
+        return False
     return any(
-        "textencodeqwenimageedit" in str(node.get("class_type", "")).lower()
-        for node in nodes.values()
+        key in inputs and isinstance(inputs.get(key), list)
+        for slot in range(1, QWEN_EDIT_SLOT_SCAN + 1)
+        for key in _qwen_image_input_keys(slot)
     )
+
+
+def _is_qwen_edit_workflow(nodes: dict[str, Any]) -> bool:
+    return any(_node_has_qwen_image_refs(node) for node in nodes.values())
 
 
 _DEFAULT_QWEN_REF_NAMES = {"example.png", "1.png", "2.png", "3.png"}
@@ -208,6 +230,48 @@ _DEFAULT_QWEN_REF_NAMES = {"example.png", "1.png", "2.png", "3.png"}
 def _is_placeholder_ref_name(name: str) -> bool:
     text = str(name or "").strip().lower()
     return (not text) or text in _DEFAULT_QWEN_REF_NAMES or text.startswith("pasted/")
+
+
+def _is_r2v_placeholder_media_name(name: str) -> bool:
+    return str(name or "").strip().lower().startswith("r2v-reference-")
+
+
+def _collect_linked_node_ids(nodes: dict[str, Any]) -> set[str]:
+    linked: set[str] = set()
+    for node in nodes.values():
+        for value in (node.get("inputs") or {}).values():
+            if isinstance(value, list) and value:
+                linked.add(str(value[0]))
+    return linked
+
+
+def _purge_unlinked_r2v_placeholder_loaders(nodes: dict[str, Any]) -> list[str]:
+    """Remove unused R2V placeholder LoadImage/Video/Audio nodes after slots are disconnected.
+
+    ComfyUI validates/loads every node present in the prompt payload, so merely
+    popping unused ref_* inputs still triggers missing-file warnings for the
+    leftover placeholder loaders.
+    """
+    linked = _collect_linked_node_ids(nodes)
+    removed: list[str] = []
+    for nid, node in list(nodes.items()):
+        if nid in linked:
+            continue
+        class_type = str(node.get("class_type", "")).lower()
+        inputs = node.get("inputs") or {}
+        if class_type == "loadimage":
+            media_name = str(inputs.get("image") or "")
+        elif class_type == "vhs_loadvideo":
+            media_name = str(inputs.get("video") or "")
+        elif class_type in {"vhs_loadaudioupload", "loadaudio"}:
+            media_name = str(inputs.get("audio") or "")
+        else:
+            continue
+        if not _is_r2v_placeholder_media_name(media_name):
+            continue
+        nodes.pop(nid, None)
+        removed.append(f"{nid}:{media_name}")
+    return removed
 
 
 def _load_image_id_from_link(nodes: dict[str, Any], link: Any) -> str | None:
@@ -226,16 +290,18 @@ def _load_image_id_from_link(nodes: dict[str, Any], link: Any) -> str | None:
 
 
 def _infer_qwen_slot_ids(nodes: dict[str, Any]) -> dict[int, str]:
-    """标题没有 Reference Image N 时，按编码器 image1/2/3 反查 Load Image。"""
+    """标题没有 Reference Image N 时，按编码器 image1/2/3 或 images.image_N 反查 Load Image。"""
     slot_ids: dict[int, str] = {}
     for node in nodes.values():
-        if "textencodeqwenimageedit" not in str(node.get("class_type", "")).lower():
+        if not _node_has_qwen_image_refs(node):
             continue
         inputs = node.get("inputs") or {}
-        for n in range(1, QWEN_EDIT_MAX_REFS + 1):
-            load_id = _load_image_id_from_link(nodes, inputs.get(f"image{n}"))
-            if load_id and n not in slot_ids:
-                slot_ids[n] = load_id
+        for n in range(1, QWEN_EDIT_SLOT_SCAN + 1):
+            for key in _qwen_image_input_keys(n):
+                load_id = _load_image_id_from_link(nodes, inputs.get(key))
+                if load_id and n not in slot_ids:
+                    slot_ids[n] = load_id
+                    break
     return slot_ids
 
 
@@ -244,6 +310,17 @@ def _qwen_encoder_max_refs(nodes: dict[str, Any]) -> int:
         class_type = str(node.get("class_type", "")).lower()
         if "textencodeqwenimageeditplus_lrzjason" in class_type:
             return 5
+        if "textencodeqwenimage21" in class_type:
+            inputs = node.get("inputs") or {}
+            count = sum(
+                1
+                for n in range(1, QWEN_EDIT_SLOT_SCAN + 1)
+                if any(key in inputs for key in _qwen_image_input_keys(n))
+            )
+            if count:
+                return min(count, QWEN_IMAGE_21_EDIT_MAX_REFS)
+            if _node_has_qwen_image_refs(node):
+                return QWEN_IMAGE_21_EDIT_MAX_REFS
     return 3 if _is_qwen_edit_workflow(nodes) else QWEN_EDIT_MAX_REFS
 
 
@@ -286,29 +363,32 @@ def _trim_qwen_reference_slots(
     """只把实际用到的 Reference Image 接到编码器，其余断开并删掉，避免 example.png 进模型。"""
     max_refs = _qwen_encoder_max_refs(nodes)
     used = max(0, min(max_refs, int(used_count)))
-    drop_titles = {f"reference image {n}" for n in range(used + 1, max(QWEN_EDIT_MAX_REFS, max_refs) + 1)}
+    drop_titles = {f"reference image {n}" for n in range(used + 1, max(QWEN_EDIT_SLOT_SCAN, max_refs) + 1)}
     for nid in [
         nid
         for nid, node in list(nodes.items())
         if str((node.get("_meta") or {}).get("title", "")).lower() in drop_titles
     ]:
         nodes.pop(nid, None)
-    for n in range(used + 1, QWEN_EDIT_MAX_REFS + 1):
+    for n in range(used + 1, QWEN_EDIT_SLOT_SCAN + 1):
         extra_id = (slot_ids or {}).get(n)
         if extra_id:
             nodes.pop(extra_id, None)
 
     for node in nodes.values():
-        class_type = str(node.get("class_type", "")).lower()
-        if "textencodeqwenimageedit" not in class_type:
+        if not _node_has_qwen_image_refs(node):
             continue
         inputs = node.setdefault("inputs", {})
-        for n in range(1, QWEN_EDIT_MAX_REFS + 1):
+        class_type = str(node.get("class_type", "")).lower()
+        use_dotted = "textencodeqwenimage21" in class_type
+        for n in range(1, QWEN_EDIT_SLOT_SCAN + 1):
             nid = (slot_ids or {}).get(n)
+            keys = _qwen_image_input_keys(n)
+            primary = keys[0] if use_dotted else keys[1]
+            for key in keys:
+                inputs.pop(key, None)
             if n <= used and nid and nid in nodes:
-                inputs[f"image{n}"] = [_qwen_encoder_image_source(nodes, nid), 0]
-            else:
-                inputs.pop(f"image{n}", None)
+                inputs[primary] = [_qwen_encoder_image_source(nodes, nid), 0]
 
 
 def normalize_comfy_base(base_url: str) -> str:
@@ -551,6 +631,7 @@ async def _run_nano_banana_sdk(
         height=height,
         seed=int(payload.get("seed") or random.getrandbits(63)),
         steps=int(payload.get("steps") or 1),
+        aspect_ratio=str(aspect_ratio),
     )
 
     api_key = str(
@@ -722,6 +803,7 @@ def patch_image_workflow(
     reference_image_name: str | None = None,
     reference_image_names: list[str] | None = None,
     denoise: float | None = None,
+    aspect_ratio: str = "16:9",
 ) -> dict[str, Any]:
     patched = copy.deepcopy(workflow)
     nodes = patched.get("prompt") or patched
@@ -812,6 +894,12 @@ def patch_image_workflow(
                 inputs["prompt"] = negative_prompt
             elif "negative" in title and "text" in inputs and isinstance(inputs["text"], str):
                 inputs["text"] = negative_prompt
+            elif "negative_prompt" in inputs and isinstance(inputs["negative_prompt"], str):
+                # TextEncodeQwenImage21 等同节点同时带 prompt / negative_prompt
+                inputs["negative_prompt"] = negative_prompt
+
+        if class_type == "resolutionselector" and isinstance(inputs.get("aspect_ratio"), str):
+            inputs["aspect_ratio"] = _resolution_selector_aspect(aspect_ratio)
 
         # Flux2 Klein 等：Width/Height 常是 PrimitiveInt，再接到 EmptyFlux2LatentImage
         if title == "width" and isinstance(inputs.get("value"), int | float):
@@ -907,6 +995,7 @@ def patch_video_workflow(
     reference_video_names: list[str] | None = None,
     reference_audio_names: list[str] | None = None,
     audio_name: str | None = None,
+    enable_stage2_upscaling: bool | None = None,
 ) -> dict[str, Any]:
     patched = copy.deepcopy(workflow)
     nodes = patched.get("prompt") or patched
@@ -974,6 +1063,20 @@ def patch_video_workflow(
             "turbo" in title or "lightning" in title
         ) and isinstance(inputs.get("value"), bool):
             inputs["value"] = steps <= 8
+        if (
+            class_type == "primitiveboolean"
+            and "enable stage 2 second upscaling" in title
+            and enable_stage2_upscaling is not None
+            and isinstance(inputs.get("value"), bool)
+        ):
+            previous_value = inputs.get("value")
+            inputs["value"] = enable_stage2_upscaling
+            logger.info(
+                "ComfyUI H3 quality patch title=%r previous=%s enableStage2Upscaling=%s",
+                node.get("_meta", {}).get("title") or title,
+                previous_value,
+                enable_stage2_upscaling,
+            )
         if class_type == "primitiveint" and "steps full" in title and isinstance(inputs.get("value"), int | float):
             inputs["value"] = steps if steps > 8 else 20
         if class_type == "primitiveint" and "steps turbo" in title and isinstance(inputs.get("value"), int | float):
@@ -1065,6 +1168,34 @@ def patch_video_workflow(
                     linked_node.setdefault("inputs", {})[field] = names[index]
                 else:
                     ref_inputs.pop(slot, None)
+
+    removed_placeholders = _purge_unlinked_r2v_placeholder_loaders(nodes)
+    if removed_placeholders:
+        logger.info(
+            "ComfyUI R2V removed %s unused placeholder loader(s): %s",
+            len(removed_placeholders),
+            ", ".join(removed_placeholders),
+        )
+
+    # Stage 2 关闭时，最终保存节点直接收集 Stage 1 已解码的视频和音频。
+    # 这样即使某些 ComfySwitch 版本不会惰性跳过未选支路，最终成片也不会丢失。
+    if enable_stage2_upscaling is False:
+        final_combine = next(
+            (
+                node for node in nodes.values()
+                if str(node.get("class_type", "")).lower() == "vhs_videocombine"
+                and (node.get("inputs") or {}).get("save_output") is True
+            ),
+            None,
+        )
+        if final_combine:
+            final_inputs = final_combine.setdefault("inputs", {})
+            final_inputs["images"] = ["42", 0]
+            final_inputs["audio"] = ["41", 0]
+            logger.info(
+                "ComfyUI H3 quality fallback: Stage2 OFF, final save wired to Stage1 outputs "
+                "(images<-42, audio<-41)"
+            )
 
     if not prompt_patched:
         raise AiConfigError("视频工作流中未找到 prompt 节点")
@@ -1629,6 +1760,7 @@ async def run_comfy_image(
                     reference_image_name=reference_name,
                     reference_image_names=reference_names or None,
                     denoise=denoise,
+                    aspect_ratio=str(aspect_ratio),
                 )
                 content = await _queue_and_poll(
                     client,
@@ -1671,9 +1803,29 @@ async def run_comfy_video(
         (payload.get("workflowName") or params.get("workflowName") or "").strip()
         or DEFAULT_VIDEO_WORKFLOW_NAME
     )
+    # 内置 R2V 始终使用受支持的 Ref2VA 多参考图模板，避免被旧的持久化
+    # 配置或客户端请求覆盖到 FLF2V/旧 R2V 工作流。
+    if model_id == "comfyui-minimax-h3-r2v" or model.get("id") == "comfyui-minimax-h3-r2v":
+        workflow_name = MINIMAX_H3_R2V_WORKFLOW_NAME
     steps = int(params.get("steps") or payload.get("steps") or 20)
     if payload.get("steps") is not None:
         steps = int(payload["steps"])
+    is_h3_ref2va = model_id == "comfyui-minimax-h3-r2v" or model.get("id") == "comfyui-minimax-h3-r2v"
+    # 高质量工作流的采样计划固定为 Stage 1=8 + Stage 2=4；质量开关只控制
+    # 是否启用二次上采样，不能把 4/20 当作工作流采样步数写回。
+    if is_h3_ref2va:
+        steps = 12
+    raw_enable_stage2 = payload.get("enableStage2Upscaling")
+    enable_stage2_upscaling = raw_enable_stage2
+    if is_h3_ref2va and enable_stage2_upscaling is None:
+        enable_stage2_upscaling = True
+    h3_quality_mode = (
+        "high"
+        if enable_stage2_upscaling is True
+        else "preview"
+        if enable_stage2_upscaling is False
+        else "unset"
+    )
     aspect_ratio = payload.get("aspectRatio") or params.get("defaultAspectRatio") or "16:9"
     duration = float(payload.get("duration") or params.get("defaultDuration") or 5)
     is_minimax = "minimax" in f"{workflow_name} {model_id or ''} {model.get('id') or ''} {model.get('apiModel') or ''}".lower()
@@ -1695,7 +1847,9 @@ async def run_comfy_video(
     workflow = load_workflow_template(workflow_name)
     logger.info(
         "ComfyUI video start model_id=%s workflow=%s comfy_base=%s "
-        "upload=%s/upload/image prompt=%s/prompt size=%sx%s",
+        "upload=%s/upload/image prompt=%s/prompt size=%sx%s "
+        "duration=%s steps=%s quality_mode=%s enableStage2Upscaling=%s "
+        "(payload_raw=%s)",
         model_id,
         workflow_name,
         base,
@@ -1703,6 +1857,11 @@ async def run_comfy_video(
         base,
         width,
         height,
+        duration,
+        steps,
+        h3_quality_mode,
+        enable_stage2_upscaling,
+        raw_enable_stage2,
     )
     async with _comfyui_gpu_lock():
         async with httpx.AsyncClient(trust_env=False, timeout=7200) as client:
@@ -1736,13 +1895,13 @@ async def run_comfy_video(
                         client, base, "/upload/image", "image", f"ref-{seed}-{index + 1}.png", raw, mime
                     ))
             reference_video_names: list[str] = []
-            for index, reference in enumerate((payload.get("referenceVideos") or [])[:3]):
+            for index, reference in enumerate((payload.get("referenceVideos") or [])[:1]):
                 raw, mime = await _load_media_source(reference)
                 reference_video_names.append(await _upload_file(
                     client, base, "/upload/image", "image", f"ref-video-{seed}-{index + 1}.mp4", raw, mime
                 ))
             reference_audio_names: list[str] = []
-            for index, reference in enumerate((payload.get("referenceAudios") or [])[:3]):
+            for index, reference in enumerate((payload.get("referenceAudios") or [])[:1]):
                 reference_audio_names.append(await _upload_audio(
                     client, base, reference, f"ref-audio-{seed}-{index + 1}.wav"
                 ))
@@ -1765,6 +1924,7 @@ async def run_comfy_video(
                 reference_video_names=reference_video_names,
                 reference_audio_names=reference_audio_names,
                 audio_name=audio_name,
+                enable_stage2_upscaling=enable_stage2_upscaling,
             )
             content = await _queue_and_poll(
                 client,

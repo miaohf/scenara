@@ -27,14 +27,14 @@ export const jobKind = (job: JobStatus): JobKind => {
     return kind;
   }
   if (job.job_type === "comfyui_video" || job.job_type === "video") return "video";
-  if (job.job_type === "comfyui_image") return "image";
+  if (job.job_type === "image" || job.job_type === "comfyui_image") return "image";
   return "other";
 };
 
 export const describeJobTitle = (job: JobStatus, episode?: Episode | null): string => {
   const target = job.target;
   if (!target) {
-    if (job.job_type === "comfyui_image") return "图片";
+    if (job.job_type === "image" || job.job_type === "comfyui_image") return "图片";
     if (job.job_type === "comfyui_video" || job.job_type === "video") return "视频";
     return "任务";
   }
@@ -77,6 +77,7 @@ export const describeJobTitle = (job: JobStatus, episode?: Episode | null): stri
 export const describeJob = (job: JobStatus, episode?: Episode | null): string => {
   const target = job.target;
   if (!target) {
+    if (job.job_type === "image") return "API 图片";
     if (job.job_type === "comfyui_image") return "ComfyUI 图片";
     if (job.job_type === "comfyui_video" || job.job_type === "video") return "ComfyUI 视频";
     return "生成任务";
@@ -125,6 +126,18 @@ export const describeJob = (job: JobStatus, episode?: Episode | null): string =>
   }
 
   return "生成任务";
+};
+
+/** 队列 hover：展示渠道（ComfyUI 工作流 / gpt-image-2 等）。 */
+export const describeJobChannel = (job: JobStatus): string => {
+  const channel = String(job.channel || "").trim();
+  if (channel) return channel;
+  if (job.job_type === "comfyui_video" || job.job_type === "comfyui_image") {
+    return "ComfyUI (本地)";
+  }
+  if (job.job_type === "image") return "OpenAI Image";
+  if (job.job_type === "video") return "API Video";
+  return "未知渠道";
 };
 
 export const sortQueueJobs = (jobs: JobStatus[]): JobStatus[] =>

@@ -28,7 +28,7 @@ import {
 import { useTheme } from '../contexts/ThemeContext';
 import type { Episode } from '../types';
 import { useGenerationQueue } from '../contexts/GenerationQueueContext';
-import { describeJobTitle, formatJobProgressLabel, jobDisplayState, jobKind, type JobKind } from '../services/generationQueue';
+import { describeJobChannel, describeJobTitle, formatJobProgressLabel, jobDisplayState, jobKind, type JobKind } from '../services/generationQueue';
 import { cancelJob, type JobStatus } from '../services/aiApiAdapter';
 import LanguageModeSelector from './LanguageModeSelector';
 import { useInterfaceLanguage } from '../contexts/InterfaceLanguageContext';
@@ -117,16 +117,18 @@ const Sidebar: React.FC<SidebarProps> = ({ currentStage, setStage, onExit, onGoH
     const kindLabel = kind === 'keyframe' && job.target?.kind === 'keyframe'
       ? (job.target.type === 'end' ? '尾帧' : '首帧')
       : JOB_KIND_LABEL[kind];
+    const channel = describeJobChannel(job);
     const progressLabel = formatJobProgressLabel(job, running ? 'running' : 'queued');
     const cancelling = cancellingIds.includes(job.id);
+    const hoverTitle = `${title} · ${kindLabel}\n${channel}`;
 
     return (
-      <li key={job.id} className="group/job space-y-1">
+      <li key={job.id} className="group/job space-y-1" title={hoverTitle}>
         <div className="flex items-center gap-2 text-[10px]">
           <span className={`shrink-0 ${running ? 'text-[var(--accent-text)]' : 'text-[var(--text-muted)]'}`} title={kindLabel}>
             <Icon className="w-3 h-3" />
           </span>
-          <span className="min-w-0 flex-1 truncate text-[var(--text-secondary)]" title={`${title} · ${kindLabel}`}>
+          <span className="min-w-0 flex-1 truncate text-[var(--text-secondary)]" title={hoverTitle}>
             {title}
           </span>
           <button
@@ -283,7 +285,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentStage, setStage, onExit, onGoH
       )}
 
       {!collapsed ? <div className="mx-3 mb-3 space-y-1.5 rounded-2xl border border-[var(--border-primary)] bg-[var(--bg-primary)] p-3 shadow-sm">
-        <LanguageModeSelector className="mb-2 justify-between" />
+        <LanguageModeSelector className="w-full" />
         <button onClick={toggleTheme} className="w-full flex items-center justify-between rounded-lg px-2 py-2 text-[var(--text-muted)] hover:bg-[var(--nav-hover-bg)] hover:text-[var(--text-primary)] cursor-pointer transition-colors" title={theme === 'dark' ? text('切换亮色主题', 'Switch to light theme') : text('切换暗色主题', 'Switch to dark theme')}>
           <span className="font-mono text-[10px] uppercase tracking-widest">
             {theme === 'dark' ? text('亮色主题', 'LIGHT THEME') : text('暗色主题', 'DARK THEME')}

@@ -7,10 +7,92 @@ from typing import Any
 import httpx
 
 from app.core.config import LOCAL_PROVIDER_IDS, get_settings
+from app.services.storage import (
+    MediaStoreError,
+    media_content_type,
+    parse_media_url,
+    read_media_bytes,
+)
 
 
 class AiConfigError(Exception):
     pass
+
+
+def format_http_api_error(
+    status_code: int,
+    body: str | bytes | None,
+    *,
+    api_label: str = "Image API",
+) -> str:
+    """把上游 HTTP 错误整理成可读文案；响应体若是 JSON 则缩进格式化。"""
+    raw = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else str(body or "")
+    raw = raw.strip()
+
+    pretty_body = raw
+    message = ""
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            pretty_body = json.dumps(parsed, ensure_ascii=False, indent=2)
+            err = parsed.get("error") if isinstance(parsed, dict) else None
+            if isinstance(err, dict):
+                message = str(err.get("message") or err.get("localized_message") or "").strip()
+            elif isinstance(err, str):
+                message = err.strip()
+            elif isinstance(parsed, dict):
+                message = str(parsed.get("message") or parsed.get("detail") or "").strip()
+        except Exception:
+            pretty_body = raw
+
+    lines = [f"{api_label} 错误 ({status_code}):"]
+    if message:
+        lines.append(message)
+    if pretty_body:
+        lines.append(pretty_body)
+    else:
+        lines.append("(无响应正文)")
+    return "\n".join(lines)
+
+
+async def _load_reference_image(value: str) -> tuple[bytes, str]:
+    """解析参考图：媒体签名 URL、http(s)、data URL、裸 base64。
+
+    资产落盘后剧集里存的是 /api/v1/media/raw/...，不能再只认 data:。
+    """
+    text = (value or "").strip()
+    if not text:
+        raise AiConfigError("参考图为空，请重新上传后重试")
+
+    media_key = parse_media_url(text)
+    if media_key:
+        try:
+            return read_media_bytes(media_key), media_content_type(media_key)
+        except MediaStoreError as exc:
+            raise AiConfigError(f"参考图读取失败，请重新生成或上传后重试") from exc
+
+    if text.startswith(("http://", "https://")):
+        async with httpx.AsyncClient(trust_env=False, timeout=120) as client:
+            res = await client.get(text)
+        if not res.is_success:
+            raise AiConfigError(f"参考图下载失败 (HTTP {res.status_code})")
+        mime = res.headers.get("content-type") or "image/png"
+        return res.content, mime.split(";")[0].strip() or "image/png"
+
+    match = re.match(r"^data:([^;]+);base64,(.+)$", text, re.S)
+    if match:
+        try:
+            return base64.b64decode(match.group(2), validate=True), match.group(1)
+        except ValueError as exc:
+            raise AiConfigError("参考图数据无效，请重新上传后重试") from exc
+
+    if re.match(r"^[A-Za-z0-9+/=\s]+$", text) and len(text) > 64:
+        try:
+            return base64.b64decode(text, validate=True), "image/png"
+        except ValueError as exc:
+            raise AiConfigError("参考图数据无效，请重新上传后重试") from exc
+
+    raise AiConfigError("参考图格式无效，请使用已生成的资产图或重新上传后重试")
 
 
 def _resolve_chat_endpoint(base_url: str, endpoint: str | None) -> tuple[str, str]:
@@ -193,6 +275,127 @@ async def chat_completion(
     return content
 
 
+def _is_volcengine_seedream_image(
+    model: dict[str, Any],
+    provider: dict[str, Any],
+    endpoint: str,
+) -> bool:
+    if (provider.get("id") or "") == "volcengine":
+        return True
+    if "/api/v3/images" in (endpoint or "").lower():
+        return True
+    identity = f"{model.get('id') or ''} {model.get('apiModel') or ''} {model.get('name') or ''}".lower()
+    return "seedream" in identity
+
+
+def _seedream_size_for_aspect(aspect_ratio: str, resolution: str) -> str:
+    """Seedream size：精确像素选项原样使用；档位按画幅映射。"""
+    raw = (resolution or "2K").strip()
+    exact = re.match(r"^(\d+)\s*[xX×]\s*(\d+)$", raw)
+    ratio = aspect_ratio or "16:9"
+    if exact:
+        width, height = int(exact.group(1)), int(exact.group(2))
+        if ratio == "9:16":
+            return f"{height}x{width}"
+        if ratio == "1:1":
+            side = min(width, height)
+            return f"{side}x{side}"
+        return f"{width}x{height}"
+
+    tier = raw.upper()
+    if tier == "4K":
+        return {"9:16": "2304x4096", "1:1": "4096x4096", "16:9": "4096x2304"}.get(ratio, "4096x2304")
+    if tier == "1K":
+        return {"9:16": "1024x1792", "1:1": "1024x1024", "16:9": "1792x1024"}.get(ratio, "1792x1024")
+    return {"9:16": "1440x2560", "1:1": "2048x2048", "16:9": "2560x1440"}.get(ratio, "2560x1440")
+
+
+def _openai_image_size_for_aspect(aspect_ratio: str, resolution: str) -> str:
+    """gpt-image / OpenAI Images size：精确像素原样；档位对齐 API易预设。"""
+    raw = (resolution or "1344x768").strip()
+    exact = re.match(r"^(\d+)\s*[xX×]\s*(\d+)$", raw)
+    ratio = aspect_ratio or "16:9"
+    if exact:
+        width, height = int(exact.group(1)), int(exact.group(2))
+        if ratio == "9:16":
+            return f"{height}x{width}"
+        if ratio == "1:1":
+            side = min(width, height)
+            return f"{side}x{side}"
+        return f"{width}x{height}"
+
+    tier = raw.upper()
+    if tier == "4K":
+        return {"9:16": "2160x3840", "1:1": "2048x2048", "16:9": "3840x2160"}.get(ratio, "3840x2160")
+    if tier == "2K":
+        return {"9:16": "1152x2048", "1:1": "2048x2048", "16:9": "2048x1152"}.get(ratio, "2048x1152")
+    return {"9:16": "768x1344", "1:1": "1024x1024", "16:9": "1344x768"}.get(ratio, "1344x768")
+
+
+def _openai_image_param_profile(model: dict[str, Any]) -> str:
+    """official | per_request_all | per_request_vip"""
+    identity = f"{model.get('id') or ''} {model.get('apiModel') or ''}".lower()
+    if "-all" in identity:
+        return "per_request_all"
+    if "-vip" in identity or identity.endswith("vip"):
+        return "per_request_vip"
+    return "official"
+
+
+def _apiyi_vip_size_for_aspect(aspect_ratio: str, resolution: str) -> str:
+    """API易 *-vip 30 档常用 size。"""
+    raw = (resolution or "2K").strip()
+    exact = re.match(r"^(\d+)\s*[xX×]\s*(\d+)$", raw)
+    ratio = aspect_ratio or "16:9"
+    if exact:
+        width, height = int(exact.group(1)), int(exact.group(2))
+        if (width, height) in {(1344, 768), (768, 1344)}:
+            return "1024x1536" if ratio == "9:16" else "1536x1024"
+        if ratio == "9:16":
+            return f"{height}x{width}"
+        if ratio == "1:1":
+            side = min(width, height)
+            return f"{side}x{side}"
+        return f"{width}x{height}"
+
+    tier = raw.upper()
+    if tier == "4K":
+        return {"9:16": "2160x3840", "1:1": "2048x2048", "16:9": "3840x2160"}.get(ratio, "3840x2160")
+    if tier == "1K":
+        return {"9:16": "1024x1536", "1:1": "1024x1024", "16:9": "1536x1024"}.get(ratio, "1536x1024")
+    return {"9:16": "1152x2048", "1:1": "2048x2048", "16:9": "2048x1152"}.get(ratio, "2048x1152")
+
+
+def _prepend_aspect_hint_for_all(prompt: str, aspect_ratio: str, resolution: str) -> str:
+    trimmed = (prompt or "").strip()
+    tier = (resolution or "1K").strip().upper()
+    size_label = "4K" if tier == "4K" else "2K" if tier == "2K" else "1K"
+    if "X" in tier or "×" in tier:
+        size_label = tier.lower()
+    ratio = aspect_ratio or "16:9"
+    if ratio == "9:16":
+        hint = f"竖版 9:16 {size_label}"
+    elif ratio == "1:1":
+        hint = f"方形 1:1 {size_label}"
+    else:
+        hint = f"横版 16:9 {size_label}"
+    if not trimmed:
+        return f"{hint} 电影画幅"
+    if re.search(r"横版|竖版|方形|16:9|9:16|1:1|\d+\s*[xX×]\s*\d+", trimmed):
+        return trimmed
+    return f"{hint} 电影画幅，{trimmed}"
+
+
+async def _reference_as_data_uri(value: str) -> str:
+    text = (value or "").strip()
+    if text.startswith("data:") and ";base64," in text:
+        return text
+    content, mime = await _load_reference_image(text)
+    if not mime.startswith("image/"):
+        mime = "image/png"
+    return f"data:{mime};base64,{base64.b64encode(content).decode('ascii')}"
+
+
 async def generate_image_openai_compatible(
     registry: dict[str, Any],
     *,
@@ -206,14 +409,21 @@ async def generate_image_openai_compatible(
     provider = _provider_for_model(registry, model)
     api_key = _api_key_for_model(registry, model, provider)
 
-    resolution = str((model.get("params") or {}).get("outputResolution") or "1K").upper()
-    size_maps = {
-        "1K": {"16:9": "1536x1024", "9:16": "1024x1536", "1:1": "1024x1024"},
-        "2K": {"16:9": "2048x1152", "9:16": "1152x2048", "1:1": "2048x2048"},
-        "4K": {"16:9": "4096x2304", "9:16": "2304x4096", "1:1": "4096x4096"},
-    }
-    size_map = size_maps.get(resolution, size_maps["1K"])
-    size = size_map.get(aspect_ratio, "1024x1024")
+    # gpt-image 支持自定义 WIDTHxHEIGHT（须整除 16）。按模型 outputResolution
+    # 映射到 API易 / OpenAI 兼容尺寸；1344x768 与 MiniMax H3 画布对齐。
+    resolution_raw = str((model.get("params") or {}).get("outputResolution") or "1344x768").strip()
+    gemini_image_size = resolution_raw.upper() if resolution_raw.upper() in {"1K", "2K", "4K"} else "1K"
+    param_profile = _openai_image_param_profile(model)
+    size = (
+        _apiyi_vip_size_for_aspect(aspect_ratio, resolution_raw)
+        if param_profile == "per_request_vip"
+        else _openai_image_size_for_aspect(aspect_ratio, resolution_raw)
+    )
+    request_prompt = (
+        _prepend_aspect_hint_for_all(prompt, aspect_ratio, resolution_raw)
+        if param_profile == "per_request_all"
+        else prompt
+    )
     # 模型级地址优先；否则用户在模型卡片里改的 Base URL 会被旧逻辑忽略。
     base_url = (model.get("baseUrl") or provider.get("baseUrl") or "").rstrip("/")
     if not base_url:
@@ -222,30 +432,36 @@ async def generate_image_openai_compatible(
     annotations = [str(item or "").strip() for item in (reference_annotations or [])]
     configured_endpoint = model.get("endpoint") or "/v1/images/generations"
     endpoint = configured_endpoint
-    if references and endpoint.rstrip("/").endswith("/images/generations"):
-        endpoint = endpoint.rstrip("/")[:-len("generations")] + "edits"
+    is_seedream = _is_volcengine_seedream_image(model, provider, endpoint)
+    # Seedream 参考图仍走 generations + JSON image，不要切到 OpenAI edits。
+    if references and (not is_seedream) and endpoint.rstrip("/").endswith("/images/generations"):
+        endpoint = endpoint.rstrip("/")[: -len("generations")] + "edits"
     if not endpoint.startswith("/"):
         endpoint = f"/{endpoint}"
     api_model = model.get("apiModel") or model.get("id")
 
     url = f"{base_url}{endpoint}"
-    async with httpx.AsyncClient(timeout=300, trust_env=False) as client:
+    # high + 2K/4K 在 API易上可能需数分钟
+    async with httpx.AsyncClient(timeout=600, trust_env=False) as client:
         # Gemini 原生 generateContent（New API 可透传该协议）。这条分支必须
         # 在 OpenAI images/generations 之前处理，否则会把 contents 当成 prompt。
         if "generatecontent" in endpoint.lower():
             parts: list[dict[str, Any]] = [{"text": prompt}]
             for index, image in enumerate(references):
-                match = re.match(r"^data:([^;]+);base64,(.+)$", image, re.S)
-                if not match:
-                    raise AiConfigError("Gemini 参考图必须是 data URL，请重新上传后重试")
+                content, mime = await _load_reference_image(image)
                 label = annotations[index] if index < len(annotations) else f"Reference image {index + 1}"
                 parts.append({"text": f"{label}. Use this image only for the described identity/reference."})
-                parts.append({"inlineData": {"mimeType": match.group(1), "data": match.group(2)}})
+                parts.append({
+                    "inlineData": {
+                        "mimeType": mime if mime.startswith("image/") else "image/png",
+                        "data": base64.b64encode(content).decode("ascii"),
+                    }
+                })
             native_body = {
                 "contents": [{"role": "user", "parts": parts}],
                 "generationConfig": {
                     "responseModalities": ["TEXT", "IMAGE"],
-                    "imageConfig": {"aspectRatio": aspect_ratio, "imageSize": resolution},
+                    "imageConfig": {"aspectRatio": aspect_ratio, "imageSize": gemini_image_size},
                 },
             }
             res = await client.post(
@@ -254,7 +470,9 @@ async def generate_image_openai_compatible(
                 json=native_body,
             )
             if not res.is_success:
-                raise AiConfigError(f"Gemini Image API 错误: {res.text}")
+                raise AiConfigError(
+                    format_http_api_error(res.status_code, res.text[:2000], api_label="Gemini Image API")
+                )
             data = res.json()
             for candidate in data.get("candidates", []):
                 for part in candidate.get("content", {}).get("parts", []):
@@ -263,37 +481,102 @@ async def generate_image_openai_compatible(
                         return str(inline["data"])
             raise AiConfigError("Gemini Image API 未返回图片数据")
 
-        common = {"model": api_model, "prompt": prompt, "size": size, "n": "1"}
+        if is_seedream:
+            body: dict[str, Any] = {
+                "model": api_model,
+                "prompt": prompt,
+                "size": _seedream_size_for_aspect(aspect_ratio, resolution_raw or "2K"),
+                "response_format": "b64_json",
+                "watermark": False,
+            }
+            # 组图仅 Seedream 4.x / 5.0 Lite 支持；5.0 Pro 传了会 400。
+            api_model_l = str(api_model or "").lower()
+            if "seedream" in api_model_l and "pro" not in api_model_l:
+                body["sequential_image_generation"] = "disabled"
+            if references:
+                data_uris = [await _reference_as_data_uri(item) for item in references]
+                body["image"] = data_uris[0] if len(data_uris) == 1 else data_uris
+            res = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=body,
+            )
+            if not res.is_success:
+                raise AiConfigError(
+                    format_http_api_error(res.status_code, res.text[:2000], api_label="Seedream Image API")
+                )
+            data = res.json()
+            item = (data.get("data") or [{}])[0] or {}
+            b64 = item.get("b64_json")
+            if b64:
+                return str(b64)
+            image_url = item.get("url")
+            if image_url:
+                fetched = await client.get(str(image_url))
+                if not fetched.is_success:
+                    raise AiConfigError(f"Seedream 返回了 URL，但下载失败 ({fetched.status_code})")
+                return base64.b64encode(fetched.content).decode("ascii")
+            raise AiConfigError("Seedream Image API 未返回 b64_json 或 url")
+
+        # 与前端 imageAdapter OpenAI 分支对齐。
+        # - official：quality/output_format（勿带 DALL·E response_format，部分网关会 500）
+        # - *-all 按次：只传 model/prompt/response_format
+        # - *-vip 按次：可传 size（+ quality），勿传 n
+        common: dict[str, Any] = {
+            "model": api_model,
+            "prompt": request_prompt,
+            "response_format": "b64_json",
+        }
+        if param_profile == "official":
+            common.update(
+                {
+                    "size": size,
+                    "quality": "medium",
+                    "output_format": "png",
+                    "output_compression": 100,
+                    "n": 1,
+                }
+            )
+            # 官转 gpt-image 不需要 response_format（部分网关会 500）
+            common.pop("response_format", None)
+        elif param_profile == "per_request_vip":
+            common.update({"size": size, "quality": "medium"})
         if references:
             files: list[tuple[str, tuple[str, bytes, str]]] = []
             for index, image in enumerate(references):
-                match = re.match(r"^data:([^;]+);base64,(.+)$", image, re.S)
-                if not match:
-                    raise AiConfigError("参考图必须是可上传的 data URL，请重新上传后重试")
-                mime = match.group(1)
-                try:
-                    content = base64.b64decode(match.group(2), validate=True)
-                except ValueError as exc:
-                    raise AiConfigError("参考图数据无效，请重新上传后重试") from exc
+                content, mime = await _load_reference_image(image)
+                if not mime.startswith("image/"):
+                    mime = "image/png"
                 extension = mimetypes.guess_extension(mime) or ".png"
                 files.append(("image[]", (f"reference-{index + 1}{extension}", content, mime)))
+            # multipart 表单字段需全部为字符串
+            form_data = {key: str(value) for key, value in common.items()}
             res = await client.post(
                 url,
                 headers={"Authorization": f"Bearer {api_key}"},
-                data=common,
+                data=form_data,
                 files=files,
             )
         else:
             res = await client.post(
                 url,
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={**common, "response_format": "b64_json"},
+                json=common,
             )
         if not res.is_success:
-            raise AiConfigError(f"Image API 错误: {res.text}")
+            raise AiConfigError(format_http_api_error(res.status_code, res.text[:2000], api_label="Image API"))
         data = res.json()
-        item = data.get("data", [{}])[0]
+        item = (data.get("data") or [{}])[0] or {}
         b64 = item.get("b64_json")
-        if not b64:
-            raise AiConfigError("Image API 未返回 b64_json")
-        return b64
+        if b64:
+            text = str(b64)
+            if text.startswith("data:") and ";base64," in text:
+                text = text.split(",", 1)[1]
+            return text
+        image_url = item.get("url")
+        if image_url:
+            fetched = await client.get(str(image_url))
+            if not fetched.is_success:
+                raise AiConfigError(f"Image API 返回了 URL，但下载失败 ({fetched.status_code})")
+            return base64.b64encode(fetched.content).decode("ascii")
+        raise AiConfigError("Image API 未返回 b64_json 或 url")

@@ -19,7 +19,7 @@ import {
   generateArtDirection,
 } from '../../services/aiService';
 import { getFinalValue, validateConfig } from './utils';
-import { resolveShotGenerationModel } from '../../services/modelRegistry';
+import { resolveShotGenerationModel, setActiveModel } from '../../services/modelRegistry';
 import { DEFAULTS, SCRIPT_SOFT_LIMIT, SCRIPT_HARD_LIMIT, VISUAL_STYLE_OPTIONS } from './constants';
 import ConfigPanel from './ConfigPanel';
 import ScriptEditor from './ScriptEditor';
@@ -59,7 +59,8 @@ type AnalyzeRunStep = ScriptGenerationStep | 'done';
 const inferTracePhase = (message: string): string => {
   if (/编剧 Agent/i.test(message)) return '编剧 Agent';
   if (/导演 Agent/i.test(message)) return '导演 Agent';
-  if (/审片 Agent|质量校验|自动修复/i.test(message)) return '审片 Agent';
+  if (/结构审片|故事层门禁/i.test(message)) return '结构审片';
+  if (/字段审片|审片 Agent|质量校验|自动修复/i.test(message)) return '审片 Agent';
   if (/视觉|美术|角色|场景|道具/i.test(message)) return '视觉 Agent';
   if (/分镜/i.test(message)) return '分镜 Agent';
   if (/解析|结构/i.test(message)) return '结构 Agent';
@@ -374,7 +375,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   const [localDuration, setLocalDuration] = useState(project.targetDuration || DEFAULTS.duration);
   const [localLanguage, setLocalLanguage] = useState(project.language || DEFAULTS.language);
   const [localModel, setLocalModel] = useState(() =>
-    resolveShotGenerationModel(project.shotGenerationModel)
+    resolveShotGenerationModel()
   );
   const [localVisualStyle, setLocalVisualStyle] = useState(project.visualStyle || DEFAULTS.visualStyle);
   const [previewVisualStyle, setPreviewVisualStyle] = useState(project.visualStyle || DEFAULTS.visualStyle);
@@ -478,7 +479,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     setLocalTitle(project.title);
     setLocalDuration(project.targetDuration || DEFAULTS.duration);
     setLocalLanguage(project.language || DEFAULTS.language);
-    setLocalModel(resolveShotGenerationModel(project.shotGenerationModel));
+    setLocalModel(resolveShotGenerationModel());
     setLocalVisualStyle(project.visualStyle || DEFAULTS.visualStyle);
     setPreviewVisualStyle(project.visualStyle || DEFAULTS.visualStyle);
     setEnableQualityCheck(true);
@@ -524,11 +525,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     if (isProcessing || isContinuing || isRewriting) return;
 
     const draftDuration = getDraftValue(localDuration, customDurationInput, project.targetDuration || DEFAULTS.duration);
-    const draftModel = getDraftValue(
-      localModel,
-      customModelInput,
-      resolveShotGenerationModel(project.shotGenerationModel)
-    );
+    const draftModel = resolveShotGenerationModel();
     const draftVisualStyle = getDraftValue(localVisualStyle, customStyleInput, project.visualStyle || DEFAULTS.visualStyle);
 
     const draftUpdates = {
@@ -577,16 +574,14 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     updateProject
   ]);
 
-  const handleModelChange = (modelId: string) => {
+  const handleModelChange = async (modelId: string) => {
     if (!modelId) return;
+    await setActiveModel('chat', modelId);
     setLocalModel(modelId);
     updateProject({ shotGenerationModel: modelId });
   };
 
-  const getConfiguredModelForRequest = (): string =>
-    resolveShotGenerationModel(
-      getDraftValue(localModel, customModelInput, project.shotGenerationModel)
-    );
+  const getConfiguredModelForRequest = (): string => resolveShotGenerationModel();
 
   const getStyleOptionLabel = (styleValue: string): string => {
     const option = VISUAL_STYLE_OPTIONS.find(item => item.value === styleValue);
@@ -958,10 +953,10 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     setError(null);
     startAgentTrace('分镜 Agent 工作流', `${finalModel} · ${finalDuration} · ${getStyleOptionLabel(finalVisualStyle)}`);
 
-    console.log('📌 用户选择的模型:', localModel);
+    console.log('📌 用户选择的模型:', finalModel);
     console.log('📌 最终使用的模型:', finalModel);
     console.log('🎨 视觉风格:', finalVisualStyle);
-    logScriptProgress(`已选择模型：${localModel}`);
+    logScriptProgress(`已选择模型：${finalModel}`);
     logScriptProgress(`最终使用模型：${finalModel}`);
     logScriptProgress(`视觉风格：${finalVisualStyle}`);
     if (resumeCheckpoint) {
@@ -1143,13 +1138,14 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           ? '开始生成分镜（启用未变场景复用）...'
           : '开始生成分镜...'
       );
-      logScriptProgress(enableQualityCheck ? '已启用分镜质量校验与自动修复。' : '分镜质量校验已关闭。');
+      logScriptProgress(enableQualityCheck ? '已启用分镜质量校验（故事门禁 → 结构审片 → 字段审片）。' : '分镜质量校验已关闭。');
       const shots = await generateShotList(workingScriptData!, finalModel, {
         abortSignal: controller.signal,
         previousScriptData,
         previousShots,
         reuseUnchangedScenes,
         enableQualityCheck,
+        rawScript: localScript,
         promptTemplates,
         onSceneComplete: async ({ scene, shots: completedShots, mode }) => {
           const targetScene = workingScriptData!.scenes.find((candidate) =>
@@ -1179,12 +1175,30 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       const reviewedShots = shots.filter((shot) => !!shot.agent?.semanticReview);
       const repairedShots = reviewedShots.filter((shot) => shot.agent?.semanticReview?.repaired);
       const warningShots = reviewedShots.filter((shot) => shot.agent?.semanticReview?.verdict !== 'pass');
+      const structureReview = workingScriptData?.storyboardStructureReview;
+      const outlineReview = workingScriptData?.storyOutlineReview;
+      if (outlineReview) {
+        appendAgentTrace(
+          '故事层门禁',
+          outlineReview.summary,
+          outlineReview.verdict === 'pass' ? 'success' : 'warning',
+          outlineReview.issues.length ? outlineReview.issues.slice(0, 4).join('；') : undefined,
+        );
+      }
+      if (structureReview) {
+        appendAgentTrace(
+          '结构审片',
+          structureReview.summary,
+          structureReview.verdict === 'pass' && structureReview.issues.length === 0 ? 'success' : 'warning',
+          `问题 ${structureReview.issues.length} · 自动修复 ${structureReview.appliedActionCount} · 删镜 ${structureReview.removedShotIds.length}`,
+        );
+      }
       appendAgentTrace(
-        '审片 Agent',
+        '字段审片',
         `分镜生成与审查完成，共 ${shots.length} 镜`,
         warningShots.length > 0 ? 'warning' : 'success',
         enableQualityCheck
-          ? `已审查 ${reviewedShots.length} 镜 · 自动修复 ${repairedShots.length} 镜 · 仍需注意 ${warningShots.length} 镜`
+          ? `已审查 ${reviewedShots.length} 镜 · 字段修复 ${repairedShots.length} 镜 · 仍需注意 ${warningShots.length} 镜`
           : '质量校验已关闭，仅完成分镜生成',
       );
 
@@ -1732,11 +1746,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     script: localScript,
     language: localLanguage,
     targetDuration: getDraftValue(localDuration, customDurationInput, project.targetDuration || DEFAULTS.duration),
-    model: getDraftValue(
-      localModel,
-      customModelInput,
-      resolveShotGenerationModel(project.shotGenerationModel)
-    ),
+    model: resolveShotGenerationModel(),
     visualStyle: getDraftValue(
       previewVisualStyle || localVisualStyle,
       customStyleInput,
@@ -2064,7 +2074,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
             title={localTitle}
             duration={localDuration}
             language={localLanguage}
-            model={localModel}
+            model={resolveShotGenerationModel()}
             visualStyle={localVisualStyle}
             customDurationInput={customDurationInput}
             customModelInput={customModelInput}

@@ -221,6 +221,7 @@ const patchComfyVideoWorkflow = (
     height: number;
     seed: number;
     steps: number;
+    enableStage2Upscaling?: boolean;
     duration: number;
     aspectRatio?: AspectRatio;
     startImageName?: string;
@@ -331,6 +332,13 @@ const patchComfyVideoWorkflow = (
 
     if ('seed' in inputs && typeof inputs.seed === 'number') inputs.seed = options.seed;
     if ('noise_seed' in inputs && typeof inputs.noise_seed === 'number') inputs.noise_seed = options.seed;
+    if (
+      classType === 'primitiveboolean' &&
+      title.includes('enable stage 2 second upscaling') &&
+      typeof options.enableStage2Upscaling === 'boolean'
+    ) {
+      inputs.value = options.enableStage2Upscaling;
+    }
     if ('steps' in inputs && typeof inputs.steps === 'number') inputs.steps = options.steps;
     if ('duration' in inputs && typeof inputs.duration === 'number') inputs.duration = options.duration;
     if ('seconds' in inputs && typeof inputs.seconds === 'number') inputs.seconds = options.duration;
@@ -414,6 +422,36 @@ const patchComfyVideoWorkflow = (
     patchRefGroup('ref_videos.ref_video_', options.referenceVideoNames || [], 'video');
     patchRefGroup('ref_audios.ref_audio_', options.referenceAudioNames || [], 'audio');
   }
+
+  // ComfyUI 会对 prompt 中残留的 Load* 节点做文件校验；未使用的 R2V 占位加载器
+  // 仅断连不够，必须从节点图中删除。
+  {
+    const linked = new Set<string>();
+    Object.values(nodes).forEach((node: any) => {
+      Object.values(node?.inputs || {}).forEach((value) => {
+        if (Array.isArray(value) && value[0] != null) linked.add(String(value[0]));
+      });
+    });
+    const removed: string[] = [];
+    Object.entries(nodes).forEach(([nid, node]: [string, any]) => {
+      if (linked.has(nid)) return;
+      const classType = String(node?.class_type || '').toLowerCase();
+      const inputs = node?.inputs || {};
+      let mediaName = '';
+      if (classType === 'loadimage') mediaName = String(inputs.image || '');
+      else if (classType === 'vhs_loadvideo') mediaName = String(inputs.video || '');
+      else if (classType === 'vhs_loadaudioupload' || classType === 'loadaudio') {
+        mediaName = String(inputs.audio || '');
+      } else return;
+      if (!mediaName.toLowerCase().startsWith('r2v-reference-')) return;
+      delete nodes[nid];
+      removed.push(`${nid}:${mediaName}`);
+    });
+    if (removed.length) {
+      console.info('[ComfyUI R2V] removed unused placeholder loaders:', removed.join(', '));
+    }
+  }
+
   const lastLoader = Object.entries(nodes).find(([, node]: [string, any]) =>
     String(node?.class_type || '').toLowerCase() === 'loadimage' &&
     String(node?._meta?.title || '').toLowerCase().includes('last')
@@ -424,6 +462,30 @@ const patchComfyVideoWorkflow = (
       minimaxInputs.last_frame = [lastLoader[0], 0];
     } else {
       delete minimaxInputs.last_frame;
+    }
+  }
+
+  // Ref2VA 关闭 Stage 2 时，最终输出直接指向已解码的 Stage 1 结果。
+  // 除了切换器的 false 分支外，这层显式回退可避免不同 ComfyUI
+  // Switch 实现在未执行 Stage 2 时遗漏最终视频输出。
+  if (options.enableStage2Upscaling === false) {
+    const stage1Video = Object.values(nodes).find((node: any) =>
+      String(node?._meta?.title || '').toLowerCase().includes('stage 2 video output switch')
+    ) as any;
+    const stage1Audio = Object.values(nodes).find((node: any) =>
+      String(node?._meta?.title || '').toLowerCase().includes('stage 2 audio output switch')
+    ) as any;
+    const finalCombine = Object.values(nodes).find((node: any) =>
+      String(node?.class_type || '').toLowerCase() === 'vhs_videocombine' &&
+      node?.inputs?.save_output === true
+    ) as any;
+    if (finalCombine?.inputs) {
+      if (Array.isArray(stage1Video?.inputs?.on_false)) {
+        finalCombine.inputs.images = stage1Video.inputs.on_false;
+      }
+      if (Array.isArray(stage1Audio?.inputs?.on_false)) {
+        finalCombine.inputs.audio = stage1Audio.inputs.on_false;
+      }
     }
   }
 
@@ -487,10 +549,10 @@ const callComfyVideoApi = async (
         uploadComfyImage(apiBase, image, `bigbanana-ref-${index + 1}-${Date.now()}.png`)
       )
     );
-    const referenceVideoNames = await Promise.all((options.referenceVideos || []).slice(0, 3).map((video, index) =>
+    const referenceVideoNames = await Promise.all((options.referenceVideos || []).slice(0, 1).map((video, index) =>
       uploadComfyInputFile(apiBase, video, `bigbanana-ref-video-${index + 1}-${Date.now()}.mp4`)
     ));
-    const referenceAudioNames = await Promise.all((options.referenceAudios || []).slice(0, 3).map((audio, index) =>
+    const referenceAudioNames = await Promise.all((options.referenceAudios || []).slice(0, 1).map((audio, index) =>
       uploadComfyAudio(apiBase, audio, `bigbanana-ref-audio-${index + 1}-${Date.now()}.wav`)
     ));
     let audioName: string | undefined;
@@ -512,6 +574,7 @@ const callComfyVideoApi = async (
       height,
       seed,
       steps: options.steps || model.params.steps || 20,
+      enableStage2Upscaling: options.enableStage2Upscaling,
       duration,
       aspectRatio,
       startImageName,
@@ -951,7 +1014,7 @@ export const callVideoApi = async (
   }
 
   if (isApiAiMode()) {
-    return apiCallVideo(options);
+    return apiCallVideo(options, activeModel.id);
   }
 
   // 获取 API 配置

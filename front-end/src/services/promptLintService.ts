@@ -45,6 +45,20 @@ export interface VideoPreflightInput {
   requiresNativeAudioDirective?: boolean;
 }
 
+/** Legacy marker or official MiniMax H3 skill audio sections both satisfy native-audio preflight. */
+export const hasH3NativeAudioCoverage = (prompt?: string): boolean => {
+  const normalized = normalizePrompt(prompt);
+  if (!normalized) return false;
+  if (normalized.includes('[NATIVE_AUDIO_DIRECTIVE_V1]')) return true;
+  // Official Ref2VA / FLF2V skill: soundscape (+ music) replace the legacy directive block.
+  if (/^overall_soundscape:/m.test(normalized) || /\noverall_soundscape:/m.test(normalized)) {
+    return true;
+  }
+  // FLF2V spoken line tag inside multimodal description
+  if (/<d>\[[^\]]+\]/.test(normalized)) return true;
+  return false;
+};
+
 const HUMAN_EXCLUSION_TERMS = [
   'person',
   'people',
@@ -221,7 +235,10 @@ export const runKeyframePreflight = (input: KeyframePreflightInput): PromptLintR
 };
 
 export const runVideoPreflight = (input: VideoPreflightInput): PromptLintResult => {
-  const promptLint = lintPromptText(input.prompt, { minLength: 20, maxLength: 2600 });
+  // H3 skill prompts are structured six-section / multimodal blocks; 2600 is too tight and
+  // only produces noise warnings. Align soft limit with fitVideoPromptLength (5000).
+  const maxLength = input.requiresNativeAudioDirective ? 5000 : 2600;
+  const promptLint = lintPromptText(input.prompt, { minLength: 20, maxLength });
   const issues: PromptLintIssue[] = [...promptLint.issues, ...(input.productionIssues || [])];
 
   if (input.requiresStartFrame !== false && !input.hasStartFrame) {
@@ -265,12 +282,12 @@ export const runVideoPreflight = (input: VideoPreflightInput): PromptLintResult 
     });
   }
 
-  if (input.requiresNativeAudioDirective && !normalizePrompt(input.prompt).includes('[NATIVE_AUDIO_DIRECTIVE_V1]')) {
+  if (input.requiresNativeAudioDirective && !hasH3NativeAudioCoverage(input.prompt)) {
     issues.push({
       code: 'missing-native-audio-directive',
       severity: 'error',
       message: 'Native-audio video prompt is missing the H3 audio directive.',
-      suggestion: 'Regenerate the video prompt so dialogue, narration, or ambient-only audio is explicit.',
+      suggestion: 'Rebuild the video prompt so overall_soundscape (skill format) or [NATIVE_AUDIO_DIRECTIVE_V1] is present.',
     });
   }
 

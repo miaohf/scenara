@@ -67,6 +67,7 @@ class ComfyVideoRequest(BaseModel):
     audio_url: str | None = None
     seed: int | None = None
     steps: int | None = None
+    enable_stage2_upscaling: bool | None = None
     workflow_name: str | None = None
 
 
@@ -96,7 +97,7 @@ class TtsResponse(BaseModel):
 
 
 class JobCreateRequest(BaseModel):
-    job_type: str  # video | comfyui_image | comfyui_video
+    job_type: str  # image | video | comfyui_image | comfyui_video
     episode_id: str | None = None
     # 写回目标：{kind, id, shotId, characterId, type...}，完成后 Worker 据此更新剧集
     target: dict[str, Any] | None = None
@@ -118,5 +119,7 @@ class JobResponse(BaseModel):
     # 排队可见性：Worker concurrency=1 时长时间 pending 属正常，前端据此区分「排队」与「Worker 掉线」
     queue_position: int | None = None
     queue_running: bool | None = None
+    # 渠道摘要：ComfyUI 工作流名 / gpt-image-2 等（不含大图 payload）
+    channel: str | None = None
 
     model_config = {"from_attributes": True}

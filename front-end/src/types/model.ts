@@ -16,7 +16,8 @@ export type ModelType = 'chat' | 'image' | 'video' | 'audio';
  * 横竖屏比例类型
  */
 export type AspectRatio = '16:9' | '9:16' | '1:1';
-export type ImageResolution = '1K' | '2K' | '4K';
+/** 档位（1K/2K/4K）或精确像素（如 1344x768，对齐 MiniMax H3） */
+export type ImageResolution = '1K' | '2K' | '4K' | '1344x768';
 
 /**
  * 图片模型 API 协议类型
@@ -64,6 +65,8 @@ export interface ImageModelParams {
   supportedAspectRatios: AspectRatio[];
   /** 输出分辨率等级；Gemini 使用 imageSize，OpenAI 兼容接口映射为具体尺寸。 */
   outputResolution?: ImageResolution;
+  /** 该模型可选的输出分辨率；未填则 UI 仅展示 1K。 */
+  supportedOutputResolutions?: ImageResolution[];
   apiFormat?: ImageApiFormat;
   /** 定妆/通用文生图 ComfyUI 工作流 */
   workflowName?: string;
@@ -99,7 +102,7 @@ export interface VideoModelParams {
   supportsNativeAudio?: boolean;
   /** 是否使用 MiniMax H3 Ref2VA 多参考图工作流。 */
   supportsReferenceImages?: boolean;
-  /** Ref2VA 最多可接收的图片参考数量。 */
+  /** Ref2VA 最多可接收的图片参考数量；当前 H3 高质量工作流为 9。 */
   maxReferenceImages?: number;
   /** Optional prompt policy override for custom models; built-ins infer it from model id. */
   promptPolicy?: 'sora' | 'veo' | 'comfyui' | 'generic';
@@ -312,15 +315,17 @@ export interface VideoGenerateOptions {
   endImage?: string;
   /** Ref2VA 多参考图；首帧/尾帧仍通过 startImage/endImage 单独传入。 */
   referenceImages?: string[];
-  /** Ref2VA 动作/运镜参考视频，工作流当前最多消费 3 个。 */
+  /** Ref2VA 可选动作/运镜参考视频，当前 H3 高质量工作流最多消费 1 个。 */
   referenceVideos?: string[];
-  /** Ref2VA 音色/声音参考，工作流当前最多消费 3 个。 */
+  /** Ref2VA 可选音色/声音参考，当前 H3 高质量工作流最多消费 1 个。 */
   referenceAudios?: string[];
   audioUrl?: string;
   aspectRatio?: AspectRatio;
   duration?: VideoDuration;
   /** 覆盖工作流采样步数，例如 Ref2VA 标准 20 / Turbo 4。 */
   steps?: number;
+  /** MiniMax H3 Ref2VA 的 Stage 2 二次上采样开关。 */
+  enableStage2Upscaling?: boolean;
   /** 覆盖模型默认 workflowName；未填则回退模型配置或代码默认 */
   workflowName?: string;
   /** 异步任务归属剧集 */
@@ -369,6 +374,8 @@ export const DEFAULT_VIDEO_WORKFLOW_NAME = 'default_video_generate';
 export const MINIMAX_H3_R2V_WORKFLOW_NAME = 'MiniMax_H3_Ref2VA_High-Quality_Multi-Reference.json';
 export const NANO_BANANA_T2I_WORKFLOW_NAME = 'api_google_nano_banana2_text_to_image.json';
 export const NANO_BANANA_EDIT_WORKFLOW_NAME = 'api_google_nano_banana2_image_edit.json';
+export const QWEN_IMAGE_21_T2I_WORKFLOW_NAME = 'image_qwen_image_2_1_t2i';
+export const QWEN_IMAGE_21_EDIT_WORKFLOW_NAME = 'image_qwen_image_2_1_image_edit';
 
 /**
  * ComfyUI Workflow 默认参数
@@ -423,10 +430,10 @@ export const DEFAULT_VIDEO_PARAMS_VEO_FAST: VideoModelParams = {
 };
 
 /**
- * 默认视频模型参数 (豆包 Seedance 1.5 Pro)
+ * 默认视频模型参数 (豆包 Seedance 1.0 Pro)
  * 火山引擎任务接口，当前按固定时长使用
  */
-export const DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE_1_5: VideoModelParams = {
+export const DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE_1_0: VideoModelParams = {
   mode: 'async',
   defaultAspectRatio: '16:9',
   supportedAspectRatios: ['16:9', '9:16'],
@@ -434,9 +441,13 @@ export const DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE_1_5: VideoModelParams = {
   supportedDurations: [4, 8, 12],
 };
 
+/** @deprecated 使用 DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE_1_0 */
+export const DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE_1_5: VideoModelParams =
+  DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE_1_0;
+
 // Backward-compatible export for existing imports.
 export const DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE: VideoModelParams =
-  DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE_1_5;
+  DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE_1_0;
 
 /**
  * Default video model params (Doubao Seedance 2.0)
@@ -612,14 +623,155 @@ export const BUILTIN_IMAGE_MODELS: ImageModelDefinition[] = [
   {
     id: 'gpt-image-2',
     apiModel: 'gpt-image-2',
-    name: 'GPT Image 2',
+    name: 'GPT Image 2.0（API易·按量）',
     type: 'image',
-    providerId: 'default',
+    providerId: 'apiyi',
     endpoint: '/v1/images/generations',
-    description: '新一代高质量图片模型：支持文生图与参考图编辑，适合角色、场景和分镜创作；支持 1K 输出',
+    description:
+      'API易官转按量：gpt-image-2（2.0）；OpenAI Images 文生图 / 参考图编辑；可选 1K / 2K / 4K / 1344x768',
     isBuiltIn: true,
     isEnabled: true,
-    params: { ...DEFAULT_IMAGE_PARAMS_OPENAI },
+    params: {
+      ...DEFAULT_IMAGE_PARAMS_OPENAI,
+      outputResolution: '1344x768',
+      supportedOutputResolutions: ['1K', '2K', '4K', '1344x768'],
+    },
+  },
+  {
+    id: 'gpt-image-2.5-flare',
+    apiModel: 'gpt-image-2.5-flare',
+    name: 'GPT Image 2.5 Flare（API易·按量）',
+    type: 'image',
+    providerId: 'apiyi',
+    endpoint: '/v1/images/generations',
+    description:
+      'API易官转按量：gpt-image-2.5-flare，速度优先；可选 1K / 2K / 4K / 1344x768',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      ...DEFAULT_IMAGE_PARAMS_OPENAI,
+      outputResolution: '2K',
+      supportedOutputResolutions: ['1K', '2K', '4K', '1344x768'],
+    },
+  },
+  {
+    id: 'gpt-image-2.5-sunburst',
+    apiModel: 'gpt-image-2.5-sunburst',
+    name: 'GPT Image 2.5 Sunburst（API易·按量）',
+    type: 'image',
+    providerId: 'apiyi',
+    endpoint: '/v1/images/generations',
+    description:
+      'API易官转按量：gpt-image-2.5-sunburst，画质与编辑精度优先；可选 1K / 2K / 4K / 1344x768',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      ...DEFAULT_IMAGE_PARAMS_OPENAI,
+      outputResolution: '2K',
+      supportedOutputResolutions: ['1K', '2K', '4K', '1344x768'],
+    },
+  },
+  {
+    id: 'gpt-image-2.5-all',
+    apiModel: 'gpt-image-2.5-all',
+    name: 'GPT Image 2.5 All（API易·按次）',
+    type: 'image',
+    providerId: 'apiyi',
+    endpoint: '/v1/images/generations',
+    description:
+      'API易按次固定价：gpt-image-2.5-all；尺寸写进提示词，不传 size/quality；适合快速出图',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      ...DEFAULT_IMAGE_PARAMS_OPENAI,
+      outputResolution: '2K',
+      supportedOutputResolutions: ['1K', '2K', '4K'],
+    },
+  },
+  {
+    id: 'gpt-image-2.5-vip',
+    apiModel: 'gpt-image-2.5-vip',
+    name: 'GPT Image 2.5 VIP（API易·按次）',
+    type: 'image',
+    providerId: 'apiyi',
+    endpoint: '/v1/images/generations',
+    description:
+      'API易按次固定价：gpt-image-2.5-vip（sunburst-vip）；可用 size 锁定分辨率，适合分镜/封面',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      ...DEFAULT_IMAGE_PARAMS_OPENAI,
+      outputResolution: '2K',
+      supportedOutputResolutions: ['1K', '2K', '4K'],
+    },
+  },
+  {
+    id: 'gpt-image-2.5-flare-vip',
+    apiModel: 'gpt-image-2.5-flare-vip',
+    name: 'GPT Image 2.5 Flare VIP（API易·按次）',
+    type: 'image',
+    providerId: 'apiyi',
+    endpoint: '/v1/images/generations',
+    description:
+      'API易按次固定价：gpt-image-2.5-flare-vip；速度优先 + size 锁定',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      ...DEFAULT_IMAGE_PARAMS_OPENAI,
+      outputResolution: '2K',
+      supportedOutputResolutions: ['1K', '2K', '4K'],
+    },
+  },
+  {
+    id: 'gpt-image-2-all',
+    apiModel: 'gpt-image-2-all',
+    name: 'GPT Image 2.0 All（API易·按次）',
+    type: 'image',
+    providerId: 'apiyi',
+    endpoint: '/v1/images/generations',
+    description:
+      'API易按次固定价：gpt-image-2-all；尺寸写进提示词，不传 size/quality',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      ...DEFAULT_IMAGE_PARAMS_OPENAI,
+      outputResolution: '1K',
+      supportedOutputResolutions: ['1K', '2K', '4K'],
+    },
+  },
+  {
+    id: 'gpt-image-2-vip',
+    apiModel: 'gpt-image-2-vip',
+    name: 'GPT Image 2.0 VIP（API易·按次）',
+    type: 'image',
+    providerId: 'apiyi',
+    endpoint: '/v1/images/generations',
+    description:
+      'API易按次固定价：gpt-image-2-vip；可用 size 锁定分辨率（含 4K）',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      ...DEFAULT_IMAGE_PARAMS_OPENAI,
+      outputResolution: '2K',
+      supportedOutputResolutions: ['1K', '2K', '4K'],
+    },
+  },
+  {
+    id: 'doubao-seedream-5-0-pro-260628',
+    apiModel: 'ep-20260919034202-p2zx8',
+    name: 'Doubao Seedream 5.0 Pro',
+    type: 'image',
+    providerId: 'volcengine',
+    endpoint: '/api/v3/images/generations',
+    description:
+      '火山方舟 Seedream 5.0 Pro（接入点 ep-20260919034202-p2zx8）：文生图 / 参考图编辑；可选 1K / 2K / 1344x768（对齐 MiniMax H3）',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      ...DEFAULT_IMAGE_PARAMS_OPENAI,
+      outputResolution: '1344x768',
+      supportedOutputResolutions: ['1K', '2K', '1344x768'],
+    },
   },
   {
     id: 'comfyui-flux-dev-fp8',
@@ -678,6 +830,26 @@ export const BUILTIN_IMAGE_MODELS: ImageModelDefinition[] = [
       keyframeSteps: 1,
     },
   },
+  {
+    id: 'comfyui-qwen-image-2-1',
+    apiModel: 'qwen-image-2.1',
+    name: 'ComfyUI Qwen Image 2.1（本地）',
+    type: 'image',
+    providerId: 'comfyui-local',
+    description:
+      'Qwen Image 2.1 文生图（image_qwen_image_2_1_t2i）；带参考图走 Image Edit（最多 10 张，image_qwen_image_2_1_image_edit）；默认 25 steps。',
+    isBuiltIn: true,
+    isEnabled: true,
+    params: {
+      ...DEFAULT_IMAGE_PARAMS_COMFYUI,
+      workflowName: QWEN_IMAGE_21_T2I_WORKFLOW_NAME,
+      steps: 25,
+      referenceWorkflowName: QWEN_IMAGE_21_EDIT_WORKFLOW_NAME,
+      referenceSteps: 25,
+      keyframeWorkflowName: QWEN_IMAGE_21_EDIT_WORKFLOW_NAME,
+      keyframeSteps: 25,
+    },
+  },
 ];
 
 /**
@@ -709,26 +881,28 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
   {
     id: 'doubao-seedance-1-5-pro',
     apiModel: 'doubao-seedance-1-5-pro',
-    name: 'Doubao Seedance 1.5 Pro (内置)',
+    name: 'Doubao Seedance (NewAPI /v1)',
     type: 'video',
     providerId: 'default',
     endpoint: '/v1/videos',
-    description: 'Async video mode via /v1/videos with Sora-2-compatible request format, supporting 4/8/12 seconds.',
+    description: '经 OpenAI 兼容 /v1/videos 转发（需 NewAPI 等网关）；直连火山请用下方 Volcengine 卡片',
     isBuiltIn: true,
-    isEnabled: true,
+    isEnabled: false,
     params: { ...DEFAULT_VIDEO_PARAMS_SORA },
   },
   {
+    // 保留历史卡片 id，避免 activeModels / 镜头覆盖丢失；apiModel 已切到 1.0 Pro 接入点
     id: 'doubao-seedance-1-5-pro-251215',
-    apiModel: 'doubao-seedance-1-5-pro-251215',
-    name: 'Doubao Seedance 1.5 Pro',
+    apiModel: 'ep-20260919140814-hwwtt',
+    name: 'Doubao Seedance 1.0 Pro',
     type: 'video',
     providerId: 'volcengine',
     endpoint: '/api/v3/contents/generations/tasks',
-    description: '火山引擎异步任务模式（create task + poll task），支持 4/8/12 秒',
+    description:
+      '火山方舟 Seedance 1.0 Pro（接入点 ep-20260919140814-hwwtt）：异步任务 create + poll；支持首帧图生视频，时长 4/8/12 秒',
     isBuiltIn: true,
     isEnabled: true,
-    params: { ...DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE_1_5 },
+    params: { ...DEFAULT_VIDEO_PARAMS_DOUBAO_SEEDANCE_1_0 },
   },
   {
     id: 'doubao-seedance-2-0-260128',
@@ -744,16 +918,16 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
   },
   {
     id: 'comfyui-minimax-h3-flft2v',
-    apiModel: 'video_minimax_h3_flft2v',
-    name: 'ComfyUI MiniMax H3 FLF2V (本地)',
+    apiModel: 'video_minimax_h3_fl2v',
+    name: 'ComfyUI MiniMax H3 FL2V (video_minimax_h3_fl2v)',
     type: 'video',
     providerId: 'comfyui-local',
-    description: '本地 MiniMax H3 首尾帧原生音视频，8-step 768p Turbo；24fps，prompt 内描述对白/旁白/音效',
+    description: '工作流 video_minimax_h3_fl2v.json；首尾帧原生音视频；高质量 20 steps / 快速预览 8-step Lightning；24fps',
     isBuiltIn: true,
     isEnabled: true,
     params: {
       ...DEFAULT_VIDEO_PARAMS_COMFYUI,
-      workflowName: DEFAULT_VIDEO_WORKFLOW_NAME,
+      workflowName: 'video_minimax_h3_fl2v',
       defaultDuration: 5,
       supportedDurations: [5, 10, 15],
       supportedAspectRatios: ['16:9', '9:16'],
@@ -770,7 +944,7 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
     name: 'ComfyUI MiniMax H3 Ref2VA（本地）',
     type: 'video',
     providerId: 'comfyui-local',
-    description: '本地 MiniMax H3 多参考图视频，最多 9 张参考图，支持原生音视频；不替代首尾帧硬约束工作流',
+    description: '本地 MiniMax H3 多参考图视频，最多 9 张图片，可选动作视频和音频参考；九宫格可作为整张时间线参考图；不替代首尾帧硬约束工作流',
     isBuiltIn: true,
     isEnabled: true,
     params: {
@@ -785,7 +959,8 @@ export const BUILTIN_VIDEO_MODELS: VideoModelDefinition[] = [
       supportsNativeAudio: true,
       supportsReferenceImages: true,
       maxReferenceImages: 9,
-      steps: 4,
+      // 工作流固定 Stage 1=8、Stage 2=4，因此总计划固定为 12 steps。
+      steps: 12,
     },
   },
   {
@@ -907,6 +1082,13 @@ export const BUILTIN_PROVIDERS: ModelProvider[] = [
     baseUrl: '',
     isBuiltIn: true,
     isDefault: true,
+  },
+  {
+    id: 'apiyi',
+    name: 'API易',
+    baseUrl: 'https://api.apiyi.com',
+    isBuiltIn: true,
+    isDefault: false,
   },
   {
     id: 'volcengine',

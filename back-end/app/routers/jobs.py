@@ -32,9 +32,31 @@ def _task_queue(job_type: str) -> str:
     """
     if job_type in {"video", "comfyui_video"}:
         return "video"
-    if job_type == "comfyui_image":
+    if job_type in {"image", "comfyui_image"}:
         return "image"
     return "celery"
+
+
+def _job_channel(job: Job) -> str | None:
+    """从 payload 提炼短渠道标签，供队列 hover 展示（不含大图字段）。"""
+    payload = job.request_payload or {}
+    job_type = str(job.job_type or "")
+    workflow = str(payload.get("workflowName") or "").strip()
+    if workflow.lower().endswith(".json"):
+        workflow = workflow[:-5]
+    model_id = str(payload.get("modelId") or "").strip()
+
+    if job_type in {"comfyui_video", "comfyui_image"}:
+        if workflow:
+            return f"ComfyUI · {workflow}"
+        if model_id:
+            return f"ComfyUI · {model_id}"
+        return "ComfyUI (本地)"
+    if job_type == "image":
+        return model_id or "OpenAI Image"
+    if job_type == "video":
+        return model_id or "API Video"
+    return model_id or None
 
 
 def _job_to_response(
@@ -57,6 +79,7 @@ def _job_to_response(
         target=(job.request_payload or {}).get("_target"),
         queue_position=queue_position,
         queue_running=queue_running,
+        channel=_job_channel(job),
     )
 
 
@@ -271,6 +294,8 @@ async def stream_job(
             "result": job.result,
             "error": job.error,
             "target": (job.request_payload or {}).get("_target"),
+            "job_type": job.job_type,
+            "channel": _job_channel(job),
         }
         yield f"data: {json.dumps(snapshot)}\n\n"
         if job.status in {"completed", "failed", "cancelled"}:

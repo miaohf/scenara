@@ -59,8 +59,8 @@ export const AspectRatioSelector: React.FC<AspectRatioSelectorProps> = ({
           className={`
             flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs transition-all
             ${value === option.value
-              ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-              : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)] hover:text-[var(--text-secondary)]'
+              ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+              : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)] hover:text-[var(--text-secondary)]'
             }
             ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
           `}
@@ -103,8 +103,8 @@ export const VideoDurationSelector: React.FC<VideoDurationSelectorProps> = ({
           className={`
             px-3 py-1.5 rounded-md text-xs transition-all
             ${value === d
-              ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-              : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)] hover:text-[var(--text-secondary)]'
+              ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+              : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)] hover:text-[var(--text-secondary)]'
             }
             ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
           `}
@@ -184,8 +184,8 @@ export const VideoSettingsPanel: React.FC<VideoSettingsPanelProps> = ({
                 className={`
                   px-3 py-1.5 rounded-md text-xs transition-all
                   ${duration === d
-                    ? 'bg-[var(--accent)] text-[var(--text-primary)]'
-                    : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:bg-[var(--border-secondary)] hover:text-[var(--text-secondary)]'
+                    ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)] border border-[var(--btn-selected-border)]'
+                    : 'bg-[var(--bg-hover)] text-[var(--text-tertiary)] border border-transparent hover:bg-[var(--border-secondary)] hover:text-[var(--text-secondary)]'
                   }
                   ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
                 `}

@@ -19,9 +19,10 @@ import { toFriendlyModerationMessage } from '../errorMessageService';
 import { callVideoApi } from '../adapters/videoAdapter';
 import { isComfyUiVideoModel, getActiveVideoModel } from '../modelRegistry';
 import { resolveEndpointUrl } from '../urlUtils';
+import { isApiAiMode } from '../aiApiAdapter';
 
 const VOLCENGINE_TASK_DEFAULT_ENDPOINT = '/api/v3/contents/generations/tasks';
-const VOLCENGINE_DEFAULT_MODEL = 'doubao-seedance-1-5-pro-251215';
+const VOLCENGINE_DEFAULT_MODEL = 'ep-20260919140814-hwwtt';
 const SORA_COMPATIBLE_VIDEO_MODELS = new Set([
   'sora-2',
   'doubao-seedance-1-5-pro',
@@ -505,6 +506,7 @@ export const generateVideo = async (
     referenceVideos?: string[];
     referenceAudios?: string[];
     steps?: number;
+    enableStage2Upscaling?: boolean;
     target?: import("../../types/model").GenerationTarget;
     onJobCreated?: import("../../types/model").VideoGenerateOptions['onJobCreated'];
   }
@@ -528,6 +530,7 @@ export const generateVideo = async (
       aspectRatio,
       duration,
       steps: options?.steps,
+      enableStage2Upscaling: options?.enableStage2Upscaling,
       target: options?.target,
       onJobCreated: options?.onJobCreated,
     }, videoModel as any);
@@ -540,6 +543,19 @@ export const generateVideo = async (
   const isVolcengineTaskMode =
     resolvedEndpoint.includes('/contents/generations/tasks') ||
     (normalizedRequestModel.startsWith('doubao-seedance') && !isSoraCompatibleModel);
+
+  // API 模式下火山任务走后端 Worker，避免浏览器直连 CORS / 长轮询中断
+  if (isApiAiMode() && isVolcengineTaskMode) {
+    return callVideoApi({
+      prompt,
+      startImage: startImageBase64,
+      endImage: endImageBase64,
+      aspectRatio,
+      duration,
+      target: options?.target,
+      onJobCreated: options?.onJobCreated,
+    }, videoModel as any);
+  }
 
   if (isVolcengineTaskMode) {
     return generateVideoVolcengineTask(
