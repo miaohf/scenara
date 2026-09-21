@@ -53,6 +53,8 @@ import ShotCard from './ShotCard';
 import ShotWorkbench from './ShotWorkbench';
 import ImagePreviewModal from './ImagePreviewModal';
 import { findSceneByIdCompat } from '../../services/storyboardIdUtils';
+import { repairShotExecutionPlan } from '../../services/ai/storyboardAgent';
+import { validateAndRepairH3Prompt } from '../../services/ai/h3PromptValidator';
 import NineGridPreview from './NineGridPreview';
 import { useAlert } from '../GlobalAlert';
 import { AspectRatioSelector } from '../AspectRatioSelector';
@@ -131,17 +133,26 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     value: string;
     shotId?: string;
     frameType?: 'start' | 'end';
+    videoModelId?: string;
+    durationSeconds?: VideoDuration;
+    rebuiltExecutionPlan?: Shot['agent'];
     aiInstruction?: string;
     /** 视频提示词是否由「按当前镜头重新编译」生成（保存时记为 ai-generated） */
     rebuiltFromShot?: boolean;
   } | null>(null);
+  const [isRebuildingPrompt, setIsRebuildingPrompt] = useState(false);
   const [nineGridPromptReferencePreviews, setNineGridPromptReferencePreviews] = useState<Array<{ image: string; label: string }>>([]);
 
   const activeShotIndex = project.shots.findIndex(s => s.id === activeShotId);
   const activeShot = project.shots[activeShotIndex];
   const videoPromptReferencePreviews = useMemo(() => {
     if (!activeShot || editModal?.type !== 'video') return [];
-    const routing = resolveVideoModelRouting(resolveEffectiveVideoModelId(activeShot.videoModel));
+    // The prompt editor may have been opened with a freshly selected model
+    // that has not propagated to the persisted shot object yet. Use the
+    // editor's model id first so the reference rail follows the prompt being
+    // rebuilt, not the previous shot routing.
+    const previewModelId = editModal.videoModelId || activeShot.videoModel || resolveEffectiveVideoModelId(activeShot.videoModel);
+    const routing = resolveVideoModelRouting(previewModelId);
     const selectedModel = routing.normalizedModelId;
     const videoInputMode =
       activeShot.videoInputMode ||
@@ -189,7 +200,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       });
     }
     return previews;
-  }, [activeShot, editModal?.type, project.scriptData, text]);
+  }, [activeShot, editModal?.type, editModal?.videoModelId, project.scriptData, text]);
 
   const editModalReferencePreviews = editModal?.type === 'video'
     ? videoPromptReferencePreviews
@@ -219,17 +230,18 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
    * 按当前镜头编译视频提示词。
    * forceRebuild=true 时忽略已有 videoPrompt，始终重新编译（编辑弹窗「重新编译」入口）。
    */
-  const buildCurrentVideoPrompt = (shot: Shot, options?: { forceRebuild?: boolean }): string => {
+  const buildCurrentVideoPrompt = (shot: Shot, options?: { forceRebuild?: boolean; modelId?: string; durationSeconds?: number }): string => {
     const forceRebuild = Boolean(options?.forceRebuild);
-    const selectedModelInput = resolveEffectiveVideoModelId(shot.videoModel) || DEFAULTS.videoModel;
+    const selectedModelInput = options?.modelId || resolveEffectiveVideoModelId(shot.videoModel) || DEFAULTS.videoModel;
     const modelRouting = resolveVideoModelRouting(selectedModelInput);
     const selectedModel = modelRouting.normalizedModelId;
     const projectLanguage = project.language || project.scriptData?.language || '中文';
     const visualStyle = project.visualStyle || project.scriptData?.visualStyle || 'live-action';
     const promptDuration =
+      Number(options?.durationSeconds) ||
       Number(shot.interval?.duration) ||
-      getModelDefaultDuration(selectedModel) ||
       Number(project.scriptData?.planningShotDuration) ||
+      getModelDefaultDuration(selectedModel) ||
       8;
     const startKf = shot.keyframes?.find((k) => k.type === 'start');
     const endKf = shot.keyframes?.find((k) => k.type === 'end');
@@ -273,9 +285,13 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     const isManualEdit = !forceRebuild && latestVersion?.source === 'manual-edit' && Boolean(promptValue);
     const hasRef2VAShape = isMiniMaxH3Ref2VAPrompt(promptValue);
 
+    const promptModelMismatch = isR2VModel
+      ? !hasRef2VAShape
+      : hasRef2VAShape;
+
     if (isR2VModel) {
       // Ref2VA：空提示、强制重编译、或残留非 Ref2VA 形态时重编；手动编辑保留。
-      if (!isManualEdit && (forceRebuild || !promptValue || !hasRef2VAShape)) {
+      if (forceRebuild || !promptValue || promptModelMismatch || !isManualEdit) {
         promptValue = buildMiniMaxH3Ref2VAPrompt(shot, project.scriptData, {
           durationSeconds: promptDuration,
           aspectRatio: project.aspectRatio,
@@ -321,7 +337,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           }
         }
       }
-    } else if (!isManualEdit && (forceRebuild || !promptValue || hasRef2VAShape)) {
+    } else if (forceRebuild || !promptValue || promptModelMismatch || !isManualEdit) {
       // FLF2V 等：切离 Ref2VA 后若仍残留 subject_definitions，自动换成首尾帧模板。
       promptValue = buildVideoPrompt(
         shot.actionSummary,
@@ -1103,14 +1119,14 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       return showAlert(text('请先生成起始帧！', 'Generate the start frame first.'), { type: 'warning' });
     }
 
-    // The R2V workflow still uses assets directly as its generation inputs, but
-    // a storyboard keyframe is required as a disposable visual proof. It is
-    // reviewed and gated here; it is never added to the R2V reference slots.
+    // R2V uses character, scene, and prop references directly. It does not use
+    // start/end frames, so their image-generation review must not gate video.
     if (!project.scriptData) {
-      return showAlert(text('缺少结构化剧本，无法执行画面审核。', 'Structured script data is required for visual review.'), { type: 'warning' });
+      return showAlert(text('缺少结构化剧本，无法执行视频生成。', 'Structured script data is required for video generation.'), { type: 'warning' });
     }
+    const effectiveSkipVisualReview = skipVisualReview || isR2VModel;
     const auditFrame = sKf?.imageUrl ? sKf : eKf?.imageUrl ? eKf : undefined;
-    if (!skipVisualReview && !auditFrame?.imageUrl) {
+    if (!effectiveSkipVisualReview && !auditFrame?.imageUrl) {
       return showAlert(
         `${text(
           '当前没有关键帧审核样张。R2V 仍只会传入角色、场景和道具参考图。',
@@ -1127,12 +1143,12 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         },
       );
     }
-    if (!skipVisualReview && auditFrame && (auditFrame.status === 'generating' || auditFrame.visualReview?.status === 'reviewing')) {
+    if (!effectiveSkipVisualReview && auditFrame && (auditFrame.status === 'generating' || auditFrame.visualReview?.status === 'reviewing')) {
       return showAlert(text('关键帧仍在生成或审核，请等待审核完成。', 'The keyframe is still generating or under review.'), { type: 'warning' });
     }
 
     let gateReview = auditFrame?.visualReview;
-    if (!skipVisualReview && auditFrame?.imageUrl && !isVisualReviewCurrent(auditFrame.imageUrl, gateReview) && gateReview?.reviewedImageUrl !== auditFrame.imageUrl) {
+    if (!effectiveSkipVisualReview && auditFrame?.imageUrl && !isVisualReviewCurrent(auditFrame.imageUrl, gateReview) && gateReview?.reviewedImageUrl !== auditFrame.imageUrl) {
       const shotIndex = project.shots.findIndex((item) => item.id === shot.id);
       updateShot(shot.id, (currentShot) => updateKeyframeInShot(currentShot, auditFrame.type, {
         ...(currentShot.keyframes?.find((item) => item.type === auditFrame.type) || auditFrame),
@@ -1158,7 +1174,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         return updateKeyframeInShot(currentShot, auditFrame.type, { ...current, visualReview: completedReview });
       });
     }
-    if (!skipVisualReview && auditFrame?.imageUrl && !isVisualReviewCurrent(auditFrame.imageUrl, gateReview)) {
+    if (!effectiveSkipVisualReview && auditFrame?.imageUrl && !isVisualReviewCurrent(auditFrame.imageUrl, gateReview)) {
       const issueText = (gateReview?.issues || [])
         .filter((issue) => issue.severity !== 'low')
         .slice(0, 5)
@@ -1183,7 +1199,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     // 首尾帧模式下尾帧与首帧同级：缺审核时先跑一遍；仍不过则允许忽略并生成。
     let endGateReview = eKf?.visualReview;
     if (
-      !skipVisualReview
+      !effectiveSkipVisualReview
       && !isR2VModel
       && eKf?.imageUrl
       && !isVisualReviewCurrent(eKf.imageUrl, endGateReview)
@@ -1217,7 +1233,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         return updateKeyframeInShot(currentShot, 'end', { ...current, visualReview: completedEndReview });
       });
     }
-    if (!skipVisualReview && !isR2VModel && eKf?.imageUrl && !isVisualReviewCurrent(eKf.imageUrl, endGateReview)) {
+    if (!effectiveSkipVisualReview && !isR2VModel && eKf?.imageUrl && !isVisualReviewCurrent(eKf.imageUrl, endGateReview)) {
       const issueText = (endGateReview?.issues || [])
         .filter((issue) => issue.severity !== 'low')
         .slice(0, 5)
@@ -1322,10 +1338,13 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       .sort((a, b) => b.createdAt - a.createdAt)[0];
     const preserveManualPrompt = latestPromptVersion?.source === 'manual-edit' && Boolean(videoPrompt);
     const hasRef2VAShape = isMiniMaxH3Ref2VAPrompt(videoPrompt);
+    const promptModelMismatch = isR2VModel
+      ? !hasRef2VAShape
+      : hasRef2VAShape;
     const requiresRef2VACompilation =
-      isMiniMaxH3Ref2VAModel(selectedModel) && !preserveManualPrompt;
+      isMiniMaxH3Ref2VAModel(selectedModel) && (!preserveManualPrompt || promptModelMismatch);
     const requiresFlf2vRecompile =
-      !isMiniMaxH3Ref2VAModel(selectedModel) && !preserveManualPrompt && (!videoPrompt || hasRef2VAShape);
+      !isMiniMaxH3Ref2VAModel(selectedModel) && (!preserveManualPrompt || promptModelMismatch) && (!videoPrompt || hasRef2VAShape);
     if (requiresRef2VACompilation) {
       videoPrompt = buildMiniMaxH3Ref2VAPrompt(shot, project.scriptData, {
         durationSeconds: duration,
@@ -1395,6 +1414,14 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       duration,
       supportedDurations: selectedModelConfig?.params?.supportedDurations,
       requiresNativeAudioDirective: isMiniMaxH3VideoModel(selectedModel),
+      h3WorkflowKind: isMiniMaxH3VideoModel(selectedModel)
+        ? (isR2VModel ? 'ref2va' : 'base')
+        : undefined,
+      h3ExecutionPlan: shot.agent?.executionPlan,
+      h3AudioIntent: shot.agent?.audioIntent,
+      referenceImageCount: isR2VModel
+        ? r2vReferencePack?.referenceImages.length
+        : [generationFrames.startImage, generationFrames.endImage].filter(Boolean).length,
       productionIssues: inspectShotProductionConflicts(shot, project.scriptData, language),
     });
 
@@ -1402,6 +1429,10 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       showAlert(`视频预检未通过：\n${formatLintIssues(preflightResult.issues)}`, { type: 'warning' });
       return;
     }
+
+    // Safe H3 consistency fixes (for example a no-music conflict) must be the
+    // exact text persisted and sent to the model, not merely a lint preview.
+    videoPrompt = preflightResult.normalizedPrompt || videoPrompt;
 
     const nonErrorIssues = preflightResult.issues.filter((issue) => issue.severity !== 'error');
     if (nonErrorIssues.length > 0) {
@@ -1926,6 +1957,9 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           : 'Manual video prompt edit';
         updateShot(activeShot.id, (s) => ({
           ...s,
+          ...(editModal.rebuiltExecutionPlan
+            ? { agent: editModal.rebuiltExecutionPlan }
+            : {}),
           interval: s.interval ? {
             ...s.interval,
             videoPrompt: editModal.value,
@@ -1941,7 +1975,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
             id: generateId(`int-${s.id}`),
             startKeyframeId: s.keyframes?.find((kf) => kf.type === 'start')?.id || '',
             endKeyframeId: s.keyframes?.find((kf) => kf.type === 'end')?.id || '',
-            duration: getModelDefaultDuration(resolveEffectiveVideoModelId(s.videoModel) || DEFAULTS.videoModel),
+            duration: editModal.durationSeconds || getModelDefaultDuration(resolveEffectiveVideoModelId(s.videoModel) || DEFAULTS.videoModel),
             motionStrength: 5,
             videoPrompt: editModal.value,
             promptVersions: updatePromptWithVersion(
@@ -2954,7 +2988,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
               updateShot(activeShot.id, (s) => {
                 const nextShot: Shot = { ...s, videoModel: modelId as any };
                 const previousPrompt = (s.interval?.videoPrompt || '').trim();
-                const rebuiltPrompt = buildCurrentVideoPrompt(nextShot, { forceRebuild: false }).trim();
+                const rebuiltPrompt = buildCurrentVideoPrompt(nextShot, { forceRebuild: false, modelId }).trim();
                 if (!rebuiltPrompt || rebuiltPrompt === previousPrompt) {
                   return nextShot;
                 }
@@ -2998,10 +3032,13 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
                 videoInputMode: mode,
               }))
             }
-            onEditVideoPrompt={() => {
+            onEditVideoPrompt={(modelId, duration) => {
+              const effectiveModelId = modelId || activeShot.videoModel || resolveEffectiveVideoModelId(activeShot.videoModel);
               setEditModal({
                 type: 'video',
-                value: buildCurrentVideoPrompt(activeShot, { forceRebuild: false }),
+                videoModelId: effectiveModelId,
+                durationSeconds: duration,
+                value: buildCurrentVideoPrompt(activeShot, { forceRebuild: false, modelId: effectiveModelId, durationSeconds: duration }),
                 rebuiltFromShot: false,
               });
             }}
@@ -3103,16 +3140,106 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           setEditModal(editModal ? { ...editModal, aiInstruction } : null)
         }
         showRebuildPrompt={editModal?.type === 'video'}
+        isRebuildingPrompt={isRebuildingPrompt}
         rebuildPromptLabel={text('按当前镜头重新编译', 'Rebuild from shot')}
-        onRebuildPrompt={() => {
-          if (!activeShot || editModal?.type !== 'video') return;
-          setEditModal({
-            type: 'video',
-            value: buildCurrentVideoPrompt(activeShot, { forceRebuild: true }),
-            rebuiltFromShot: true,
-          });
-        }}
+          onRebuildPrompt={async () => {
+            if (!activeShot || editModal?.type !== 'video') return;
+            const modelId = editModal.videoModelId || activeShot.videoModel || resolveEffectiveVideoModelId(activeShot.videoModel);
+            const durationSeconds = editModal.durationSeconds || Number(activeShot.interval?.duration) || getModelDefaultDuration(modelId);
+            setIsRebuildingPrompt(true);
+            try {
+              const repaired = project.scriptData
+                ? await repairShotExecutionPlan(activeShot, project.scriptData, durationSeconds)
+                : undefined;
+              const rebuiltShot = repaired ? { ...activeShot, agent: repaired.agent } : activeShot;
+              const rebuiltPromptCandidate = buildCurrentVideoPrompt(rebuiltShot, {
+                forceRebuild: true,
+                modelId,
+                durationSeconds,
+              });
+              const normalizedModelId = resolveVideoModelRouting(modelId).normalizedModelId;
+              const h3Validation = isMiniMaxH3VideoModel(normalizedModelId)
+                ? validateAndRepairH3Prompt(rebuiltPromptCandidate, {
+                    durationSeconds,
+                    expectedWorkflow: isMiniMaxH3Ref2VAModel(normalizedModelId) ? 'ref2va' : 'base',
+                    referenceImageCount: videoPromptReferencePreviews.length,
+                    executionPlan: rebuiltShot.agent?.executionPlan,
+                    audioIntent: rebuiltShot.agent?.audioIntent,
+                  })
+                : undefined;
+              const rebuiltPrompt = h3Validation?.prompt || rebuiltPromptCandidate;
+
+              if (h3Validation && !h3Validation.canProceed) {
+                setEditModal((current) => current && current.type === 'video' ? {
+                  ...current,
+                  videoModelId: modelId,
+                  durationSeconds: durationSeconds as VideoDuration,
+                  value: rebuiltPrompt,
+                } : current);
+                showAlert(
+                  `${text('提示词重建未通过最终一致性校验，未覆盖已保存版本：', 'The rebuilt prompt failed final consistency validation and was not saved:')}\n${formatLintIssues(h3Validation.issues)}`,
+                  { type: 'warning' },
+                );
+                return;
+              }
+              // Rebuild is an AI/system action, so persist it immediately.
+              // The modal remains open for inspection; the Save button is only
+              // needed if the user subsequently edits the generated text.
+              updateShot(activeShot.id, (currentShot) => ({
+                ...currentShot,
+                ...(repaired ? { agent: repaired.agent } : {}),
+                interval: currentShot.interval
+                  ? {
+                      ...currentShot.interval,
+                      duration: durationSeconds as VideoDuration,
+                      videoPrompt: rebuiltPrompt,
+                      aspectRatio: project.aspectRatio || '16:9',
+                      promptVersions: updatePromptWithVersion(
+                        currentShot.interval.videoPrompt,
+                        rebuiltPrompt,
+                        currentShot.interval.promptVersions,
+                        'ai-generated',
+                        `Rebuilt video prompt with single-shot execution Agent${h3Validation?.autoFixes.length ? `; fixes=${h3Validation.autoFixes.join(',')}` : ''}`,
+                      ),
+                    }
+                  : {
+                      id: generateId(`int-${currentShot.id}`),
+                      startKeyframeId: currentShot.keyframes?.find((kf) => kf.type === 'start')?.id || '',
+                      endKeyframeId: currentShot.keyframes?.find((kf) => kf.type === 'end')?.id || '',
+                      duration: durationSeconds as VideoDuration,
+                      motionStrength: 5,
+                      videoPrompt: rebuiltPrompt,
+                      aspectRatio: project.aspectRatio || '16:9',
+                      promptVersions: updatePromptWithVersion(
+                        undefined,
+                        rebuiltPrompt,
+                        undefined,
+                        'ai-generated',
+                        `Rebuilt video prompt with single-shot execution Agent${h3Validation?.autoFixes.length ? `; fixes=${h3Validation.autoFixes.join(',')}` : ''}`,
+                      ),
+                      status: 'pending',
+                    },
+              }));
+              const rebuildWarnings = h3Validation?.issues.filter((issue) => issue.severity === 'warning') || [];
+              setToastMessage(rebuildWarnings.length
+                ? `${text('视频提示词已自动修正并保存；请留意：', 'Video prompt repaired and saved automatically; review:')}\n${formatLintIssues(rebuildWarnings)}`
+                : text('视频提示词已自动保存，可直接重新生成视频。', 'Video prompt rebuilt and saved automatically.'));
+              setEditModal((current) => current && current.type === 'video' ? {
+                ...current,
+                videoModelId: modelId,
+                durationSeconds: durationSeconds as VideoDuration,
+                value: rebuiltPrompt,
+                rebuiltExecutionPlan: undefined,
+                rebuiltFromShot: false,
+              } : current);
+            } finally {
+              setIsRebuildingPrompt(false);
+            }
+          }}
         enableComfyUiExport={editModal?.type === 'video'}
+        workflowKindOverride={editModal?.type === 'video'
+          ? (isMiniMaxH3Ref2VAModel(editModal?.videoModelId || activeShot?.videoModel || resolveEffectiveVideoModelId(activeShot?.videoModel)) ? 'ref2va' : 'flf2v')
+          : undefined}
         referencePreviews={editModalReferencePreviews}
       />
 

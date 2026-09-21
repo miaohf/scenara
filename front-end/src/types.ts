@@ -199,6 +199,8 @@ export interface Character {
   promptVersions?: PromptVersion[]; // Prompt edit history with rollback support
   negativePrompt?: string;
   coreFeatures?: string;
+  /** 可复用资产 DNA：跨镜头稳定的形体、材质、色彩和禁改特征。 */
+  assetDNA?: AssetDNA;
   creativeDirection?: CreativeCharacterDirection;
   shapeReferenceImage?: string; // Optional reference image used only for shape/silhouette guidance during generation
   referenceImage?: string;
@@ -219,6 +221,9 @@ export interface Scene {
   time: string;
   atmosphere: string;
   creativeDirection?: CreativeSceneDirection;
+  /** 可用于镜头调度和轴线检查的场景空间拓扑。 */
+  spatialTopology?: SceneSpatialTopology;
+  assetDNA?: AssetDNA;
   visualPrompt?: string;
   promptVersions?: PromptVersion[]; // Prompt edit history with rollback support
   negativePrompt?: string; // 负面提示词，用于排除不想要的元素
@@ -263,6 +268,7 @@ export interface Prop {
   name: string;           // 道具名称，如"星图"、"古剑"
   category: string;       // 分类：武器、文件/书信、食物/饮品、交通工具、装饰品、科技设备、其他
   description: string;    // 道具描述
+  assetDNA?: AssetDNA;
   /** 穿在角色身上的物品不应作为镜头独立道具参考图重复注入。 */
   isWearable?: boolean;
   /** 兼容旧道具数据：记录该服装组件的角色归属，但不作为独立道具生成。 */
@@ -487,6 +493,96 @@ export interface ShotContinuityPlan {
   mustPreserve: string[];
 }
 
+export interface AssetDNA {
+  identityAnchors: string[];
+  materialAnchors: string[];
+  colorAnchors: string[];
+  forbiddenChanges: string[];
+}
+
+export interface SceneSpatialTopology {
+  zones: Array<{ id: string; label: string; relation?: string }>;
+  entrances: string[];
+  exits: string[];
+  landmarks: string[];
+  dominantAxis: string;
+  cameraSafeSide?: string;
+}
+
+export type ShotReferencePolicyLevel = 'required' | 'supportive' | 'textOnly' | 'omitted';
+
+export interface ShotReferencePolicyItem {
+  assetType: 'character' | 'scene' | 'prop' | 'storyboard';
+  assetId?: string;
+  label: string;
+  policy: ShotReferencePolicyLevel;
+  reason: string;
+  visiblePhaseIndexes?: number[];
+  lockedByUser?: boolean;
+}
+
+export interface ContinuityCharacterState {
+  location: string;
+  wardrobe: string;
+  heldPropIds: string[];
+  physicalState: string;
+  emotionalState: string;
+  knowledge: string[];
+  visible: boolean;
+}
+
+export interface ContinuityPropState {
+  location: string;
+  holderCharacterId?: string;
+  presentationMode: PropPresentationMode;
+  condition: string;
+  visible: boolean;
+}
+
+export interface ContinuitySceneState {
+  sceneId: string;
+  time: string;
+  weather: string;
+  lighting: string;
+  screenDirection: string;
+}
+
+export interface ShotContinuityState {
+  characters: Record<string, ContinuityCharacterState>;
+  props: Record<string, ContinuityPropState>;
+  scene: ContinuitySceneState;
+}
+
+export interface ShotContinuityDelta {
+  characterChanges: Record<string, Partial<ContinuityCharacterState>>;
+  propChanges: Record<string, Partial<ContinuityPropState>>;
+  sceneChanges: Partial<ContinuitySceneState>;
+}
+
+export interface ShotContinuityLedgerEntry {
+  shotId: string;
+  stateIn: ShotContinuityState;
+  stateDelta: ShotContinuityDelta;
+  stateOut: ShotContinuityState;
+  issues: string[];
+  generatedAt: number;
+}
+
+/** 镜头执行计划：先于最终视觉/视频提示词生成，用于控制动作密度与可执行性。 */
+export interface ShotExecutionPlan {
+  coreBeat: string;
+  actionPhases: ShotTimelineBeat[];
+  subjectBlocking: string;
+  propBlocking: string;
+  cameraPlan: string;
+  endState: string;
+  soundPlan: string[];
+  /** 对白应落在哪个动作阶段，以及需要保留的停顿。 */
+  dialogueTiming?: string;
+  /** 参考图语义预算；未提供时由确定性策略补齐。 */
+  referencePolicy?: ShotReferencePolicyItem[];
+}
+
 export interface ShotSemanticReview {
   score: number;
   verdict: 'pass' | 'warning' | 'fail';
@@ -546,7 +642,9 @@ export interface ShotAgentMetadata {
   emotionalBeat: string;
   visualHook: string;
   timeline: ShotTimelineBeat[];
+  executionPlan: ShotExecutionPlan;
   continuity: ShotContinuityPlan;
+  continuityLedger?: ShotContinuityLedgerEntry;
   audioIntent: string;
   h3FeasibilityNotes: string;
   semanticReview?: ShotSemanticReview;
@@ -636,6 +734,8 @@ export interface ArtDirection {
  */
 export interface ProductionBible {
   version: number;
+  /** 可执行的时代、地域与文化约束；必须注入角色、场景、道具的视觉提示词。 */
+  historicalContext: string;
   worldRules: string;
   costumeRules: string;
   sceneAnchors: string;
@@ -650,6 +750,8 @@ export interface ScriptData {
   title: string;
   genre: string;
   logline: string;
+  /** 结构解析阶段从原稿提取的时代/地域线索；用户可在项目圣经中确认或覆盖。 */
+  historicalContext?: string;
   targetDuration?: string;
   language?: string;
   visualStyle?: string; // Visual style: live-action, anime, 3d-animation, etc.
@@ -662,6 +764,8 @@ export interface ScriptData {
   storyboardAgentRun?: StoryboardAgentRun; // 可恢复、可诊断的 Agent 运行状态
   storyboardStructureReview?: StoryboardStructureReview; // 结构审片（删/并/重排）最近一次结果
   storyOutlineReview?: StoryOutlineReview; // 故事层软门禁最近一次结果
+  /** 按镜头顺序保存的结构化连续性状态账。 */
+  continuityLedger?: ShotContinuityLedgerEntry[];
   characters: Character[];
   scenes: Scene[];
   props: Prop[]; // 道具列表，用于保持多分镜间物品视觉一致性

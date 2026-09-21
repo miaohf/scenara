@@ -40,7 +40,7 @@ import {
 } from '../promptTemplateService';
 import { normalizeSceneId } from '../storyboardIdUtils';
 import { resolveEndpointUrl } from '../urlUtils';
-import { formatProductionBibleForPrompt } from '../productionBibleService';
+import { formatProductionBibleForPrompt, resolveProductionBible } from '../productionBibleService';
 import {
   attachShotAgentMetadata,
   buildShotAgentContract,
@@ -51,6 +51,7 @@ import {
   reviewAndRepairStoryboard,
   reviewStoryboardStructure,
   reviewStoryOutline,
+  validateShotExecutionPlan,
 } from './storyboardAgent';
 
 // Re-export 日志回调函数（保持外部 API 兼容）
@@ -550,6 +551,7 @@ export const parseScriptStructure = async (
       title: String(parsed.title || '未命名剧本'),
       genre: String(parsed.genre || '通用'),
       logline: String(parsed.logline || ''),
+      historicalContext: String(parsed.historicalContext || '').trim(),
       language,
       characters,
       scenes,
@@ -565,7 +567,9 @@ export const parseScriptStructure = async (
     Analyze the text and output a JSON object in the language: ${language}.
     
     Tasks:
-    1. Extract title, genre, logline (in ${language}).
+    1. Extract title, genre, logline, and historicalContext (in ${language}).
+       - historicalContext must state only period/region/cultural constraints supported by the script or a clearly named source text. Include concrete clothing, hairstyle, architecture, material, and anti-anachronism constraints when justified.
+       - If the period is genuinely unknown, return an empty string. Never invent a dynasty merely from a vague "ancient" setting.
     2. Extract characters (id, name, gender, age, personality, species, wardrobe, variations).
        - species is REQUIRED for every character.
        - Use "human" only for actual humans.
@@ -589,6 +593,7 @@ export const parseScriptStructure = async (
       "title": "string",
       "genre": "string",
       "logline": "string",
+      "historicalContext": "string or empty when unknown",
       "characters": [{"id": "string", "name": "string", "gender": "string", "age": "string", "personality": "string", "species": "string", "wardrobe": "exact base clothing description from script", "variations": [{"id":"string","name":"string","wardrobe":"exact changed clothing description","sceneIds":["scene-id"]}]}],
       "scenes": [{"id": "string", "location": "string", "time": "string", "atmosphere": "string"}],
       "props": [{"id":"string","name":"string","category":"string","description":"string","isWearable":false,"presentationMode":"handheld|worn|placed|mounted|background|used|unknown","presentationNote":"string","forbiddenPresentationModes":["string"]}],
@@ -692,6 +697,7 @@ export const enrichScriptDataVisuals = async (
   const characters = nextData.characters || [];
   const scenes = nextData.scenes || [];
   const props = nextData.props || [];
+  const historicalContext = resolveProductionBible(nextData).historicalContext;
 
   console.log("🎨 正在为角色、场景和道具生成视觉提示词...", `风格: ${nextData.visualStyle}`);
   logScriptProgress(`正在生成角色/场景/道具视觉提示词（风格：${nextData.visualStyle}）...`);
@@ -760,7 +766,8 @@ export const enrichScriptDataVisuals = async (
         nextData.language || language,
         model,
         abortSignal,
-        props.map(p => p.name)
+        props.map(p => p.name),
+        historicalContext,
       );
 
       for (let i = 0; i < characters.length; i++) {
@@ -807,7 +814,8 @@ export const enrichScriptDataVisuals = async (
           nextData.language || language,
           artDirection,
           abortSignal,
-          props.map(p => p.name)
+          props.map(p => p.name),
+          historicalContext,
         ),
       apply: (prompts) => {
         characters[idx].visualPrompt = prompts.visualPrompt;
@@ -831,7 +839,9 @@ export const enrichScriptDataVisuals = async (
           nextData.visualStyle || '3d-animation',
           nextData.language || language,
           artDirection,
-          abortSignal
+          abortSignal,
+          undefined,
+          historicalContext,
         ),
       apply: (prompts) => {
         scenes[idx].visualPrompt = prompts.visualPrompt;
@@ -855,7 +865,9 @@ export const enrichScriptDataVisuals = async (
           nextData.visualStyle || '3d-animation',
           nextData.language || language,
           artDirection,
-          abortSignal
+          abortSignal,
+          undefined,
+          historicalContext,
         ),
       apply: (prompts) => {
         props[idx].visualPrompt = prompts.visualPrompt;
@@ -2150,6 +2162,18 @@ export const generateShotList = async (
     directorPlan,
     shotDurationSeconds,
   );
+
+  const executionPlanIssues = agentEnrichedShots.flatMap((shot) => {
+    const validation = validateShotExecutionPlan(shot, shotDurationSeconds);
+    return validation.issues.map((issue) => `${shot.id}: ${issue}`);
+  });
+  if (executionPlanIssues.length > 0) {
+    logScriptProgress(
+      `镜头执行计划预检发现 ${executionPlanIssues.length} 项问题；已使用规范化计划继续生成，并交由后续审片修复：${executionPlanIssues.slice(0, 8).join('；')}`,
+    );
+  } else {
+    logScriptProgress('镜头执行计划预检通过：动作阶段、主体调度、摄影方案和结束状态均可执行。');
+  }
 
   let qualityCheckedShots = enableQualityCheck
     ? applyScriptStageQualityPipeline(

@@ -1,4 +1,8 @@
-import { AspectRatio, VideoDuration } from '../types';
+import { AspectRatio, ShotExecutionPlan, VideoDuration } from '../types';
+import {
+  validateAndRepairH3Prompt,
+  type H3PromptWorkflowKind,
+} from './ai/h3PromptValidator';
 
 export type PromptLintSeverity = 'error' | 'warning' | 'info';
 
@@ -14,6 +18,10 @@ export interface PromptLintResult {
   errorCount: number;
   warningCount: number;
   canProceed: boolean;
+  /** Prompt after deterministic, safe preflight fixes. */
+  normalizedPrompt?: string;
+  /** Machine-readable fixes applied before generation. */
+  autoFixes?: string[];
 }
 
 export interface KeyframePreflightInput {
@@ -43,6 +51,10 @@ export interface VideoPreflightInput {
   supportedDurations?: VideoDuration[];
   productionIssues?: PromptLintIssue[];
   requiresNativeAudioDirective?: boolean;
+  h3WorkflowKind?: H3PromptWorkflowKind;
+  h3ExecutionPlan?: ShotExecutionPlan;
+  h3AudioIntent?: string;
+  referenceImageCount?: number;
 }
 
 /** Legacy marker or official MiniMax H3 skill audio sections both satisfy native-audio preflight. */
@@ -235,11 +247,25 @@ export const runKeyframePreflight = (input: KeyframePreflightInput): PromptLintR
 };
 
 export const runVideoPreflight = (input: VideoPreflightInput): PromptLintResult => {
+  const h3Validation = input.h3WorkflowKind
+    ? validateAndRepairH3Prompt(input.prompt, {
+        durationSeconds: Number(input.duration),
+        expectedWorkflow: input.h3WorkflowKind,
+        referenceImageCount: input.referenceImageCount,
+        executionPlan: input.h3ExecutionPlan,
+        audioIntent: input.h3AudioIntent,
+      })
+    : undefined;
+  const normalizedPrompt = h3Validation?.prompt || input.prompt;
   // H3 skill prompts are structured six-section / multimodal blocks; 2600 is too tight and
   // only produces noise warnings. Align soft limit with fitVideoPromptLength (5000).
   const maxLength = input.requiresNativeAudioDirective ? 5000 : 2600;
-  const promptLint = lintPromptText(input.prompt, { minLength: 20, maxLength });
-  const issues: PromptLintIssue[] = [...promptLint.issues, ...(input.productionIssues || [])];
+  const promptLint = lintPromptText(normalizedPrompt, { minLength: 20, maxLength });
+  const issues: PromptLintIssue[] = [
+    ...promptLint.issues,
+    ...(h3Validation?.issues || []),
+    ...(input.productionIssues || []),
+  ];
 
   if (input.requiresStartFrame !== false && !input.hasStartFrame) {
     issues.push({
@@ -282,7 +308,7 @@ export const runVideoPreflight = (input: VideoPreflightInput): PromptLintResult 
     });
   }
 
-  if (input.requiresNativeAudioDirective && !hasH3NativeAudioCoverage(input.prompt)) {
+  if (input.requiresNativeAudioDirective && !hasH3NativeAudioCoverage(normalizedPrompt)) {
     issues.push({
       code: 'missing-native-audio-directive',
       severity: 'error',
@@ -291,13 +317,17 @@ export const runVideoPreflight = (input: VideoPreflightInput): PromptLintResult 
     });
   }
 
-  return buildLintResult(issues);
+  return buildLintResult(issues, normalizedPrompt, h3Validation?.autoFixes);
 };
 
 export const formatLintIssues = (issues: PromptLintIssue[]): string =>
   issues.map((issue) => `- [${issue.severity}] ${issue.message}`).join('\n');
 
-const buildLintResult = (issues: PromptLintIssue[]): PromptLintResult => {
+const buildLintResult = (
+  issues: PromptLintIssue[],
+  normalizedPrompt?: string,
+  autoFixes?: string[],
+): PromptLintResult => {
   const errorCount = issues.filter((issue) => issue.severity === 'error').length;
   const warningCount = issues.filter((issue) => issue.severity === 'warning').length;
   return {
@@ -305,5 +335,7 @@ const buildLintResult = (issues: PromptLintIssue[]): PromptLintResult => {
     errorCount,
     warningCount,
     canProceed: errorCount === 0,
+    ...(normalizedPrompt !== undefined ? { normalizedPrompt } : {}),
+    ...(autoFixes?.length ? { autoFixes } : {}),
   };
 };

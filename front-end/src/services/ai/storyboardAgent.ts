@@ -8,6 +8,7 @@ import type {
   ScriptData,
   Shot,
   ShotAgentMetadata,
+  ShotExecutionPlan,
   ShotQualityAssessment,
   ShotSemanticReview,
   ShotTimelineBeat,
@@ -71,6 +72,23 @@ const clamp = (value: unknown, min: number, max: number, fallback: number): numb
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
+};
+
+const maxExecutionPhasesForDuration = (durationSeconds: number): number => {
+  if (durationSeconds <= 5) return 2;
+  if (durationSeconds <= 8) return 3;
+  if (durationSeconds <= 15) return 4;
+  return 5;
+};
+
+const countPhysicalActionTransitions = (value: string): number => {
+  const chinese = value.match(
+    /收起|收上|拖过|拖入|放下|抓起|拿起|举起|插入|插进|撑入|撑动|推动|加速|驶入|进入|离开|转身|抬头|低头|站起|坐下|停住|发现|望向|走向|跑向|跳下|打开|关闭|落下|移到|移动/gu,
+  ) || [];
+  const english = value.match(
+    /\b(?:pulls?|drags?|drops?|grabs?|takes?|raises?|plants?|pushes?|accelerates?|enters?|exits?|turns?|looks?|stands?|sits?|stops?|notices?|walks?|runs?|jumps?|opens?|closes?|moves?)\b/gi,
+  ) || [];
+  return new Set([...chinese, ...english].map((item) => item.toLowerCase())).size;
 };
 
 const cloneScriptData = (source: ScriptData): ScriptData => {
@@ -587,10 +605,22 @@ This scene beat:
 export const buildShotAgentContract = (shotDurationSeconds: number): string => `
 [SHOT AGENT CONTRACT — REQUIRED FOR EVERY SHOT]
 In addition to the existing shot fields, every shot MUST include this nested object:
-"agent": {
+  "agent": {
   "directorPurpose": "what new story information or change this shot contributes",
   "emotionalBeat": "specific visible emotional change",
   "visualHook": "one immediately readable visual idea",
+  "executionPlan": {
+    "coreBeat": "one dominant action and its narrative turn",
+    "actionPhases": [
+      {"startSeconds": 0, "endSeconds": ${shotDurationSeconds}, "action": "one physically achievable phase", "camera": "camera behavior", "sound": "diegetic sound"}
+    ],
+    "subjectBlocking": "where the visible subject is and how it moves",
+    "propBlocking": "where important props remain and how they are used",
+    "cameraPlan": "shot size, angle, and one motivated camera movement",
+    "endState": "one readable final visual state",
+    "soundPlan": ["diegetic sound synchronized to the action"],
+    "dialogueTiming": "when dialogue occurs within the action phases and where a readable pause is needed",
+  },
   "timeline": [
     {"startSeconds": 0, "endSeconds": ${shotDurationSeconds}, "action": "one physically achievable action phase", "camera": "camera behavior", "sound": "diegetic sound intention"}
   ],
@@ -603,7 +633,7 @@ In addition to the existing shot fields, every shot MUST include this nested obj
   "audioIntent": "exact dialogue intention or ambient-only sound plan",
   "h3FeasibilityNotes": "how to keep motion achievable in ${shotDurationSeconds}s"
 }
-Timeline beats must be chronological, non-overlapping, and stay within 0-${shotDurationSeconds} seconds. Keep one dominant action per shot.`;
+Timeline beats must be chronological, non-overlapping, and stay within 0-${shotDurationSeconds} seconds. Use at most ${maxExecutionPhasesForDuration(shotDurationSeconds)} action phases, one dominant action, and one readable end state per shot.`;
 
 const normalizeTimeline = (
   value: unknown,
@@ -628,7 +658,13 @@ const normalizeTimeline = (
       return output;
     }, [])
     .sort((a, b) => a.startSeconds - b.startSeconds)
-    .slice(0, 4);
+    .slice(0, maxExecutionPhasesForDuration(durationSeconds))
+    .reduce<ShotTimelineBeat[]>((output, phase) => {
+      const startSeconds = Math.max(phase.startSeconds, output.at(-1)?.endSeconds || 0);
+      if (phase.endSeconds <= startSeconds) return output;
+      output.push({ ...phase, startSeconds });
+      return output;
+    }, []);
   if (normalized.length > 0) return normalized;
   return [{
     startSeconds: 0,
@@ -637,6 +673,102 @@ const normalizeTimeline = (
     camera: clean(shot.cameraMovement, 240) || undefined,
     sound: clean(shot.dialogue, 260) || 'Diegetic ambience only.',
   }];
+};
+
+const normalizeExecutionPlan = (
+  value: unknown,
+  shot: Shot,
+  scriptData: ScriptData,
+  timeline: ShotTimelineBeat[],
+  entryState: string,
+  exitState: string,
+  durationSeconds: number,
+) => {
+  const raw = asRecord(value);
+  const characters = (shot.characters || [])
+    .map((id) => scriptData.characters.find((character) => String(character.id) === String(id))?.name)
+    .filter(Boolean)
+    .join('、');
+  const props = (shot.props || [])
+    .map((id) => scriptData.props?.find((prop) => String(prop.id) === String(id))?.name)
+    .filter(Boolean)
+    .join('、');
+  const actionPhases = normalizeTimeline(raw.actionPhases, shot, durationSeconds)
+    .slice(0, maxExecutionPhasesForDuration(durationSeconds));
+  const soundPlan = cleanStringArray(raw.soundPlan, 6, 260);
+  return {
+    coreBeat: clean(raw.coreBeat, 520) || clean(shot.actionSummary, 520),
+    actionPhases,
+    subjectBlocking: clean(raw.subjectBlocking, 520) || `${characters || '主体'}：${clean(shot.actionSummary, 360)}`,
+    propBlocking: clean(raw.propBlocking, 520) || (props ? `道具保持明确位置并服务于当前动作：${props}。` : '无关键道具位置变化。'),
+    cameraPlan: clean(raw.cameraPlan, 520) || `${clean(shot.shotSize, 120) || '中景'}；${clean(shot.cameraMovement, 240) || '镜头保持稳定'}。`,
+    endState: clean(raw.endState, 520) || exitState,
+    soundPlan: soundPlan.length > 0 ? soundPlan : Array.from(new Set(actionPhases.map((phase) => phase.sound).filter(Boolean) as string[])).slice(0, 6),
+    dialogueTiming: clean(raw.dialogueTiming, 320) || (clean(shot.dialogue) ? 'Deliver dialogue during the clearest performance beat; preserve a short readable pause after the line.' : undefined),
+  };
+};
+
+export interface ShotExecutionPlanValidation {
+  valid: boolean;
+  issues: string[];
+}
+
+/**
+ * Deterministic preflight for the execution plan. The LLM remains responsible
+ * for the creative wording, while this gate prevents malformed timing and
+ * missing production-critical states from reaching the final storyboard.
+ */
+export const validateShotExecutionPlan = (
+  shot: Shot,
+  durationSeconds: number,
+): ShotExecutionPlanValidation => {
+  const plan = shot.agent?.executionPlan;
+  const issues: string[] = [];
+  if (!plan) {
+    return { valid: false, issues: ['缺少镜头执行计划'] };
+  }
+  if (!plan.coreBeat.trim()) issues.push('缺少镜头核心动作');
+  if (!plan.subjectBlocking.trim()) issues.push('缺少主体调度');
+  if (!plan.cameraPlan.trim()) issues.push('缺少摄影执行方案');
+  if (!plan.endState.trim()) issues.push('缺少清晰的结束状态');
+  if (plan.actionPhases.length === 0) issues.push('没有可执行的动作阶段');
+  if (plan.actionPhases.length > maxExecutionPhasesForDuration(durationSeconds)) {
+    issues.push(`动作阶段超过 ${maxExecutionPhasesForDuration(durationSeconds)} 个`);
+  }
+  const actionTextLength = plan.actionPhases.reduce((sum, phase) => sum + phase.action.length, 0);
+  if (actionTextLength > Math.max(520, durationSeconds * 150)) {
+    issues.push('动作阶段描述过密，可能在镜头时长内不可执行');
+  }
+  const cameraChanges = new Set(
+    plan.actionPhases.map((phase) => phase.camera?.trim()).filter(Boolean),
+  );
+  if (cameraChanges.size > Math.min(3, maxExecutionPhasesForDuration(durationSeconds))) {
+    issues.push('摄影变化过多，应保持一个主导机位和运动');
+  }
+
+  let previousEnd = 0;
+  plan.actionPhases.forEach((phase, index) => {
+    if (phase.startSeconds < 0 || phase.endSeconds > durationSeconds) {
+      issues.push(`动作阶段 ${index + 1} 超出镜头时长范围`);
+    }
+    if (phase.endSeconds <= phase.startSeconds) {
+      issues.push(`动作阶段 ${index + 1} 没有有效时长`);
+    }
+    if (phase.startSeconds < previousEnd) {
+      issues.push(`动作阶段 ${index + 1} 与前一阶段重叠`);
+    }
+    const phaseDuration = Math.max(0.1, phase.endSeconds - phase.startSeconds);
+    const transitionLimit = phaseDuration <= 3 ? 3 : phaseDuration <= 5 ? 4 : 5;
+    const transitionCount = countPhysicalActionTransitions(phase.action);
+    if (transitionCount > transitionLimit) {
+      issues.push(
+        `动作阶段 ${index + 1} 在 ${phaseDuration.toFixed(1)} 秒内包含约 ${transitionCount} 个状态变化，最多建议 ${transitionLimit} 个`,
+      );
+    }
+    previousEnd = Math.max(previousEnd, phase.endSeconds);
+  });
+
+  return { valid: issues.length === 0, issues };
 };
 
 export const normalizeShotAgentMetadata = (
@@ -652,11 +784,13 @@ export const normalizeShotAgentMetadata = (
   const sceneCreative = scene?.creativeDirection;
   const entryState = clean(rawContinuity.entryState, 520) || beat?.continuityIn || sceneCreative?.continuityIn || 'Preserve the established incoming state.';
   const exitState = clean(rawContinuity.exitState, 520) || beat?.continuityOut || sceneCreative?.continuityOut || 'End on a readable state change.';
+  const timeline = normalizeTimeline(raw.timeline, shot, durationSeconds);
   return {
     directorPurpose: clean(raw.directorPurpose, 520) || beat?.purpose || sceneCreative?.narrativePurpose || clean(shot.actionSummary, 520),
     emotionalBeat: clean(raw.emotionalBeat, 520) || beat?.emotionalBeat || sceneCreative?.emotionalTurn || 'Make the emotional change visible in performance.',
     visualHook: clean(raw.visualHook, 520) || beat?.visualHook || sceneCreative?.visualMotif || clean(shot.shotSize, 180),
-    timeline: normalizeTimeline(raw.timeline, shot, durationSeconds),
+    timeline,
+    executionPlan: normalizeExecutionPlan(raw.executionPlan, shot, scriptData, timeline, entryState, exitState, durationSeconds),
     continuity: {
       entryState,
       exitState,
@@ -667,6 +801,114 @@ export const normalizeShotAgentMetadata = (
     h3FeasibilityNotes: clean(raw.h3FeasibilityNotes, 520) || beat?.h3FeasibilityNotes || `One dominant action, achievable within ${durationSeconds} seconds.`,
     semanticReview: shot.agent?.semanticReview,
   };
+};
+
+/**
+ * Re-plan one shot through the storyboard Agent. This is intentionally
+ * narrower than full storyboard generation: it repairs execution feasibility
+ * while preserving the existing shot's story intent and references.
+ */
+export const repairShotExecutionPlan = async (
+  shot: Shot,
+  scriptData: ScriptData,
+  durationSeconds: number,
+  modelName?: string,
+  signal?: AbortSignal,
+): Promise<{ executionPlan: ShotExecutionPlan; agent: ShotAgentMetadata } | undefined> => {
+  const duration = Math.max(1, Number(durationSeconds) || 5);
+  const maxPhases = maxExecutionPhasesForDuration(duration);
+  const scene = scriptData.scenes.find((item) => String(item.id) === String(shot.sceneId));
+  const characterNames = (shot.characters || [])
+    .map((id) => scriptData.characters.find((item) => String(item.id) === String(id))?.name)
+    .filter(Boolean)
+    .join('、');
+  const propNames = (shot.props || [])
+    .map((id) => scriptData.props?.find((item) => String(item.id) === String(id))?.name)
+    .filter(Boolean)
+    .join('、');
+  const currentPlan = shot.agent?.executionPlan;
+  const prompt = `You are a single-shot video execution planner. Repair the shot for a video model.
+Return JSON only. Preserve story intent, character identity, wardrobe, props, scene, and screen direction.
+Duration: ${duration}s. Maximum action phases: ${maxPhases}. Use one dominant physical action.
+Do not add cuts unless the existing shot explicitly requires them. Prefer one camera setup and one motivated movement.
+Every phase must be physically achievable within its time range. The final phase must end in one clear visual state.
+
+Shot:
+scene=${clean(scene ? `${scene.location} ${scene.time} ${scene.atmosphere}` : shot.sceneId, 160)}
+action=${clean(shot.actionSummary, 700)}
+camera=${clean(shot.cameraMovement, 360)}
+dialogue=${clean(shot.dialogue, 360) || 'none'}
+characters=${clean(characterNames, 240) || 'none'}
+props=${clean(propNames, 240) || 'none'}
+existingPlan=${JSON.stringify(currentPlan || {})}
+
+Schema:
+{
+  "executionPlan": {
+    "coreBeat": "one sentence",
+    "actionPhases": [{"startSeconds":0,"endSeconds":${duration},"action":"one achievable action","camera":"one camera behavior","sound":"synchronized diegetic sound"}],
+    "subjectBlocking": "stable subject positions and one readable movement",
+    "propBlocking": "where important props remain and how they are used",
+    "cameraPlan": "shot size, angle, and one motivated camera movement",
+    "endState": "one readable final visual state",
+    "soundPlan": ["sound intention"],
+    "dialogueTiming": "timing and pause, or omit when no dialogue"
+  }
+}
+Keep actionPhases chronological, non-overlapping, and within 0-${duration}s. Do not describe metadata, analysis, or multiple alternative versions.`;
+
+  try {
+    let repairFeedback = '';
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const attemptPrompt = repairFeedback
+        ? `${prompt}\n\nThe previous plan failed deterministic validation:\n${repairFeedback}\nRegenerate the complete JSON plan. Resolve every listed issue; do not explain.`
+        : prompt;
+      const response = await retryOperation(
+        () => chatCompletion(
+          attemptPrompt,
+          modelName || getActiveChatModelName(),
+          0.2,
+          4096,
+          'json_object',
+          120000,
+          signal,
+        ),
+        1,
+        800,
+        signal,
+      );
+      const parsed = parseJsonWithRecovery(response);
+      const rawPlan = asRecord(asRecord(parsed).executionPlan || parsed);
+      const rawAgent = {
+        ...(shot.agent || {}),
+        executionPlan: rawPlan,
+      };
+      const repairedShot = { ...shot, agent: rawAgent as unknown as ShotAgentMetadata };
+      const agent = normalizeShotAgentMetadata(repairedShot, scriptData, undefined, duration);
+      const validation = validateShotExecutionPlan({ ...repairedShot, agent }, duration);
+      const validationIssues = [...validation.issues];
+      const rawActionPhaseCount = asRecordArray(rawPlan.actionPhases).length;
+      if (rawActionPhaseCount === 0) {
+        validationIssues.push('Agent 原始输出缺少 actionPhases，不能依赖确定性回退代填');
+      } else if (rawActionPhaseCount > maxPhases) {
+        validationIssues.push(`Agent 原始输出包含 ${rawActionPhaseCount} 个动作阶段，超过上限 ${maxPhases}`);
+      }
+      if (validationIssues.length === 0) {
+        return { executionPlan: agent.executionPlan, agent };
+      }
+      repairFeedback = validationIssues.map((issue) => `- ${issue}`).join('\n');
+      if (attempt === 0) {
+        logScriptProgress(`单镜头 Agent 计划未通过，正在按校验结果重试：${validationIssues.join('；')}`);
+      } else {
+        logScriptProgress(`单镜头 Agent 重试后仍有校验问题：${validationIssues.join('；')}`);
+        return { executionPlan: agent.executionPlan, agent };
+      }
+    }
+    return undefined;
+  } catch (error) {
+    logScriptProgress(`单镜头 Agent 重规划失败，回退到确定性编译：${errorMessage(error)}`);
+    return undefined;
+  }
 };
 
 export const attachShotAgentMetadata = (
@@ -823,7 +1065,7 @@ Evaluate:
 3. One dominant action is physically achievable within ${durationSeconds} seconds.
 4. Camera movement is motivated, not repetitive, and preserves screen direction/eyelines.
 5. Entry and exit states cut together; identity, exact wardrobe, props, lighting, and spatial facts remain stable.
-6. Start/end visual prompts represent reachable states of the same shot.
+6. Start/end visual prompts represent reachable states of the same shot. Repair any prompt that is only a style label, generic scene description, or lacks the shot-specific subject action, spatial placement, prop relationship, composition, camera movement, lighting, or continuity. A concise prompt is acceptable, but it must still contain those shot-specific facts.
 7. Dialogue remains in its original language and is short enough for the shot. Never add narration.
 8. MiniMax H3 Ref2VA can execute the motion from references without treating references as literal start/end frames.
 
@@ -854,7 +1096,7 @@ Required JSON shape:
       "cameraMovement": "optional replacement",
       "shotSize": "optional replacement",
       "keyframes": {"startVisualPrompt": "optional", "endVisualPrompt": "optional"},
-      "agent": {"directorPurpose": "optional", "emotionalBeat": "optional", "visualHook": "optional", "timeline": [], "continuity": {}, "audioIntent": "optional", "h3FeasibilityNotes": "optional"}
+      "agent": {"directorPurpose": "optional", "emotionalBeat": "optional", "visualHook": "optional", "executionPlan": {"coreBeat": "optional", "actionPhases": [], "subjectBlocking": "optional", "propBlocking": "optional", "cameraPlan": "optional", "endState": "optional", "soundPlan": []}, "timeline": [], "continuity": {}, "audioIntent": "optional", "h3FeasibilityNotes": "optional"}
     }
   }]
 }`;
@@ -1133,6 +1375,14 @@ export const reviewStoryboardStructure = async (
     characters: shot.characters,
     directorPurpose: clean(shot.agent?.directorPurpose, 280),
     emotionalBeat: clean(shot.agent?.emotionalBeat, 280),
+    executionPlan: {
+      coreBeat: clean(shot.agent?.executionPlan.coreBeat, 360),
+      actionPhases: shot.agent?.executionPlan.actionPhases || [],
+      subjectBlocking: clean(shot.agent?.executionPlan.subjectBlocking, 300),
+      propBlocking: clean(shot.agent?.executionPlan.propBlocking, 300),
+      cameraPlan: clean(shot.agent?.executionPlan.cameraPlan, 300),
+      endState: clean(shot.agent?.executionPlan.endState, 300),
+    },
   }));
 
   const prompt = `You are a storyboard STRUCTURE editor for an AI short film.

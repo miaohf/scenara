@@ -1,7 +1,7 @@
 {
   "13": {
     "inputs": {
-      "aspect_ratio": "16:9 (Widescreen)",
+      "aspect_ratio": "1:1 (Square)",
       "megapixels": 1,
       "multiple": 32
     },
@@ -26,9 +26,49 @@
       "title": "Save Image (Advanced)"
     }
   },
+  "470": {
+    "inputs": {
+      "image": "f2.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "472": {
+    "inputs": {
+      "compare_view": {
+        "__value__": [
+          "",
+          ""
+        ]
+      },
+      "image_a": [
+        "470",
+        0
+      ],
+      "image_b": [
+        "461",
+        0
+      ]
+    },
+    "class_type": "ImageCompare",
+    "_meta": {
+      "title": "Compare Images"
+    }
+  },
+  "475": {
+    "inputs": {
+      "image": "l2.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
   "459:451": {
     "inputs": {
-      "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+      "unet_name": "qwen_image_2.1_bf16.safetensors",
       "weight_dtype": "default"
     },
     "class_type": "UNETLoader",
@@ -38,7 +78,7 @@
   },
   "459:453": {
     "inputs": {
-      "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+      "clip_name": "qwen3vl_8b_bf16.safetensors",
       "type": "qwen_image",
       "device": "default"
     },
@@ -91,7 +131,7 @@
   },
   "459:458": {
     "inputs": {
-      "seed": 0,
+      "seed": 800507192517087,
       "steps": 25,
       "cfg": 1,
       "sampler_name": "euler",
@@ -152,151 +192,29 @@
   },
   "459:474": {
     "inputs": {
-      "prompt": "Keep the character and pose in <image1> unchanged, put clothing from <image2> on the character, preserve facial features, hair, body shape and pose, natural fabric texture, keep original background and lighting",
+      "prompt": "Keep the character and pose in <image1> unchanged, put this light blue denim shirt from <image2> on the character, preserve the original facial features, hair, body shape and pose, the denim shirt fits naturally on body, realistic denim fabric texture, natural clothing folds, keep the original background and original lighting, high fashion editorial photography, sharp details",
       "negative_prompt": "",
       "resolution": 0,
       "clip": [
         "459:453",
         0
       ],
-      "vae": [
-        "459:454",
-        0
-      ],
       "images.image_1": [
         "470",
         0
       ],
+      "vae": [
+        "459:454",
+        0
+      ],
       "images.image_2": [
-        "471",
-        0
-      ],
-      "images.image_3": [
-        "472",
-        0
-      ],
-      "images.image_4": [
-        "473",
-        0
-      ],
-      "images.image_5": [
-        "474",
-        0
-      ],
-      "images.image_6": [
         "475",
-        0
-      ],
-      "images.image_7": [
-        "476",
-        0
-      ],
-      "images.image_8": [
-        "477",
-        0
-      ],
-      "images.image_9": [
-        "478",
-        0
-      ],
-      "images.image_10": [
-        "479",
         0
       ]
     },
     "class_type": "TextEncodeQwenImage21",
     "_meta": {
       "title": "Text Encode Qwen Image 2.1"
-    }
-  },
-  "470": {
-    "inputs": {
-      "image": "example.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Reference Image 1"
-    }
-  },
-  "471": {
-    "inputs": {
-      "image": "example.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Reference Image 2"
-    }
-  },
-  "472": {
-    "inputs": {
-      "image": "example.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Reference Image 3"
-    }
-  },
-  "473": {
-    "inputs": {
-      "image": "example.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Reference Image 4"
-    }
-  },
-  "474": {
-    "inputs": {
-      "image": "example.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Reference Image 5"
-    }
-  },
-  "475": {
-    "inputs": {
-      "image": "example.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Reference Image 6"
-    }
-  },
-  "476": {
-    "inputs": {
-      "image": "example.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Reference Image 7"
-    }
-  },
-  "477": {
-    "inputs": {
-      "image": "example.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Reference Image 8"
-    }
-  },
-  "478": {
-    "inputs": {
-      "image": "example.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Reference Image 9"
-    }
-  },
-  "479": {
-    "inputs": {
-      "image": "example.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "Reference Image 10"
     }
   }
 }

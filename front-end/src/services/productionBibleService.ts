@@ -60,6 +60,7 @@ export const deriveProductionBible = (scriptData?: ScriptData | null): Productio
 
   return {
     version: PRODUCTION_BIBLE_VERSION,
+    historicalContext: clean(scriptData?.historicalContext),
     worldRules: joinLines([
       scriptData?.genre ? `Genre: ${scriptData.genre}` : undefined,
       scriptData?.logline ? `Story premise: ${scriptData.logline}` : undefined,
@@ -96,6 +97,7 @@ export const resolveProductionBible = (scriptData?: ScriptData | null): Producti
     ...derived,
     ...stored,
     version: stored.version || PRODUCTION_BIBLE_VERSION,
+    historicalContext: clean(stored.historicalContext) || derived.historicalContext,
     pinnedDecisions: Array.isArray(stored.pinnedDecisions)
       ? stored.pinnedDecisions.map(clean).filter(Boolean)
       : derived.pinnedDecisions,
@@ -108,6 +110,9 @@ export const formatProductionBibleForPrompt = (scriptData?: ScriptData | null): 
   return `[PRODUCTION BIBLE — FACTS OVERRIDE STYLE SUGGESTIONS]
 World rules:
 ${bible.worldRules}
+
+Historical context:
+${bible.historicalContext || 'No historical period is locked. Do not invent a specific period.'}
 
 Costume rules:
 ${bible.costumeRules}

@@ -24,7 +24,7 @@ interface VideoGeneratorProps {
   hasEndFrame: boolean;
   onGenerate: (aspectRatio: AspectRatio, duration: VideoDuration, modelId: string, quality?: 'standard' | 'turbo') => void;
   onCancel?: () => void;
-  onEditPrompt: () => void;
+  onEditPrompt: (modelId?: string, duration?: VideoDuration) => void;
   onModelChange?: (modelId: string) => void;
   planningShotDuration?: number;
   defaultAspectRatio?: AspectRatio;
@@ -218,7 +218,7 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
           <Video className="w-3 h-3 text-[var(--accent)]" />
           {text('参数', 'Parameters')}
           <button
-            onClick={onEditPrompt}
+            onClick={() => onEditPrompt(effectiveModelId || selectedModelId, duration)}
             className="p-1 text-[var(--warning-text)] hover:text-[var(--text-primary)] transition-colors"
             title={text('编辑视频提示词', 'Edit video prompt')}
           >
@@ -303,7 +303,7 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
               {text('原生音频 ON', 'Native audio ON')}
             </span>
           )}
-          {hasEndFrame && !modelRouting.supportsEndFrame && (
+          {hasEndFrame && !isRef2VModel && !modelRouting.supportsEndFrame && (
             <p className="basis-full text-[9px] text-[var(--warning-text)] font-mono">
               {text('当前模型忽略尾帧，仅使用首帧。', 'This model ignores the end frame and uses the start frame only.')}
             </p>
@@ -399,10 +399,10 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
           onClick={handleGenerate}
           disabled={!canGenerate || isGenerating}
           className={`flex-1 py-2.5 rounded-lg font-bold text-xs uppercase tracking-widest flex items-center justify-center gap-2 transition-all ${
-            hasVideo
-              ? 'bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:bg-[var(--border-secondary)]'
-              : 'bg-[var(--accent)] text-[var(--accent-on)] hover:bg-[var(--accent-hover)] shadow-lg shadow-[var(--accent-shadow)]'
-          } ${!canGenerate || isGenerating ? 'opacity-50 cursor-not-allowed' : ''}`}
+            'bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] hover:bg-[var(--btn-primary-hover)] shadow-lg shadow-[var(--btn-primary-shadow)]'
+          } ${!canGenerate || isGenerating
+            ? 'bg-[var(--bg-hover)] text-[var(--text-muted)] border border-[var(--border-primary)] shadow-none opacity-100 cursor-not-allowed'
+            : ''}`}
         >
           {isGenerating ? (
             <>

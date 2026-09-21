@@ -92,7 +92,7 @@ interface ShotWorkbenchProps {
   voiceCharacters?: Pick<Character, 'id' | 'name'>[];
   onGenerateDubbing: (mode: DubbingMode, text: string, modelId?: string, speakerId?: string) => void;
   onClearDubbing: () => void;
-  onEditVideoPrompt: () => void;
+  onEditVideoPrompt: (modelId?: string, duration?: VideoDuration) => void;
   onVideoModelChange: (modelId: string) => void;
   onImageClick: (url: string, title: string) => void;
   videoInputMode?: 'keyframes' | 'storyboard-grid';
@@ -313,7 +313,9 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
 
   // 「首尾帧」模式下始终展示尾帧槽位，不跟当前视频模型的 supportsEndFrame 绑定；
   // 模型不支持时，生成阶段会自动忽略尾帧并提示。尾帧本身仍可选。
-  const showEndFrame = effectiveVideoInputMode === 'keyframes';
+  // 首帧重新生成期间不能因为输入模式/队列状态刷新而卸载尾帧。
+  // 只要镜头已有尾帧，就继续保留尾帧的图片、操作按钮和审核结果。
+  const showEndFrame = effectiveVideoInputMode === 'keyframes' || Boolean(endKf);
   const hasStartFrame = !!startKf?.imageUrl;
   const hasEndFrame = !!endKf?.imageUrl;
   const startFrameReviewed = Boolean(
@@ -329,7 +331,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
     && endKf.visualReview.reviewedImageUrl === endKf.imageUrl,
   );
   const keyframeReady = isR2VModel
-    ? previewEntries.length > 0 && (startFrameReviewed || endFrameReviewed)
+    ? previewEntries.length > 0
     : effectiveVideoInputMode === 'storyboard-grid'
     ? startFrameReviewed
     : startFrameReviewed && (!hasEndFrame || endFrameReviewed);
@@ -488,23 +490,6 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
       return {
         label: text('下一步：生成首帧', 'Next: generate start frame'),
         hint: text('先生成首帧，建立镜头视觉锚点。', 'Generate a start frame to anchor the shot.'),
-        disabled: startKf?.status === 'generating',
-        onClick: () => {
-          openSection('keyframe');
-          onGenerateKeyframe('start');
-        },
-      };
-    }
-
-    if (isR2VModel && !startFrameReviewed && !endFrameReviewed) {
-      return {
-        label: startKf?.status === 'generating'
-          ? text('审核样张生成中…', 'Generating review proof…')
-          : text('下一步：生成审核样张', 'Next: generate review proof'),
-        hint: text(
-          '该关键帧只用于画面语义审核，不会占用 R2V 的角色、场景或道具参考槽位。',
-          'This keyframe is only a visual-review proof and will not occupy an R2V character, scene, or prop reference slot.',
-        ),
         disabled: startKf?.status === 'generating',
         onClick: () => {
           openSection('keyframe');
@@ -1006,10 +991,16 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
         <section id="shot-section-keyframe" className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-surface)] overflow-hidden">
           {renderSectionHeader(
             'keyframe',
-            effectiveVideoInputMode === 'storyboard-grid' ? text('3 网格分镜', '3 Storyboard grid') : text('3 关键帧制作', '3 Keyframes'),
+            effectiveVideoInputMode === 'storyboard-grid'
+              ? text('3 网格分镜', '3 Storyboard grid')
+              : isR2VModel
+                ? text('3 参考图', '3 References')
+                : text('3 关键帧制作', '3 Keyframes'),
             effectiveVideoInputMode === 'storyboard-grid'
               ? text('网格分镜与首尾帧二选一，当前为网格模式', 'Choose either a storyboard grid or start/end frames.')
-              : text('完成首帧/尾帧后再进入视频', 'Complete the keyframes before generating video.'),
+              : isR2VModel
+                ? text('Ref2VA 直接使用角色、场景和道具参考图，不需要首尾帧。', 'Ref2VA uses character, scene, and prop references directly; start/end frames are not required.')
+                : text('完成首帧/尾帧后再进入视频', 'Complete the keyframes before generating video.'),
             steps[2]?.done
           )}
           {isSectionOpen('keyframe') && (
@@ -1024,17 +1015,19 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                   </span>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => onVideoInputModeChange('keyframes')}
-                    className={`px-2 py-2 rounded border text-[10px] font-bold uppercase tracking-wider transition-colors ${
-                      effectiveVideoInputMode === 'keyframes'
-                        ? 'border-[var(--accent-border)] bg-[var(--accent-bg)] text-[var(--accent-text)]'
-                        : 'border-[var(--border-primary)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'
-                    }`}
-                  >
-                    {text('首尾帧', 'Start/End frames')}
-                  </button>
+                  {!isR2VModel && (
+                    <button
+                      type="button"
+                      onClick={() => onVideoInputModeChange('keyframes')}
+                      className={`px-2 py-2 rounded border text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                        effectiveVideoInputMode === 'keyframes'
+                          ? 'border-[var(--accent-border)] bg-[var(--accent-bg)] text-[var(--accent-text)]'
+                          : 'border-[var(--border-primary)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'
+                      }`}
+                    >
+                      {text('首尾帧', 'Start/End frames')}
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -1051,13 +1044,19 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                   </button>
                 </div>
                 <p className="text-[10px] text-[var(--text-muted)]">
-                  {text('网格分镜与首尾帧互斥：切换为网格模式后，视频将自动忽略尾帧输入。', 'Grid and start/end frames are mutually exclusive; grid mode ignores the end frame.')}
+                  {isR2VModel
+                    ? text('Ref2VA 不读取首尾帧；如需时间线参考，可选用网格分镜。', 'Ref2VA does not read start/end frames; use a storyboard grid only when a timeline reference is needed.')
+                    : text('网格分镜与首尾帧互斥：切换为网格模式后，视频将自动忽略尾帧输入。', 'Grid and start/end frames are mutually exclusive; grid mode ignores the end frame.')}
                 </p>
               </div>
 
               {effectiveVideoInputMode === 'keyframes' ? (
                 <>
-                <KeyframeEditor
+                {isR2VModel ? (
+                  <div className="rounded-lg border border-[var(--accent-border)] bg-[var(--accent-bg)]/40 p-3 text-[10px] leading-relaxed text-[var(--text-secondary)]">
+                    {text('当前 Ref2VA 不生成或审核首帧/尾帧，视频将直接使用上方整理后的角色、场景和道具参考图。', 'Ref2VA does not generate or review start/end frames. The video uses the character, scene, and prop references prepared above.')}
+                  </div>
+                ) : <KeyframeEditor
                   shotId={shot.id}
                   shotIndex={shotIndex}
                   startKeyframe={startKf}
@@ -1077,9 +1076,11 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                   onCopyPrevious={onCopyPreviousEndFrame}
                   onCopyNext={onCopyNextStartFrame}
                   onImageClick={onImageClick}
-                />
-                <div className="grid grid-cols-1 @min-[520px]:grid-cols-2 gap-2">
-                  {[startKf, showEndFrame ? endKf : undefined].filter(Boolean).map((frame) => {
+                />}
+                {!isR2VModel && <div className="grid grid-cols-1 @min-[520px]:grid-cols-2 gap-2">
+                  {[startKf, (showEndFrame || endKf?.imageUrl || endKf?.visualReview) ? endKf : undefined]
+                    .filter(Boolean)
+                    .map((frame) => {
                     const keyframe = frame!;
                     if (!keyframe.imageUrl) return null;
                     const review = keyframe.visualReview;
@@ -1171,7 +1172,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                       </div>
                     );
                   })}
-                </div>
+                </div>}
                 </>
               ) : (
                 <div className="space-y-2">

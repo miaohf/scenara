@@ -36,6 +36,7 @@ import { loadSeriesProject, saveEpisodePartial } from '../../services/storageSer
 import { resolvePromptTemplateConfig } from '../../services/promptTemplateService';
 import { updatePromptWithVersion } from '../../services/promptVersionService';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
+import { resolveProductionBible } from '../../services/productionBibleService';
 import {
   filterBySceneIdCompat,
   getNextMainShotId,
@@ -308,6 +309,10 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
 
     if (reuseArtDirection && !next.artDirection && previous.artDirection) {
       next.artDirection = previous.artDirection;
+    }
+    // 项目圣经是用户确认的制作事实，不能因为重新解析剧本而丢失。
+    if (previous.productionBible) {
+      next.productionBible = previous.productionBible;
     }
 
     return next;
@@ -641,6 +646,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
         newData.artDirection = artDirection;
       }
       let updatedCount = 0;
+      const historicalContext = resolveProductionBible(newData).historicalContext;
 
       for (const char of newData.characters || []) {
         if (!String(char.visualPrompt || '').trim()) continue;
@@ -653,7 +659,8 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           localLanguage,
           artDirection,
           undefined,
-          (newData.props || []).map(p => p.name)
+          (newData.props || []).map(p => p.name),
+          historicalContext,
         );
         char.promptVersions = updatePromptWithVersion(
           char.visualPrompt,
@@ -676,7 +683,10 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           model,
           styleForPrompt,
           localLanguage,
-          artDirection
+          artDirection,
+          undefined,
+          undefined,
+          historicalContext,
         );
         scene.promptVersions = updatePromptWithVersion(
           scene.visualPrompt,
@@ -699,7 +709,10 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           model,
           styleForPrompt,
           localLanguage,
-          artDirection
+          artDirection,
+          undefined,
+          undefined,
+          historicalContext,
         );
         prop.promptVersions = updatePromptWithVersion(
           prop.visualPrompt,
@@ -871,7 +884,8 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       developmentKey,
       language: localLanguage,
       model: finalModel,
-      visualStyle: finalVisualStyle
+      visualStyle: finalVisualStyle,
+      historicalContext: resolveProductionBible(previousScriptData).historicalContext,
     });
     const shotsKey = buildStepKey('shots', {
       visualsKey,

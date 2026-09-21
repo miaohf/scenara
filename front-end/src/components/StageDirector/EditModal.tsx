@@ -12,6 +12,7 @@ export interface EditModalReferencePreview {
 }
 
 type PromptViewMode = 'scenara' | 'comfyui';
+type PromptWorkflowKind = 'ref2va' | 'flf2v' | 'unknown';
 
 interface EditModalProps {
   isOpen: boolean;
@@ -36,6 +37,8 @@ interface EditModalProps {
   rebuildPromptLabel?: string;
   /** 视频提示词：提供 Scenara / ComfyUI 粘贴视图切换 */
   enableComfyUiExport?: boolean;
+  /** 当前镜头模型族。传入后优先于旧提示词文本判断，避免模型切换后显示旧标签。 */
+  workflowKindOverride?: PromptWorkflowKind;
   referencePreviews?: EditModalReferencePreview[];
 }
 
@@ -60,6 +63,7 @@ const EditModal: React.FC<EditModalProps> = ({
   isRebuildingPrompt = false,
   rebuildPromptLabel,
   enableComfyUiExport = false,
+  workflowKindOverride,
   referencePreviews = [],
 }) => {
   const { text } = useInterfaceLanguage();
@@ -93,25 +97,18 @@ const EditModal: React.FC<EditModalProps> = ({
     [enableComfyUiExport, comfyUiPrompt, value],
   );
   const displayValue = enableComfyUiExport && viewMode === 'comfyui' ? comfyUiPrompt : value;
-  const promptReferenceCount = Math.max(
-    0,
-    ...Array.from(displayValue.matchAll(/^\s*-?\s*Image\s+(\d+)\b/gim), (match) => Number(match[1]) || 0),
-    ...Array.from(displayValue.matchAll(/<Picture\s+(\d+)>/gi), (match) => Number(match[1]) || 0),
-    // FLF2V base skill 常用裸写 "Picture 1" / "Picture 2"，不一定带尖括号。
-    ...Array.from(displayValue.matchAll(/\bPicture\s+(\d+)\b/gi), (match) => Number(match[1]) || 0),
-  );
-  // 提示词里没有 Image/Picture N 时仍展示全部参考图，便于核对九宫格等未写进正文映射的场景。
-  const visibleReferencePreviews = promptReferenceCount > 0
-    ? referencePreviews.slice(0, promptReferenceCount)
-    : referencePreviews;
-  const usesPictureLabel = /<Picture\s+\d+>/i.test(displayValue) || /\bPicture\s+\d+\b/i.test(displayValue);
+  // 预览数量以当前镜头实际传入的视频参考图为准，不从提示词反推数量。
+  // Ref2VA 的提示词可能只显式描述 Picture 1，其他参考图通过 subject/production
+  // note 间接约束；按提示词编号裁剪会把真实的多图输入错误截成一张。
+  const visibleReferencePreviews = referencePreviews;
   const busy = isAIGenerating || isRebuildingPrompt;
   const isComfyUiView = enableComfyUiExport && viewMode === 'comfyui';
+  const effectiveWorkflowKind = workflowKindOverride || workflowKind;
   const workflowKindLabel =
-    workflowKind === 'ref2va'
+    effectiveWorkflowKind === 'ref2va'
       ? 'Ref2VA'
-      : workflowKind === 'flf2v'
-        ? 'FLF2V'
+      : effectiveWorkflowKind === 'flf2v'
+        ? 'FL2V'
         : text('通用', 'Generic');
 
   useEffect(() => {
@@ -318,44 +315,15 @@ const EditModal: React.FC<EditModalProps> = ({
         {enableComfyUiExport && (
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <div className="inline-flex rounded-lg border border-[var(--border-primary)] p-0.5 bg-[var(--bg-base)]">
-                <button
-                  type="button"
-                  onClick={() => setViewMode('scenara')}
-                  className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors ${
-                    viewMode === 'scenara'
-                      ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)]'
-                      : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'
-                  }`}
-                >
-                  {text('Scenara 编辑版', 'Scenara edit')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode('comfyui')}
-                  className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors ${
-                    viewMode === 'comfyui'
-                      ? 'bg-[var(--btn-selected-bg)] text-[var(--btn-selected-text)]'
-                      : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'
-                  }`}
-                >
-                  {text('ComfyUI 粘贴版', 'ComfyUI paste')}
-                </button>
-              </div>
               <span className="px-2 py-1 rounded border border-[var(--border-primary)] text-[10px] font-mono text-[var(--text-secondary)]">
                 {workflowKindLabel}
               </span>
             </div>
             <p className="text-[10px] leading-relaxed text-[var(--text-muted)]">
-              {isComfyUiView
-                ? text(
-                    `已剥离 Scenara 策略块，保留 ${workflowKindLabel} 官方 skill 字段。文本已自动全选，可点下方「复制到剪贴板」，或直接 Ctrl/Cmd+C。请在 ComfyUI 中自行加载对应首尾帧/参考图。`,
-                    `Scenara policy blocks removed; official ${workflowKindLabel} skill fields kept. Text is auto-selected — use Copy below or Ctrl/Cmd+C. Load matching frames/references in ComfyUI.`,
-                  )
-                : text(
-                    '编辑版可保存；切换到 ComfyUI 粘贴版可复制到工作流提示词节点（支持 FLF2V / Ref2VA）。',
-                    'Edit and save here; switch to ComfyUI paste view to copy into the workflow prompt node (FLF2V / Ref2VA).',
-                  )}
+              {text(
+                `支持 ${workflowKindLabel}：编辑内容可保存，右下角按钮可直接复制 ComfyUI 粘贴版提示词。请在 ComfyUI 中自行加载对应首尾帧/参考图。`,
+                `Supports ${workflowKindLabel}: save edits here, or use the bottom-right button to copy the ComfyUI-ready prompt directly. Load matching frames/references in ComfyUI.`,
+              )}
             </p>
             {isComfyUiView && copyStatus === 'failed' && (
               <p className="text-[10px] text-[var(--error-text)]">
@@ -409,7 +377,31 @@ const EditModal: React.FC<EditModalProps> = ({
           </div>
         )}
 
-        <div className={`grid flex-1 gap-4 min-h-0 ${visibleReferencePreviews.length ? 'lg:grid-cols-[minmax(0,1fr)_15rem]' : ''}`}>
+        <div className="flex flex-1 min-h-0 flex-col gap-2">
+          {visibleReferencePreviews.length > 0 && (
+            <div className="flex shrink-0 items-center gap-2 overflow-x-auto rounded-lg border border-[var(--border-primary)] bg-[var(--bg-base)] px-3 py-2">
+              <span className="mr-1 shrink-0 text-[10px] uppercase tracking-widest text-[var(--text-tertiary)]">
+                {text('提示词参考', 'Prompt refs')}
+              </span>
+              {visibleReferencePreviews.map((reference, index) => {
+                const label = effectiveWorkflowKind === 'ref2va'
+                  ? `Subject ${index + 1}`
+                  : `Picture ${index + 1}`;
+                return (
+                  <div key={`${reference.image}-${index}`} className="group relative shrink-0">
+                    <div className="flex cursor-help items-center gap-1.5 rounded-md border border-transparent px-1 py-1 hover:border-[var(--accent)]/50 hover:bg-[var(--bg-hover)]">
+                      <img src={reference.image} alt={`${label}: ${reference.label}`} className="h-8 w-8 rounded object-cover bg-black/20" />
+                      <span className="font-mono text-[10px] text-[var(--accent-text)]">{label}</span>
+                    </div>
+                    <div className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 hidden w-64 rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-elevated)] p-2 shadow-2xl group-hover:block">
+                      <img src={reference.image} alt={`${label}: ${reference.label}`} className="h-44 w-full rounded object-contain bg-black/20" />
+                      <p className="mt-2 truncate text-[11px] text-[var(--text-secondary)]">{reference.label}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <textarea
             ref={textareaRef}
             value={displayValue}
@@ -418,60 +410,13 @@ const EditModal: React.FC<EditModalProps> = ({
               onChange(e.target.value);
             }}
             readOnly={isComfyUiView}
-            className={`w-full h-full min-h-0 bg-[var(--bg-base)] text-[var(--text-primary)] border border-[var(--border-secondary)] rounded-lg p-4 text-sm leading-6 outline-none focus:border-[var(--border-secondary)] transition-colors resize-none ${textareaClassName} ${
+            className={`w-full flex-1 min-h-0 bg-[var(--bg-base)] text-[var(--text-primary)] border border-[var(--border-secondary)] rounded-lg p-4 text-sm leading-6 outline-none focus:border-[var(--border-secondary)] transition-colors resize-none ${textareaClassName} ${
               isComfyUiView ? 'cursor-text opacity-95' : ''
             }`}
             placeholder={resolvedPlaceholder}
             autoFocus={!isComfyUiView}
             disabled={busy}
           />
-
-          {visibleReferencePreviews.length > 0 && (
-            <aside className="h-full min-h-0 border border-[var(--border-primary)] bg-[var(--bg-base)] rounded-lg p-3 overflow-y-auto">
-              <p className="text-[10px] uppercase tracking-widest font-bold text-[var(--text-tertiary)]">
-                {text('参考图片', 'Reference images')}
-              </p>
-              <p className="mt-1 text-[10px] leading-4 text-[var(--text-muted)]">
-                {text('悬停对应的 Image / Picture 行以预览。', 'Hover an Image/Picture row to preview it.')}
-              </p>
-              <div className="mt-3 space-y-1.5">
-                {visibleReferencePreviews.map((reference, index) => {
-                  const imageLine = displayValue.split(/\r?\n/).find((line) =>
-                    new RegExp(`^\\s*-?\\s*Image\\s+${index + 1}\\b`, 'i').test(line)
-                    || new RegExp(`<Picture\\s+${index + 1}>`, 'i').test(line)
-                    || new RegExp(`\\bPicture\\s+${index + 1}\\b`, 'i').test(line)
-                  );
-                  const fromPrompt = imageLine
-                    ?.replace(/^\s*-?\s*Image\s+\d+\s*[—–-]?\s*/i, '')
-                    .replace(new RegExp(`.*<Picture\\s+${index + 1}>\\s*`, 'i'), '')
-                    .replace(new RegExp(`.*?\\bPicture\\s+${index + 1}\\b\\s*`, 'i'), '')
-                    .trim() || '';
-                  const displayLabel =
-                    fromPrompt
-                    && fromPrompt.length <= 48
-                    && !/aligns with|fully referenced|is the environment|is a storyboard/i.test(fromPrompt)
-                      ? fromPrompt
-                      : reference.label;
-                  return (
-                    <div key={`${reference.image}-${index}`} className="group relative">
-                      <div className="flex items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left text-[11px] text-[var(--text-secondary)] hover:border-[var(--accent)]/50 hover:bg-[var(--bg-hover)] cursor-help">
-                        <span className="shrink-0 font-mono text-[var(--accent-text)]">
-                          {usesPictureLabel ? `Picture ${index + 1}` : `Image ${index + 1}`}
-                        </span>
-                        <span className="truncate" title={fromPrompt || reference.label}>
-                          {displayLabel}
-                        </span>
-                      </div>
-                      <div className="pointer-events-none absolute right-0 top-full z-20 mt-1 hidden w-64 rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-elevated)] p-2 shadow-2xl group-hover:block">
-                        <img src={reference.image} alt={`Image ${index + 1}: ${reference.label}`} className="h-44 w-full rounded object-contain bg-black/20" />
-                        <p className="mt-2 truncate text-[11px] text-[var(--text-secondary)]">{reference.label}</p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </aside>
-          )}
         </div>
 
         <div className="flex shrink-0 justify-between gap-3">
@@ -489,7 +434,7 @@ const EditModal: React.FC<EditModalProps> = ({
             )}
           </div>
           <div className="flex gap-3">
-            {isComfyUiView ? (
+            {enableComfyUiExport && (
               <button
                 type="button"
                 onClick={() => void handleCopyComfyUiPrompt()}
@@ -501,9 +446,10 @@ const EditModal: React.FC<EditModalProps> = ({
                   ? text('已复制', 'Copied')
                   : copyStatus === 'failed'
                     ? text('复制失败，请 Ctrl/Cmd+C', 'Copy failed — use Ctrl/Cmd+C')
-                    : text('复制到剪贴板', 'Copy to clipboard')}
+                  : text('复制到剪贴板', 'Copy to clipboard')}
               </button>
-            ) : (
+            )}
+            {!isComfyUiView && (
               <button
                 onClick={onSave}
                 disabled={busy}

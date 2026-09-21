@@ -747,7 +747,8 @@ def _resize_image_bytes(
 def _resolution_selector_aspect(aspect_ratio: str) -> str:
     normalized = (aspect_ratio or "16:9").strip()
     if normalized == "9:16":
-        return "9:16 (Mobile/Portrait)"
+        # Qwen Image 2.1's ResolutionSelector uses this exact enum label.
+        return "9:16 (Portrait Widescreen)"
     if normalized == "1:1":
         return "1:1 (Square)"
     return "16:9 (Widescreen)"

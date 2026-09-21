@@ -24,7 +24,8 @@ flowchart TD
     A6b -->|通过 / 跳过| A7[parseScriptStructure<br/>人物 / 场景 / 道具]
     A7 --> A7b[资产引用规范化<br/>name→ID · 见 TO_DO]
     A7b --> A8[风格与镜头时长配置]
-    A8 --> A9[生成分镜脚本 generateShotList]
+    A8 --> A8b[视觉设计 enrichScriptDataVisuals<br/>生成 Art Direction + 角色/场景/道具视觉提示词]
+    A8b --> A9[生成分镜脚本 generateShotList]
   end
 
   subgraph S2["2. 分镜 Agent 管线"]
@@ -82,9 +83,10 @@ flowchart TD
 
 1. **结构审在前，字段审在后**：叠戏/缺转场先删并重排；字段级审片只做终审或对受影响镜增量审，避免白跑。
 2. **故事层先于分镜**：改写/续写后的大纲缺口尽量在进 `generateShotList` 前拦住，少造废镜。
-3. **资产与提示词可并行**：分镜定稿后即可编草稿提示词；参考图齐备后再升为 Ref2VA 硬依赖。
-4. **视频失败可回流**：连续预检失败或可归因的成片失败，标镜并触发局部重写，而不是只停在改 prompt。
-5. **出片前再过一次成片级检查**：与分镜结构审分工——前者管叙事结构，后者管跳切/音画/失败占位。
+3. **视觉设计先于分镜**：点击“生成分镜脚本”后，`handleAnalyze` 会进入 `visuals` 阶段，由 `enrichScriptDataVisuals` 生成全局 `Art Direction`，并据此生成角色、场景、道具的视觉提示词；StageAssets 再使用这些提示词生成参考图。单独点击“AI 改写”只更新 `rawScript`，不会生成角色设计提示词。
+4. **资产与视频提示词可并行**：分镜定稿后即可编草稿提示词；参考图齐备后再升为 Ref2VA 硬依赖。
+5. **视频失败可回流**：连续预检失败或可归因的成片失败，标镜并触发局部重写，而不是只停在改 prompt。
+6. **出片前再过一次成片级检查**：与分镜结构审分工——前者管叙事结构，后者管跳切/音画/失败占位。
 
 ## 审片 / 门禁分层
 
@@ -100,6 +102,9 @@ flowchart TD
 ## 路径说明
 
 - **直接分镜出视频**：跳过改写走 `A5 → A6b…`；故事门禁可跳过（关闭质量校验时一并关闭）。
+- **视觉设计生成**：主路径是“生成分镜脚本”按钮内部的 `handleAnalyze → visuals`：`enrichScriptDataVisuals` 先调用 `generateArtDirection`，再调用角色/场景/道具视觉提示词生成；其结果写入 `scriptData.artDirection` 与各资产的 `visualPrompt`。
+- **AI 改写的边界**：`handleRewriteScript` 只负责改写并保存 `rawScript`；它不会自动接着执行结构解析、视觉设计或分镜生成。改写后需要再点击“生成分镜脚本”，才会进入上述完整流程。
+- **视觉设计补偿路径**：如果主路径没有生成或项目切换了视觉风格，`StageAssets` 在生成资产前检查 `scriptData.artDirection`，必要时重新生成并保存，然后生成对应资产提示词。
 - **`manual-edit` 提示词**：批量重建不得覆盖用户手改。
 - **尚未落地**：资产∥提示词并行、视频失败回流、出片 continuity、结构提案人工确认闸、`regenerateBeat` 真重生成。
 
@@ -109,6 +114,7 @@ flowchart TD
 |----|------|------|
 | 审片顺序 | 仅字段审 | 结构审 → 字段终审 |
 | 剧本后 | 直接 parse | 分镜前故事层软门禁 |
+| 视觉设计 | 位置不明确 | `enrichScriptDataVisuals` 在分镜前生成 Art Direction 与资产 visualPrompt |
 | 结构叠戏 | 无法自动修 | autoSafe 删/并/重排 |
 | 资产 vs 提示词 | 严格串行 | 仍串行（并行待做） |
 | 预检/成片失败 | 停在改 prompt | 回流待做 |

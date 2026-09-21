@@ -6,7 +6,10 @@ const MAX_H3_PROMPT_CHARS = 4700;
 const CJK_RE = /[\u3400-\u9fff]/;
 
 const clean = (value: unknown, maxLength = 900): string => {
-  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  const text = String(value ?? '')
+    .replace(/&#x20;|&nbsp;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1).trimEnd()}…`;
 };
 
@@ -28,24 +31,18 @@ const toSkillEnglish = (
   if (!text) return '';
   if (!CJK_RE.test(text)) return text;
   switch (role) {
+    // Keep locked production facts in their original language, but do not
+    // leak Scenara's internal field names into the H3 prompt.
     case 'action':
-      return `the locked action beat "${text}"`;
     case 'state':
-      return `the locked continuity state "${text}"`;
     case 'sound':
-      return `SFX "${text}"`;
     case 'identity':
-      return `silhouette notes "${text}"`;
     case 'mood':
-      return `emotional turn "${text}"`;
     case 'purpose':
-      return `story purpose "${text}"`;
     case 'atmosphere':
-      return `atmosphere "${text}"`;
     case 'wardrobe':
-      return `garment lock "${text}"`;
     case 'note':
-      return `production note "${text}"`;
+      return `"${text}"`;
     default:
       return `"${text}"`;
   }
@@ -63,6 +60,22 @@ const stripAssetBoilerplate = (value: string): string =>
       .replace(/锁定造型[^。]*。?/gu, ''),
     280,
   );
+
+const isDistinctFact = (candidate: string, existing: string[]): boolean => {
+  const normalize = (value: string) => clean(value, 500)
+    .toLowerCase()
+    .replace(/[\s\u3000.,，。;；:："“”'‘’()（）\[\]【】]/g, '');
+  const normalizedCandidate = normalize(candidate);
+  if (!normalizedCandidate) return false;
+  return !existing.some((value) => {
+    const normalizedExisting = normalize(value);
+    return normalizedExisting && (
+      normalizedCandidate === normalizedExisting
+      || normalizedCandidate.includes(normalizedExisting)
+      || normalizedExisting.includes(normalizedCandidate)
+    );
+  });
+};
 
 /**
  * Soften silence-seeking audioIntent so native H3 audio is not collapsed to mute,
@@ -385,7 +398,7 @@ export const buildMiniMaxH3Ref2VAPrompt = (
         role: 'character',
         pictureIndex: pictureNo,
         name: matched?.name || displayName,
-        definition: `${subjectLabel} is ${matched?.name || displayName} from ${pictureLabel}, preserving facial identity, body plan, and costume continuity.${identity}${wardrobe}${annotation ? ` ${annotation}` : ''}`,
+        definition: `${subjectLabel} is ${matched?.name || displayName} from ${pictureLabel}, preserving facial identity, body plan, and costume continuity.${identity}${wardrobe}${annotation ? ` Reference detail: ${annotation}.` : ''}`,
         retention: `${subjectLabel} (appears in [Shot 1]): fully_preserved - identity, proportions, and wardrobe from ${pictureLabel} stay consistent.`,
       });
       return;
@@ -395,12 +408,13 @@ export const buildMiniMaxH3Ref2VAPrompt = (
       const location = clean(scene?.location || displayName, 160);
       const atmosphereRaw = clean([scene?.time, scene?.atmosphere].filter(Boolean).join('; '), 220);
       const atmosphere = atmosphereRaw ? toSkillEnglish(atmosphereRaw, 'atmosphere') : '';
+      const distinctAnnotation = isDistinctFact(rawAnnotation, [atmosphereRaw]) ? annotation : '';
       subjects.push({
         label: subjectLabel,
         role: 'scene',
         pictureIndex: pictureNo,
         name: location,
-        definition: `${subjectLabel} is the environment from ${pictureLabel} (${location}${atmosphere ? `; ${atmosphere}` : ''}), preserving layout, lighting direction, and material palette.${annotation ? ` ${annotation}` : ''}`,
+        definition: `${subjectLabel} is the environment from ${pictureLabel} (${location}${atmosphere ? `; ${atmosphere}` : ''}), preserving layout, lighting direction, and material palette.${distinctAnnotation ? ` Reference detail: ${distinctAnnotation}.` : ''}`,
         retention: `${subjectLabel} (appears in [Shot 1]): fully_preserved - scene layout, lighting, and materials from ${pictureLabel} remain stable.`,
       });
       return;
@@ -419,12 +433,13 @@ export const buildMiniMaxH3Ref2VAPrompt = (
       const usage = matched?.usage
         ? ` Intended use: ${toSkillEnglish(matched.usage, 'note')}.`
         : '';
+      const distinctAnnotation = isDistinctFact(rawAnnotation, [matched?.description || '', matched?.usage || '']) ? annotation : '';
       subjects.push({
         label: subjectLabel,
         role: 'prop',
         pictureIndex: pictureNo,
         name: matched?.name || displayName,
-        definition: `${subjectLabel} is the prop ${matched?.name || displayName} from ${pictureLabel}, preserving shape, material, and surface detail.${description}${usage}${annotation ? ` ${annotation}` : ''}`,
+        definition: `${subjectLabel} is the prop ${matched?.name || displayName} from ${pictureLabel}, preserving shape, material, and surface detail.${description}${usage}${distinctAnnotation ? ` Reference detail: ${distinctAnnotation}.` : ''}`,
         retention: `${subjectLabel} (appears in [Shot 1]): fully_preserved - prop identity and materials from ${pictureLabel} remain recognizable.`,
       });
       return;
@@ -436,7 +451,7 @@ export const buildMiniMaxH3Ref2VAPrompt = (
       role: 'character',
       pictureIndex: pictureNo,
       name: displayName,
-      definition: `${subjectLabel} is the reusable visual identity from ${pictureLabel} (${displayName}), preserving appearance and proportions.${annotation ? ` ${annotation}` : ''}`,
+      definition: `${subjectLabel} is the reusable visual identity from ${pictureLabel} (${displayName}), preserving appearance and proportions.${annotation ? ` Reference detail: ${annotation}.` : ''}`,
       retention: `${subjectLabel} (appears in [Shot 1]): fully_preserved - referenced identity from ${pictureLabel} stays consistent.`,
     });
   });
@@ -523,8 +538,14 @@ export const buildMiniMaxH3Ref2VAPrompt = (
   const framingSize = normalizeShotSize(shot.shotSize) || 'Motivated cinematic framing';
   const cameraSentence = formatH3CameraMotion(shot.cameraMovement, shot.shotSize);
 
-  const maxTimelineBeats = duration <= 5 ? 3 : duration <= 10 ? 5 : 6;
-  const sourceTimeline = agent?.timeline || [];
+  // Keep compiler output aligned with the execution Agent and final H3 gate.
+  // Short clips cannot reliably execute three setup/action/transition phases.
+  const maxTimelineBeats = duration <= 5 ? 2 : duration <= 8 ? 3 : duration <= 15 ? 4 : 5;
+  // The execution plan is the authoritative, preflighted action budget. Keep
+  // timeline as a backward-compatible fallback for older shots.
+  const sourceTimeline = agent?.executionPlan?.actionPhases?.length
+    ? agent.executionPlan.actionPhases
+    : agent?.timeline || [];
   const timelineBeats = sourceTimeline.length <= maxTimelineBeats
     ? sourceTimeline
     : Array.from({ length: maxTimelineBeats }, (_, index) =>
@@ -544,13 +565,10 @@ export const buildMiniMaxH3Ref2VAPrompt = (
     ...pictureOnly.map((item) => item.definition),
   ].join('\n');
 
-  const summaryFocus = [
-    primaryCharacter ? `${primaryCharacter.label}` : '',
-    primaryScene ? `inside ${primaryScene.label}` : '',
-    propMentions ? `with ${propMentions}` : '',
-  ].filter(Boolean).join(' ');
-
-  const summary = `[reference generation] The target video is a ${duration}-second, ${aspectRatio} continuous shot. ${summaryFocus || 'Referenced subjects'} perform one readable beat${purpose ? `: ${purpose}` : ''}.${emotionalBeat ? ` Emotional turn: ${emotionalBeat}.` : ''}${visualHook ? ` Visual hook: ${visualHook}.` : ''} Reference stills provide identity/style anchors only; they are not literal opening or ending frames.`;
+  const summaryContext = primaryScene
+    ? `Inside ${primaryScene.label}, ${primaryCharacter?.label || 'the referenced subjects'} performs one readable beat${propMentions ? ` involving ${propMentions}` : ''}`
+    : `${primaryCharacter?.label || 'The referenced subjects'} perform one readable beat${propMentions ? ` involving ${propMentions}` : ''}`;
+  const summary = `[reference generation] The target video is a ${duration}-second, ${aspectRatio} continuous shot. ${summaryContext}${purpose ? ` that advances the story through ${purpose}` : ''}.${emotionalBeat ? ` The visible emotional change is ${emotionalBeat}.` : ''}${visualHook ? ` The visual focus is ${visualHook}.` : ''} Reference stills provide identity and style anchors only; they are not literal opening or ending frames.`;
 
   const retentionAnalysis = [
     ...subjects.map((subject) => subject.retention),
@@ -559,15 +577,21 @@ export const buildMiniMaxH3Ref2VAPrompt = (
 
   // Camera is appended once at shot level — do not embed per-beat camera (was duplicating).
   const beatNarration = timelineBeats.length > 0
-    ? timelineBeats.map((beat, index) => {
+    ? timelineBeats.map((beat) => {
         const beatAction = toSkillEnglish(clean(beat.action, 280), 'action');
         const beatSound = normalizeAudioCue(beat.sound);
-        const prefix = index === 0
-          ? ''
-          : `Then from ${beat.startSeconds.toFixed(1)}s to ${beat.endSeconds.toFixed(1)}s, `;
-        return `${prefix}${beatAction}${beatSound ? ` Diegetic sound: ${beatSound}.` : ''}`;
-      }).join(' ')
+        const beatCamera = clean(beat.camera, 180);
+        const soundText = beatSound.replace(/^SFX\s+/i, '').trim();
+        return [
+          `[${beat.startSeconds.toFixed(1)}–${beat.endSeconds.toFixed(1)}s]`,
+          `Action: ${beatAction}.`,
+          beatCamera ? `Camera: ${toSkillEnglish(beatCamera, 'note')}.` : '',
+          soundText ? `SFX: ${soundText}.` : '',
+        ].filter(Boolean).join('\n');
+      }).join('\n\n')
     : action;
+  const timelineHasCamera = timelineBeats.some((beat) => Boolean(clean(beat.camera, 180)));
+  const shotCameraClause = timelineHasCamera ? '' : ` ${cameraSentence}`;
 
   let speechClause = '';
   if (dialogueXml && nativeAudio?.mode === 'narration') {
@@ -578,26 +602,42 @@ export const buildMiniMaxH3Ref2VAPrompt = (
     speechClause = ` A clearly identified speaker (S1) says ${dialogueXml}.`;
   }
 
+  const dialogueTiming = clean(agent?.executionPlan?.dialogueTiming, 320);
+  const dialogueTimingClause = dialogueXml
+    ? ` Dialogue timing: ${toSkillEnglish(dialogueTiming || 'Deliver the line during the clearest performance beat; preserve a short readable pause after it.', 'note')}.`
+    : '';
+  const endStateClause = clean(agent?.executionPlan?.endState, 320);
+
   const detailedDescription = `${styleOpening(visualStyle)} Total duration is exactly ${duration} seconds. No subtitles, captions, logos, watermarks, or on-screen text.
 
-[Shot 1] ${framingSize} opens on the referenced stage. ${entryState ? `Entry state: ${entryState}. ` : ''}${characterMentions ? `${characterMentions} remain identity-locked. ` : ''}${propMentions ? `${propMentions} stay materially consistent. ` : ''}${primaryScene ? `${primaryScene.label} anchors the environment. ` : ''}${beatNarration} ${cameraSentence}${exitState ? ` The shot lands on: ${exitState}.` : ''}${mustPreserve.length ? ` Must preserve: ${mustPreserve.join('; ')}.` : ''} ${feasibility}${speechClause} Keep one coherent full-screen shot with no montage cuts, split-screen, collage, contact sheet, or grid panels visible.`;
+[Shot 1] ${framingSize} opens on the referenced stage. ${entryState ? `Entry state: ${entryState}. ` : ''}${characterMentions ? `${characterMentions} remain identity-locked. ` : ''}${propMentions ? `${propMentions} stay materially consistent. ` : ''}${primaryScene ? `${primaryScene.label} anchors the environment. ` : ''}
+Action timeline:
+${beatNarration}
+${shotCameraClause}${exitState ? ` The shot lands on: ${exitState}.` : ''}${endStateClause && endStateClause !== exitState ? ` Planned end state: ${toSkillEnglish(endStateClause, 'state')}.` : ''}${mustPreserve.length ? ` Must preserve: ${mustPreserve.join('; ')}.` : ''} ${feasibility}${speechClause}${dialogueTimingClause} Keep one coherent full-screen shot with no montage cuts, split-screen, collage, contact sheet, or grid panels visible.`;
 
   const diegeticCues = [
     normalizeAudioCue(agent?.audioIntent),
+    ...(agent?.executionPlan?.soundPlan || []).map((cue) => normalizeAudioCue(cue)),
     ...timelineBeats.map((beat) => normalizeAudioCue(beat.sound)),
   ].filter(Boolean).filter((cue, index, all) =>
     all.findIndex((other) => other === cue || other.includes(cue) || cue.includes(other)) === index
   );
+  const continuousSound = normalizeAudioCue(agent?.audioIntent)
+    || 'soft natural ambience matching the scene, kept audible but subordinate to the action';
+  const timedSoundCues = timelineBeats
+    .filter((beat) => Boolean(clean(beat.sound, 260)))
+    .map((beat) => `[${beat.startSeconds.toFixed(1)}–${beat.endSeconds.toFixed(1)}s] ${normalizeAudioCue(beat.sound)}`);
+  const timedSoundBlock = timedSoundCues.length
+    ? ` Timed sound cues:\n${timedSoundCues.join('\n')}`
+    : '';
 
   let overallSoundscape: string;
   if (options.hasReferenceAudio) {
     overallSoundscape = 'Follow the timing and audible layers guided by <Audio 1>; keep additional ambience subtle and synchronized. No unrelated narration.';
   } else if (nativeAudio?.mode === 'narration' || nativeAudio?.mode === 'dialogue' || spokenText) {
-    overallSoundscape = diegeticCues.length
-      ? `Under the spoken line, keep these diegetic layers audible: ${diegeticCues.join('; ')}. Soft room tone continues throughout. No extra voices.`
-      : 'Keep diegetic ambience audible but low under the spoken line: soft environmental texture, fabric/object contact, and room tone. No extra voices.';
+    overallSoundscape = `${timedSoundCues.length ? 'Overall sound intent' : 'Continuous ambience'} under the spoken line: ${continuousSound}.${timedSoundBlock} No extra voices.`;
   } else if (diegeticCues.length) {
-    overallSoundscape = `Audible throughout: ${diegeticCues.join('; ')}. Keep these diegetic layers clear, continuous, and synchronized with the action. No human speech, narration, singing, or speech-like vocalization.`;
+    overallSoundscape = `${timedSoundCues.length ? 'Overall sound intent' : 'Continuous ambience'}: ${continuousSound}. Keep it synchronized with the action.${timedSoundBlock} No human speech, narration, singing, or speech-like vocalization.`;
   } else {
     const sceneHint = clean(primaryScene?.name || primaryScene?.label || '', 180);
     overallSoundscape = sceneHint
@@ -605,7 +645,13 @@ export const buildMiniMaxH3Ref2VAPrompt = (
       : 'Continuous diegetic ambience with soft wind, distant water or room tone, and physical contact sounds clearly audible and synced to the action. No human speech, narration, singing, or speech-like vocalization.';
   }
 
-  const nonDiegeticMusic = (options.hasReferenceAudio || spokenText || nativeAudio?.mode === 'narration' || nativeAudio?.mode === 'dialogue')
+  const audioSourceText = [
+    agent?.audioIntent || '',
+    ...(agent?.executionPlan?.soundPlan || []),
+    ...timelineBeats.map((beat) => beat.sound || ''),
+  ].join(' ');
+  const explicitlyNoMusic = /无音乐|不要音乐|禁止音乐|no\s+(?:background\s+)?music|without\s+(?:background\s+)?music|music\s*:\s*n\/a/i.test(audioSourceText);
+  const nonDiegeticMusic = (explicitlyNoMusic || options.hasReferenceAudio || spokenText || nativeAudio?.mode === 'narration' || nativeAudio?.mode === 'dialogue')
     ? 'N/A'
     : 'A very low, sparse atmospheric underscore with soft sustained tones; keep it subordinate to diegetic ambience and end cleanly with the shot.';
 

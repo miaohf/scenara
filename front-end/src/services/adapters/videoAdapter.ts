@@ -208,7 +208,7 @@ const loadComfyWorkflowTemplate = async (workflowName: string): Promise<any> => 
 };
 
 const resolutionSelectorAspect = (aspectRatio: AspectRatio): string => {
-  if (aspectRatio === '9:16') return '9:16 (Mobile/Portrait)';
+  if (aspectRatio === '9:16') return '9:16 (Portrait Widescreen)';
   if (aspectRatio === '1:1') return '1:1 (Square)';
   return '16:9 (Widescreen)';
 };

@@ -79,10 +79,11 @@ Instructions:
 7. 'characters': Return ONLY IDs from provided Characters list.
 8. 'characterVariations': For each visible character using a non-base costume, map its character ID to one valid variation ID from that character. Use {} for base wardrobes. Respect variation sceneIds and never invent IDs.
 9. 'props': Return ONLY IDs from provided Props list when a prop is visibly involved. Never return a prop marked 'isWearable: true' when that item is worn by a character; worn clothing belongs to the character wardrobe. Use [] if none.
-10. 'visualPrompt': Detailed description for image generation in {visualStyle} style (OUTPUT IN {lang}). Include style-specific keywords.{artDirectionVisualPromptConstraint} Keep it under 50 words. Do not contradict the selected character wardrobe or costume variation.
-11. Every shot MUST include all required keys. Do not omit keys; use "", [], or {} when a value is empty.
-12. keyframes MUST contain BOTH a start frame and an end frame.
-13. Keys and string values MUST use standard JSON double quotes only.
+10. Before drafting 'visualPrompt', first decide the shot's nested agent.executionPlan: one dominant story beat, at most 3 chronological action phases, explicit subject blocking, prop blocking, camera plan, synchronized sound, and one readable end state. The visualPrompt, actionSummary, cameraMovement, and keyframes MUST be derived from that same plan; do not add a second major action that is absent from the plan.
+11. 'visualPrompt': Write a shot-specific visual description for image generation in {visualStyle} style (OUTPUT IN {lang}). Normally use 60-110 words, or the equivalent level of detail in Chinese. It MUST include: visible subject and current action, spatial placement, important prop relationships, shot size/camera angle, motivated camera movement, lighting/atmosphere, and continuity with the previous or next beat. Do not output only generic style labels or repeat the full character prompt. {artDirectionVisualPromptConstraint} Do not contradict the selected character wardrobe or costume variation.
+12. keyframes MUST contain BOTH a start frame and an end frame. Each keyframe visualPrompt must describe a reachable visual state of this specific shot, including subject action, composition, environment, and continuity; do not use a generic "起始状态/结束状态" placeholder when shot-specific details are available. The end keyframe MUST match agent.executionPlan.endState.
+13. Every shot MUST include all required keys. Do not omit keys; use "", [], or {} when a value is empty.
+14. Keys and string values MUST use standard JSON double quotes only.
 
 Output ONLY a valid JSON OBJECT with this exact structure (no markdown, no extra text):
 {

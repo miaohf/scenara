@@ -9,6 +9,10 @@ export interface ReferenceImageEntry {
   detailEn?: string;
   isComposite?: boolean;
   includedLabels?: string[];
+  assetId?: string;
+  policy?: 'required' | 'supportive' | 'textOnly' | 'omitted';
+  policyReason?: string;
+  priorityScore?: number;
 }
 
 export interface ReferenceCompositeSummary {
@@ -31,7 +35,7 @@ export interface ReferenceSlotInspection {
 
 export interface DroppedReferenceInspection {
   entry: ReferenceImageEntry;
-  reason: 'slot-limit';
+  reason: 'slot-limit' | 'semantic-budget';
 }
 
 export interface ReferenceImagePack {

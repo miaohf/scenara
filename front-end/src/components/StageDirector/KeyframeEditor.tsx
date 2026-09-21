@@ -99,6 +99,8 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
 }) => {
   const { jobs } = useGenerationQueue();
   const { text } = useInterfaceLanguage();
+  // 生成首帧时保留已有尾帧，避免一次局部重生成导致尾帧操作区短暂消失。
+  const shouldRenderEndFrame = showEndFrame || Boolean(endKeyframe);
 
   const renderKeyframePanel = (
     type: 'start' | 'end',
@@ -293,7 +295,7 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
 
       <div className={`grid gap-4 ${showEndFrame ? 'grid-cols-2' : 'grid-cols-1'}`}>
         {renderKeyframePanel('start', text('起始帧', 'Start frame'), startKeyframe)}
-        {showEndFrame && renderKeyframePanel('end', text('结束帧', 'End frame'), endKeyframe)}
+        {shouldRenderEndFrame && renderKeyframePanel('end', text('结束帧', 'End frame'), endKeyframe)}
       </div>
     </div>
   );

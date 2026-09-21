@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Users, Sparkles, RefreshCw, Loader2, MapPin, Archive, X, Search, Trash2, Package, Link2 } from 'lucide-react';
 import { ProjectState, CharacterVariation, Character, Scene, Prop, AspectRatio, AssetLibraryItem, CharacterTurnaroundPanel, PropPresentationMode } from '../../types';
 import type { ImageModelParams } from '../../types/model';
-import { generateImage, generateVisualPrompts, generateArtDirection, generateCharacterTurnaroundPanels, generateCharacterTurnaroundImage, generateCharacterThreeViewImage, resolveCharacterCastingAspectRatio, applyCharacterCastingPositivePrompt, buildLookbookRegenerateVariation, listProjectPropNames, inferCharacterWardrobe, isWearableProp, normalizeCharacterWardrobeInPrompt, mergeCharacterCastingNegativePrompt, CHARACTER_IDENTITY_LOCK } from '../../services/aiService';
+import { generateImage, generateVisualPrompts, generateArtDirection, generateCharacterTurnaroundPanels, generateCharacterTurnaroundImage, generateCharacterThreeViewImage, resolveCharacterCastingAspectRatio, applyCharacterCastingPositivePrompt, buildLookbookRegenerateVariation, listProjectPropNames, inferCharacterWardrobe, isWearableProp, normalizeCharacterWardrobeInPrompt, dedupeRepeatedPromptClauses, mergeCharacterCastingNegativePrompt, CHARACTER_IDENTITY_LOCK } from '../../services/aiService';
 import { 
   getRegionalPrefix, 
   handleImageUpload, 
@@ -33,6 +33,7 @@ import { SeriesProject } from '../../types';
 import BilingualLabel from '../BilingualLabel';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 import { addCharacterImageHistory, resolveCharacterImageView, sameCharacterImage } from '../../services/characterImageHistory';
+import { resolveProductionBible } from '../../services/productionBibleService';
 
 interface Props {
   project: ProjectState;
@@ -289,6 +290,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   const handleGenerateAsset = async (type: 'character' | 'scene', id: string) => {
     const scriptSnapshot = project.scriptData;
     if (!scriptSnapshot) return;
+    const historicalContext = resolveProductionBible(scriptSnapshot).historicalContext;
 
     // 设置生成状态
     updateProject(prev => {
@@ -321,7 +323,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           // 定妆生图默认纯文生图，遵循 visualPrompt；仅 shapeReferenceImage 显式上传时走 img2img
 
           if (char.visualPrompt) {
-            prompt = char.visualPrompt;
+            prompt = `${char.visualPrompt}${historicalContext ? `\n\n时代与文化约束：${historicalContext}\n严格遵守以上时代的服装、发式、鞋履、材质与禁用元素；不得出现时代错位或现代元素。` : ''}`;
             negativePrompt = char.negativePrompt || '';
           } else {
             const prompts = await generateVisualPrompts(
@@ -333,7 +335,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
               language,
               scriptSnapshot.artDirection,
               undefined,
-              listProjectPropNames(scriptSnapshot.props)
+              listProjectPropNames(scriptSnapshot.props),
+              historicalContext,
             );
             prompt = prompts.visualPrompt;
             negativePrompt = prompts.negativePrompt;
@@ -790,13 +793,14 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     const newData = cloneScriptData(project.scriptData);
     const char = newData.characters.find(c => compareIds(c.id, charId));
     if (char) {
+      const normalizedPrompt = dedupeRepeatedPromptClauses(newPrompt);
       char.promptVersions = updatePromptWithVersion(
         char.visualPrompt,
-        newPrompt,
+        normalizedPrompt,
         char.promptVersions,
         'manual-edit'
       );
-      char.visualPrompt = newPrompt;
+      char.visualPrompt = normalizedPrompt;
       updateProject({ scriptData: invalidateShotGenerationMeta(newData) });
     }
   };
@@ -813,6 +817,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     markPromptRegenerating(key, true);
 
     try {
+      const historicalContext = resolveProductionBible(project.scriptData).historicalContext;
       let artDirection = project.scriptData.artDirection;
       if (!artDirection?.visualStyle || artDirection.visualStyle !== visualStyle) {
         artDirection = await generateArtDirection(
@@ -856,7 +861,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           language,
           artDirection,
           undefined,
-          listProjectPropNames(project.scriptData.props)
+          listProjectPropNames(project.scriptData.props),
+          historicalContext,
         );
         updateProject(prev => {
           if (!prev.scriptData) return prev;
@@ -885,7 +891,10 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           shotPromptModel,
           visualStyle,
           language,
-          artDirection
+          artDirection,
+          undefined,
+          undefined,
+          historicalContext,
         );
         updateProject(prev => {
           if (!prev.scriptData) return prev;
@@ -914,7 +923,10 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           shotPromptModel,
           visualStyle,
           language,
-          artDirection
+          artDirection,
+          undefined,
+          undefined,
+          historicalContext,
         );
         updateProject(prev => {
           if (!prev.scriptData) return prev;
@@ -1213,6 +1225,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   const handleGeneratePropAsset = async (propId: string) => {
     const scriptSnapshot = project.scriptData;
     if (!scriptSnapshot) return;
+    const historicalContext = resolveProductionBible(scriptSnapshot).historicalContext;
 
     // 设置生成状态
     updateProject(prev => {
@@ -1240,7 +1253,10 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           shotPromptModel,
           visualStyle,
           language,
-          scriptSnapshot.artDirection
+          scriptSnapshot.artDirection,
+          undefined,
+          undefined,
+          historicalContext,
         );
         prompt = prompts.visualPrompt;
         negativePrompt = prompts.negativePrompt || negativePrompt;

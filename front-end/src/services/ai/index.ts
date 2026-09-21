@@ -53,6 +53,7 @@ export {
   isWearableProp,
   inferCharacterWardrobe,
   normalizeCharacterWardrobeInPrompt,
+  dedupeRepeatedPromptClauses,
   listProjectPropNames,
   stripProjectPropsFromPrompt,
   buildCharacterLookbookPromptRules,

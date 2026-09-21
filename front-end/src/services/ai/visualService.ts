@@ -174,13 +174,17 @@ export const generateAllCharacterPrompts = async (
   language: string = '中文',
   model: string = getActiveChatModelName(),
   abortSignal?: AbortSignal,
-  excludePropNames?: string[]
+  excludePropNames?: string[],
+  historicalContext?: string,
 ): Promise<{ visualPrompt: string; negativePrompt: string }[]> => {
   console.log(`🎭 generateAllCharacterPrompts 调用 - 批量生成 ${characters.length} 个角色的视觉提示词`);
   logScriptProgress(`正在批量生成 ${characters.length} 个角色的视觉提示词（风格统一模式）...`);
 
   const stylePrompt = getStylePrompt(visualStyle);
   const negativePrompt = getNegativePrompt(visualStyle);
+  const historicalContextBlock = historicalContext?.trim()
+    ? `## HISTORICAL / CULTURAL CONTEXT (MANDATORY)\n${historicalContext.trim()}\n`
+    : '';
 
   if (characters.length === 0) return [];
 
@@ -225,6 +229,7 @@ ${artDirection.consistencyAnchors}
 - Mood Keywords: ${artDirection.moodKeywords.join(', ')}
 
 ## Genre: ${genre}
+${historicalContextBlock}
 ## Technical Quality: ${stylePrompt}
 
 ## Characters to Generate
@@ -256,6 +261,7 @@ ${buildCharacterLookbookPromptRules(excludePropNames)}
 9. NEVER put project prop names or carried items into the visual prompt text.
 10. Do not convert the subject into a different body plan. Do not leave human/humanoid subjects unclothed.
 11. Follow Visual Style ${visualStyle} only. Do not mix incompatible style families (do not combine photoreal live-action with cel shading, six-head cartoon proportions, or Pixar/DreamWorks CGI).
+${historicalContext?.trim() ? '12. Include the historical/cultural context in every character visualPrompt. Treat its clothing, hairstyle, footwear, material, and forbidden-anachronism rules as hard constraints.' : ''}
 
 ## OUTPUT FORMAT
 Output ONLY valid JSON with this structure:
@@ -329,7 +335,8 @@ export const generateVisualPrompts = async (
   language: string = '中文',
   artDirection?: ArtDirection,
   abortSignal?: AbortSignal,
-  excludePropNames?: string[]
+  excludePropNames?: string[],
+  historicalContext?: string,
 ): Promise<{ visualPrompt: string; negativePrompt: string }> => {
   const stylePrompt = getStylePrompt(visualStyle);
   const negativePrompt = type === 'scene'
@@ -347,6 +354,9 @@ Lighting: ${artDirection.lightingStyle}
 Texture: ${artDirection.textureStyle}
 Mood Keywords: ${artDirection.moodKeywords.join(', ')}
 ` : '';
+  const historicalContextBlock = historicalContext?.trim()
+    ? `\n## HISTORICAL / CULTURAL CONTEXT (MANDATORY)\n${historicalContext.trim()}\nApply this as a hard constraint. Do not introduce anachronistic clothing, hairstyle, footwear, accessories, architecture, or props.\n`
+    : '';
 
   let prompt: string;
 
@@ -354,6 +364,7 @@ Mood Keywords: ${artDirection.moodKeywords.join(', ')}
     const char = data as Character;
     prompt = `You are an expert AI prompt engineer for ${visualStyle} style image generation.
 ${artDirectionBlock}
+${historicalContextBlock}
 Create a detailed visual prompt for a character with the following structure:
 
 Character Data:
@@ -363,6 +374,7 @@ Character Data:
 - Age: ${char.age}
 - Personality: ${char.personality}
 - Creative Direction: ${char.creativeDirection ? JSON.stringify(char.creativeDirection) : '[follow established personality]'}
+- Historical / Cultural Context: ${historicalContext?.trim() || '[not specified]'}
 
 REQUIRED STRUCTURE (output in ${language}):
 Describe the subject as given in the character data. Do not invent a different kind of being.
@@ -386,6 +398,7 @@ CRITICAL RULES:
 - Follow Visual Style ${visualStyle} only. Do not mix incompatible style families (do not combine photoreal live-action with cel shading, six-head cartoon proportions, or Pixar/DreamWorks CGI).
 - Use specific, concrete visual details
 - Make the face unmistakably individual rather than a generic attractive/model face; do not default to the same face as other characters.
+- When historical context is supplied, include it in the output prompt and follow it literally for attire, hairstyle, footwear, materials, and forbidden anachronisms.
 - Output as single paragraph, comma-separated
 - MUST include style keywords: ${visualStyle}
 - Length: 70-110 words
@@ -396,6 +409,7 @@ Output ONLY the visual prompt text, no explanations.`;
     const scene = data as Scene;
     prompt = `You are an expert cinematographer and AI prompt engineer for ${visualStyle} productions.
 ${artDirectionBlock}
+${historicalContextBlock}
 Create a cinematic scene/environment prompt with this structure:
 
 Scene Data:
@@ -433,6 +447,7 @@ Output ONLY the visual prompt text, no explanations.`;
     const prop = data as Prop;
     prompt = `You are an expert prop/product prompt engineer for ${visualStyle} style image generation.
 ${artDirectionBlock}
+${historicalContextBlock}
 Create a cinematic visual prompt for a standalone prop/item.
 
 Prop Data:

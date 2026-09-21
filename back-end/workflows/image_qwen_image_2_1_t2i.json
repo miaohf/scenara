@@ -1,7 +1,7 @@
 {
   "13": {
     "inputs": {
-      "aspect_ratio": "16:9 (Widescreen)",
+      "aspect_ratio": "3:4 (Portrait Standard)",
       "megapixels": 1,
       "multiple": 8
     },
@@ -28,7 +28,7 @@
   },
   "459:451": {
     "inputs": {
-      "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+      "unet_name": "qwen_image_2.1_bf16.safetensors",
       "weight_dtype": "default"
     },
     "class_type": "UNETLoader",
@@ -38,7 +38,7 @@
   },
   "459:452": {
     "inputs": {
-      "prompt": "a cinematic landscape",
+      "prompt": "成年男性渔人，中等身材略显精瘦，六点五头身比例。面部轮廓硬朗，下巴线条分明，眉骨突出，眼神警觉而深邃，皮肤呈浅麦色带风霜与水汽红晕。头发湿漉漉地贴在额头，发丝细节清晰。身穿磨损的粗布短褐，衣摆边缘粗糙，脚蹬简易草鞋。全身站立姿态，双手自然下垂，神情谨慎好奇。中性无缝影棚背景，高品质3D CGI动画，皮克斯风格，皮肤次表面散射，物理渲染，柔和阴影，无可见描边。\n\nAttire: 粗布短褐; 短刀. Preserve every garment, color, material, and silhouette exactly.",
       "negative_prompt": "",
       "resolution": 1024,
       "clip": [
@@ -53,7 +53,7 @@
   },
   "459:453": {
     "inputs": {
-      "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+      "clip_name": "qwen3vl_8b_bf16.safetensors",
       "type": "qwen_image",
       "device": "default"
     },
@@ -106,7 +106,7 @@
   },
   "459:458": {
     "inputs": {
-      "seed": 0,
+      "seed": 593103825222985,
       "steps": 25,
       "cfg": 1,
       "sampler_name": "euler",
