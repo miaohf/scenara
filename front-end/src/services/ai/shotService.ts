@@ -165,7 +165,8 @@ export const optimizeBothKeyframes = async (
   characterInfo: string[],
   visualStyle: string,
   model: string = getActiveChatModelName(),
-  promptTemplates?: PromptTemplateConfig
+  promptTemplates?: PromptTemplateConfig,
+  frameContext?: string,
 ): Promise<{ startPrompt: string; endPrompt: string }> => {
   console.log('🎨 optimizeBothKeyframes 调用 - 同时优化起始帧和结束帧 - 使用模型:', model);
   const startTime = Date.now();
@@ -185,6 +186,7 @@ export const optimizeBothKeyframes = async (
     cameraMovement,
     characters: characterInfo.length > 0 ? characterInfo.join('。') : '无特定角色',
     styleDesc,
+    frameContext: frameContext || '没有已有帧状态；请根据结构化镜头事实分别创作首帧和尾帧。',
   });
 
   try {
@@ -220,7 +222,8 @@ export const optimizeKeyframePrompt = async (
   characterInfo: string[],
   visualStyle: string,
   model: string = getActiveChatModelName(),
-  promptTemplates?: PromptTemplateConfig
+  promptTemplates?: PromptTemplateConfig,
+  frameContext?: string,
 ): Promise<string> => {
   console.log(`🎨 optimizeKeyframePrompt 调用 - ${frameType === 'start' ? '起始帧' : '结束帧'} - 使用模型:`, model);
   const startTime = Date.now();
@@ -269,6 +272,7 @@ export const optimizeKeyframePrompt = async (
     cameraMovement,
     characters: characterInfo.length > 0 ? characterInfo.join('。') : '无特定角色',
     styleDesc,
+    frameContext: frameContext || '没有已有帧状态；请根据结构化镜头事实创作当前帧。',
   });
 
   try {

@@ -19,6 +19,7 @@ import {
 import { STYLES } from './constants';
 import { countSceneHeadings, findTextMatches, parseScriptOutline } from './utils';
 import { renderHighlightedScript, renderMarkdownPreview } from './scriptHighlight';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface Props {
   script: string;
@@ -61,6 +62,7 @@ const ScriptEditor: React.FC<Props> = ({
   isRewriting,
   lastModified
 }) => {
+  const { text } = useInterfaceLanguage();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const findInputRef = useRef<HTMLInputElement | null>(null);
@@ -89,10 +91,10 @@ const ScriptEditor: React.FC<Props> = ({
         ? 'warning'
         : 'normal';
   const scriptLimitHint = scriptLengthStatus === 'error'
-    ? `超出上限 ${stats.characters}/${scriptHardLimit}，请拆分为多集`
+    ? text(`超出上限 ${stats.characters}/${scriptHardLimit}，请拆分为多集`, `Over limit: ${stats.characters}/${scriptHardLimit}; split into multiple episodes`)
     : scriptLengthStatus === 'warning'
-      ? `接近上限 ${stats.characters}/${scriptHardLimit}（建议单集 ≤ ${scriptSoftLimit}）`
-      : `建议单集长度 ≤ ${scriptSoftLimit} 字符`;
+      ? text(`接近上限 ${stats.characters}/${scriptHardLimit}（建议单集 ≤ ${scriptSoftLimit}）`, `Near limit: ${stats.characters}/${scriptHardLimit} (recommended episode limit: ${scriptSoftLimit})`)
+      : text(`建议单集长度 ≤ ${scriptSoftLimit} 字符`, `Recommended episode length: ≤ ${scriptSoftLimit} characters`);
   const scriptLimitTextClass = scriptLengthStatus === 'error'
     ? 'text-rose-300'
     : scriptLengthStatus === 'warning'
@@ -300,7 +302,7 @@ const ScriptEditor: React.FC<Props> = ({
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="w-1 h-4 rounded-full bg-[var(--accent)]" />
           <span className="text-xs font-semibold tracking-wide text-[var(--text-secondary)]">
-            剧本编辑器
+            {text('剧本编辑器', 'Script Editor')}
           </span>
         </div>
         <div className="flex items-center gap-1.5 overflow-x-auto">
@@ -310,10 +312,10 @@ const ScriptEditor: React.FC<Props> = ({
             className={`px-2 py-1.5 text-[11px] font-semibold rounded-md flex items-center gap-1.5 border transition-colors ${
               isEditing ? STYLES.button.selected : STYLES.button.secondary
             }`}
-            title={isEditing ? '切换到 Markdown 预览' : '进入编辑模式（也可双击正文）'}
+            title={isEditing ? text('切换到 Markdown 预览', 'Switch to Markdown preview') : text('进入编辑模式（也可双击正文）', 'Enter edit mode (or double-click the text)')}
           >
             {isEditing ? <Eye className="w-3.5 h-3.5" /> : <Pencil className="w-3.5 h-3.5" />}
-            {isEditing ? '预览' : '编辑'}
+            {isEditing ? text('预览', 'Preview') : text('编辑', 'Edit')}
           </button>
           <button
             type="button"
@@ -324,10 +326,10 @@ const ScriptEditor: React.FC<Props> = ({
             className={`px-2 py-1.5 text-[11px] font-semibold rounded-md flex items-center gap-1.5 border transition-colors ${
               showFind ? STYLES.button.selected : STYLES.button.secondary
             }`}
-            title="查找（Ctrl/⌘ F）"
+            title={text('查找（Ctrl/⌘ F）', 'Find (Ctrl/⌘ F)')}
           >
             <Search className="w-3.5 h-3.5" />
-            查找
+            {text('查找', 'Find')}
           </button>
           <button
             type="button"
@@ -335,10 +337,10 @@ const ScriptEditor: React.FC<Props> = ({
             className={`px-2 py-1.5 text-[11px] font-semibold rounded-md flex items-center gap-1.5 border transition-colors ${
               showOutline ? STYLES.button.selected : STYLES.button.secondary
             }`}
-            title="场次大纲"
+            title={text('场次大纲', 'Scene outline')}
           >
             <ListTree className="w-3.5 h-3.5" />
-            大纲
+            {text('大纲', 'Outline')}
           </button>
           <button
             type="button"
@@ -347,10 +349,10 @@ const ScriptEditor: React.FC<Props> = ({
             className={`px-2 py-1.5 text-[11px] font-semibold rounded-md flex items-center gap-1.5 border transition-colors ${
               isBusy ? STYLES.button.disabled : STYLES.button.secondary
             }`}
-            title="在光标处插入场次"
+            title={text('在光标处插入场次', 'Insert scene at cursor')}
           >
             <Clapperboard className="w-3.5 h-3.5" />
-            场次
+            {text('场次', 'Scene')}
           </button>
           <button
             type="button"
@@ -359,10 +361,10 @@ const ScriptEditor: React.FC<Props> = ({
             className={`px-2 py-1.5 text-[11px] font-semibold rounded-md flex items-center gap-1.5 border transition-colors ${
               isBusy ? STYLES.button.disabled : STYLES.button.secondary
             }`}
-            title="在光标处插入对白"
+            title={text('在光标处插入对白', 'Insert dialogue at cursor')}
           >
             <MessageSquare className="w-3.5 h-3.5" />
-            对白
+            {text('对白', 'Dialogue')}
           </button>
           <div className="w-px h-4 bg-[var(--border-primary)] mx-0.5" />
           <button
@@ -377,12 +379,12 @@ const ScriptEditor: React.FC<Props> = ({
             {isContinuing ? (
               <>
                 <BrainCircuit className="w-3.5 h-3.5 animate-spin" />
-                续写中
+                {text('续写中', 'Continuing…')}
               </>
             ) : (
               <>
                 <Plus className="w-3.5 h-3.5" />
-                AI续写
+                {text('AI续写', 'AI Continue')}
               </>
             )}
           </button>
@@ -393,17 +395,17 @@ const ScriptEditor: React.FC<Props> = ({
             className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md flex items-center gap-1.5 border transition-colors ${
               isBaseDisabled ? STYLES.button.disabled : STYLES.button.secondary
             }`}
-            title={hasInstruction ? '按上方要求改写全文' : '优化改写全文'}
+            title={hasInstruction ? text('按上方要求改写全文', 'Rewrite the full script using the instruction above') : text('优化改写全文', 'Rewrite and improve the full script')}
           >
             {isRewriting && !selectedCount ? (
               <>
                 <BrainCircuit className="w-3.5 h-3.5 animate-spin" />
-                改写中
+                {text('改写中', 'Rewriting…')}
               </>
             ) : (
               <>
                 <RotateCw className="w-3.5 h-3.5" />
-                AI改写
+                {text('AI改写', 'AI Rewrite')}
               </>
             )}
           </button>
@@ -419,12 +421,12 @@ const ScriptEditor: React.FC<Props> = ({
             {isRewriting && selectedCount > 0 ? (
               <>
                 <BrainCircuit className="w-3.5 h-3.5 animate-spin" />
-                选段改写中
+                {text('选段改写中', 'Rewriting selection…')}
               </>
             ) : (
               <>
                 <Wand2 className="w-3.5 h-3.5" />
-                选段改写
+                {text('选段改写', 'Rewrite Selection')}
               </>
             )}
           </button>
@@ -435,10 +437,10 @@ const ScriptEditor: React.FC<Props> = ({
             className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md flex items-center gap-1.5 border transition-colors ${
               canUndo ? STYLES.button.secondary : STYLES.button.disabled
             }`}
-            title="撤回最近一次改写"
+            title={text('撤回最近一次改写', 'Undo the latest rewrite')}
           >
             <Undo2 className="w-3.5 h-3.5" />
-            撤回
+            {text('撤回', 'Undo')}
           </button>
           <div className="relative">
             <button
@@ -447,25 +449,25 @@ const ScriptEditor: React.FC<Props> = ({
               className={`px-2 py-1.5 text-[11px] font-semibold rounded-md flex items-center border transition-colors ${
                 showHelp ? STYLES.button.selected : STYLES.button.secondary
               }`}
-              title="格式与快捷键"
+              title={text('格式与快捷键', 'Formatting and shortcuts')}
             >
               <HelpCircle className="w-3.5 h-3.5" />
             </button>
             {showHelp && (
               <div className="absolute right-0 top-9 z-20 w-64 rounded-lg border border-[var(--border-primary)] bg-[var(--bg-base)] p-3 shadow-xl text-[11px] text-[var(--text-secondary)]">
-                <p className="font-semibold text-[var(--text-primary)] mb-2">剧本格式</p>
+                <p className="font-semibold text-[var(--text-primary)] mb-2">{text('剧本格式', 'Script Format')}</p>
                 <p className="leading-relaxed text-[var(--text-tertiary)]">
-                  <span className="font-mono">#</span> 剧名　
-                  <span className="font-mono">##</span> 场次　
-                  <span className="font-mono">###</span> 场景<br />
-                  <span className="font-mono">**角色**</span> 后换行写台词
+                  <span className="font-mono">#</span> {text('剧名', 'Title')}　
+                  <span className="font-mono">##</span> {text('场次', 'Scene')}　
+                  <span className="font-mono">###</span> {text('场景', 'Setting')}<br />
+                  <span className="font-mono">**{text('角色', 'Character')}**</span> {text('后换行写台词', 'then write dialogue on the next line')}
                 </p>
-                <p className="font-semibold text-[var(--text-primary)] mt-3 mb-2">快捷键</p>
+                <p className="font-semibold text-[var(--text-primary)] mt-3 mb-2">{text('快捷键', 'Shortcuts')}</p>
                 <ul className="space-y-1 text-[var(--text-tertiary)]">
-                  <li>Tab 缩进</li>
-                  <li>Ctrl/⌘ F 查找</li>
-                  <li>Ctrl/⌘ Enter 续写</li>
-                  <li>Ctrl/⌘ Shift Enter 改写选段/全文</li>
+                  <li>{text('Tab 缩进', 'Tab Indent')}</li>
+                  <li>{text('Ctrl/⌘ F 查找', 'Ctrl/⌘ F Find')}</li>
+                  <li>{text('Ctrl/⌘ Enter 续写', 'Ctrl/⌘ Enter Continue')}</li>
+                  <li>{text('Ctrl/⌘ Shift Enter 改写选段/全文', 'Ctrl/⌘ Shift Enter Rewrite selection/full script')}</li>
                 </ul>
               </div>
             )}
@@ -494,13 +496,13 @@ const ScriptEditor: React.FC<Props> = ({
                   textareaRef.current?.focus();
                 }
               }}
-              placeholder="在剧本中查找…"
+              placeholder={text('在剧本中查找…', 'Find in script…')}
               className="flex-1 bg-[var(--bg-surface)] border border-[var(--border-primary)] text-[var(--text-primary)] px-3 py-1.5 text-xs rounded-md focus:border-[var(--border-secondary)] focus:outline-none"
             />
             <span className="text-[11px] text-[var(--text-muted)] tabular-nums whitespace-nowrap">
               {findQuery.trim()
-                ? (findMatches.length > 0 ? `${findIndex + 1}/${findMatches.length}` : '无匹配')
-                : '输入关键词'}
+                ? (findMatches.length > 0 ? `${findIndex + 1}/${findMatches.length}` : text('无匹配', 'No matches'))
+                : text('输入关键词', 'Enter a keyword')}
             </span>
             <button
               type="button"
@@ -539,27 +541,27 @@ const ScriptEditor: React.FC<Props> = ({
             }}
             placeholder={
               selectedCount > 0
-                ? '选段改写要求，例如：更紧张、对白更口语化…（Enter 改写选段）'
-                : '给 AI 的要求，例如：增加冲突、续写到乌江边…（可选，续写/改写都会用到）'
+                ? text('选段改写要求，例如：更紧张、对白更口语化…（Enter 改写选段）', 'Rewrite selection, e.g. make it tenser or make dialogue more conversational… (Enter to rewrite)')
+                : text('给 AI 的要求，例如：增加冲突、续写到乌江边…（可选，续写/改写都会用到）', 'Tell AI what to do, e.g. add conflict or continue to the river… (optional; used for continue/rewrite)')
             }
             className="flex-1 bg-[var(--bg-surface)] border border-[var(--border-primary)] text-[var(--text-primary)] px-3 py-1.5 text-xs rounded-md focus:border-[var(--border-secondary)] focus:outline-none transition-colors placeholder:text-[var(--text-muted)]"
           />
           {selectedCount > 0 ? (
             <div className="flex items-center gap-2 shrink-0">
               <span className="text-[11px] text-[var(--accent-text)] whitespace-nowrap tabular-nums">
-                已锁定 {selectedCount} 字
+                {text(`已锁定 ${selectedCount} 字`, `Locked ${selectedCount} characters`)}
               </span>
               <button
                 type="button"
                 onClick={() => onSelectionChange(0, 0)}
                 className="text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
               >
-                清除
+                {text('清除', 'Clear')}
               </button>
             </div>
           ) : (
             <span className="text-[11px] text-[var(--text-muted)] whitespace-nowrap">
-              框选后可改写选段
+              {text('框选后可改写选段', 'Select text to rewrite a passage')}
             </span>
           )}
         </div>
@@ -581,13 +583,13 @@ const ScriptEditor: React.FC<Props> = ({
                   >
                     {script ? highlighted : (
                       <span className="text-[var(--text-muted)]">
-                        在此输入故事大纲，或直接粘贴剧本…{'\n\n'}
-                        可用结构：{'\n'}
-                        # 剧名{'\n'}
-                        ## 第一场{'\n'}
-                        ### 内景，地点，日{'\n'}
-                        **角色名**{'\n'}
-                        台词
+                        {text('在此输入故事大纲，或直接粘贴剧本…', 'Enter a story outline or paste a script here…')}{'\n\n'}
+                        {text('可用结构：', 'Supported structure:')}{'\n'}
+                        # {text('剧名', 'Title')}{'\n'}
+                        ## {text('第一场', 'Scene 1')}{'\n'}
+                        ### {text('内景，地点，日', 'INT. LOCATION - DAY')}{'\n'}
+                        **{text('角色名', 'CHARACTER NAME')}**{'\n'}
+                        {text('台词', 'Dialogue')}
                       </span>
                     )}
                   </pre>
@@ -612,7 +614,7 @@ const ScriptEditor: React.FC<Props> = ({
                 <div
                   role="button"
                   tabIndex={0}
-                  title="双击正文进入编辑模式"
+                  title={text('双击正文进入编辑模式', 'Double-click the text to enter edit mode')}
                   onDoubleClick={() => setIsEditing(true)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') setIsEditing(true);
@@ -621,7 +623,7 @@ const ScriptEditor: React.FC<Props> = ({
                 >
                   {script ? renderMarkdownPreview(script) : (
                     <p className="m-0 whitespace-pre-wrap text-[13px] leading-[1.45] text-[var(--text-muted)]">
-                      在此输入故事大纲，或直接粘贴剧本…
+                      {text('在此输入故事大纲，或直接粘贴剧本…', 'Enter a story outline or paste a script here…')}
                     </p>
                   )}
                 </div>
@@ -632,11 +634,11 @@ const ScriptEditor: React.FC<Props> = ({
         {showOutline && (
           <aside className="w-48 shrink-0 border-l border-[var(--border-subtle)] bg-[var(--bg-base)]/60 overflow-y-auto px-3 py-4">
             <div className="text-[10px] font-bold tracking-widest text-[var(--text-tertiary)] mb-3">
-              结构大纲
+              {text('结构大纲', 'Structure Outline')}
             </div>
             {outline.length === 0 ? (
               <p className="text-[11px] leading-relaxed text-[var(--text-muted)]">
-                使用 # / ## / ### 标题后，可在此跳转场次。
+                {text('使用 # / ## / ### 标题后，可在此跳转场次。', 'Use # / ## / ### headings to jump between scenes here.')}
               </p>
             ) : (
               <nav className="space-y-0.5">
@@ -668,12 +670,12 @@ const ScriptEditor: React.FC<Props> = ({
           <span>{scriptLimitHint}</span>
         </div>
         <div className="flex items-center gap-4 text-[var(--text-muted)] tabular-nums">
-          <span>{stats.scenes} 场</span>
-          <span>{stats.characters} 字</span>
-          <span>{stats.lines} 行</span>
+          <span>{text(`${stats.scenes} 场`, `${stats.scenes} scenes`)}</span>
+          <span>{text(`${stats.characters} 字`, `${stats.characters} chars`)}</span>
+          <span>{text(`${stats.lines} 行`, `${stats.lines} lines`)}</span>
           <div className="flex items-center gap-1.5">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500/70" />
-            {lastModified ? '已自动保存' : '准备就绪'}
+            {lastModified ? text('已自动保存', 'Autosaved') : text('准备就绪', 'Ready')}
           </div>
         </div>
       </div>

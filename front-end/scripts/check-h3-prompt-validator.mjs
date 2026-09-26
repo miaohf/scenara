@@ -97,4 +97,48 @@ const visibilityConflict = validateAndRepairH3Prompt(
 );
 assert.ok(visibilityConflict.issues.some((issue) => issue.code === 'h3-end-state-visibility-conflict'));
 
+const missingDialogueTag = validateAndRepairH3Prompt(ref2vaPrompt, {
+  durationSeconds: 5,
+  expectedWorkflow: 'ref2va',
+  dialogue: 'Follow the river.',
+  audioMode: 'dialogue',
+});
+assert.equal(missingDialogueTag.canProceed, false);
+assert.ok(missingDialogueTag.issues.some((issue) => issue.code === 'h3-missing-dialogue-tag'));
+
+const missingSpeaker = validateAndRepairH3Prompt(
+  ref2vaPrompt.replace(
+    'The fisherman notices one petal and pauses.',
+    'The fisherman says <d>[English] Follow the river.</d>',
+  ),
+  {
+    durationSeconds: 5,
+    expectedWorkflow: 'ref2va',
+    dialogue: 'Follow the river.',
+    audioMode: 'dialogue',
+  },
+);
+assert.equal(missingSpeaker.canProceed, false);
+assert.ok(missingSpeaker.issues.some((issue) => issue.code === 'h3-dialogue-speaker-id'));
+
+const nonDialogueChinese = validateAndRepairH3Prompt(
+  ref2vaPrompt.replace('<Subject 1> stands in a boat.', '<Subject 1> 渔夫站在船上。'),
+  {
+    durationSeconds: 5,
+    expectedWorkflow: 'ref2va',
+  },
+);
+assert.equal(nonDialogueChinese.canProceed, false);
+assert.ok(nonDialogueChinese.issues.some((issue) => issue.code === 'h3-non-dialogue-cjk'));
+
+const policyBlockLeak = validateAndRepairH3Prompt(
+  `${ref2vaPrompt}\n\n[VIDEO_PROMPT_POLICY_V1 family=generic]\nKeep a coherent shot.`,
+  {
+    durationSeconds: 5,
+    expectedWorkflow: 'ref2va',
+  },
+);
+assert.equal(policyBlockLeak.canProceed, false);
+assert.ok(policyBlockLeak.issues.some((issue) => issue.code === 'h3-generic-policy-block'));
+
 console.log('H3 prompt validator checks passed.');

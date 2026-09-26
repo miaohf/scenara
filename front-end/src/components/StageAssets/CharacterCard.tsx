@@ -1,13 +1,14 @@
 import React from 'react';
-import { User, Check, Shirt, Trash2, Edit2, AlertCircle, FolderPlus, Grid3x3, Images, Link2, Upload, X, Loader2, History } from 'lucide-react';
+import { User, Check, Shirt, Trash2, Edit2, AlertCircle, FolderPlus, Grid3x3, Images, Link2, Upload, X, Loader2 } from 'lucide-react';
 import { Character } from '../../types';
 import PromptEditor from './PromptEditor';
 import ImageUploadButton from './ImageUploadButton';
 import InlineEditableText from './InlineEditableText';
+import AssetIntelligenceEditor from './AssetIntelligenceEditor';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
+import AssetImageHistoryStrip from './AssetImageHistoryStrip';
 import {
   getCharacterImageHistory,
-  resolveCharacterDisplayImage,
   resolveCharacterImageView,
   sameCharacterImage,
 } from '../../services/characterImageHistory';
@@ -28,12 +29,14 @@ interface CharacterCardProps {
   onOpenWardrobe: () => void;
   onOpenTurnaround: () => void;
   onOpenThreeView: () => void;
-  onImageClick: (imageUrl: string, imageUrls?: string[]) => void;
+  onImageClick: (imageUrl: string, imageUrls?: string[], onDelete?: (imageUrl: string) => void, onApply?: (imageUrl: string) => void) => void;
   onDelete: () => void;
   onUpdateInfo: (updates: { name?: string; gender?: string; age?: string; personality?: string; species?: string }) => void;
   onAddToLibrary: () => void;
   onReplaceFromLibrary: () => void;
   onApplyHistory: (imageUrl: string) => void;
+  onDeleteHistory: (imageUrl: string) => void;
+  onSaveAssetDNA: (assetDNA: NonNullable<Character['assetDNA']>) => void;
 }
 
 const CharacterCard: React.FC<CharacterCardProps> = ({
@@ -58,13 +61,16 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
   onAddToLibrary,
   onReplaceFromLibrary,
   onApplyHistory,
+  onDeleteHistory,
+  onSaveAssetDNA,
 }) => {
   const { text } = useInterfaceLanguage();
   const isLinked = !!character.libraryId;
   const activeImageView = resolveCharacterImageView(character);
-  const displayImage = resolveCharacterDisplayImage(character);
+  // 卡片主预览始终使用正面定妆照；九宫格/三视图只在各自弹窗中查看。
+  const displayImage = character.referenceImage;
   const imageHistory = getCharacterImageHistory(character);
-  const isSheetView = activeImageView !== 'casting' && !!displayImage;
+  const previewImages = Array.from(new Set([displayImage, ...imageHistory.map((item) => item.imageUrl)].filter(Boolean) as string[]));
   const handleShapeReferenceChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -82,10 +88,13 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
       )}
       <div className="flex gap-3 p-3 pb-0">
         {/* Character Image */}
-        <div className={`${isSheetView ? 'w-44' : 'w-36'} flex-shrink-0 transition-[width] duration-200`}>
+        <div className="w-36 flex-shrink-0">
           <div 
-            className={`${isSheetView ? 'aspect-video' : 'aspect-[9/16]'} bg-[var(--bg-elevated)] relative rounded-lg overflow-hidden cursor-pointer transition-[aspect-ratio] duration-200`}
-            onClick={() => displayImage && onImageClick(displayImage)}
+            className="aspect-[9/16] bg-[var(--bg-elevated)] relative rounded-lg overflow-hidden cursor-pointer"
+            onClick={() => {
+              if (isGenerating || !displayImage) return;
+              onImageClick(displayImage, previewImages, onDeleteHistory);
+            }}
           >
             {displayImage ? (
               <>
@@ -95,20 +104,10 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
                   alt={character.name}
                   className="w-full h-full object-contain"
                 />
-                {isSheetView && (
-                  <div className="absolute left-1.5 top-1.5 rounded border border-white/15 bg-black/65 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-white/90 backdrop-blur-sm">
-                    {activeImageView === 'turnaround' ? text('九宫格', 'Turnaround') : text('三视图', 'Three-view')}
-                  </div>
-                )}
                 {isGenerating && (
                   <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center gap-1">
                     <Loader2 className="w-6 h-6 animate-spin text-white" />
                     <span className="text-[10px] text-white font-bold tracking-wider">{text('重新出图中', 'RENDERING')}</span>
-                  </div>
-                )}
-                {!isGenerating && (
-                  <div className="absolute top-1.5 right-1.5 p-1 bg-[var(--accent)] text-[var(--accent-on)] rounded shadow-lg">
-                    <Check className="w-3 h-3" />
                   </div>
                 )}
               </>
@@ -294,6 +293,12 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
           />
         </div>
 
+        <AssetIntelligenceEditor
+          key={JSON.stringify(character.assetDNA || {})}
+          assetDNA={character.assetDNA}
+          onSaveAssetDNA={onSaveAssetDNA}
+        />
+
         <div className="mb-3 border border-[var(--border-primary)] rounded-lg p-2.5 bg-[var(--bg-elevated)]/40">
           <div className="flex items-center justify-between mb-2">
             <span className="text-[10px] font-mono text-[var(--text-tertiary)] uppercase tracking-wider">{text('角色参考图', 'CHARACTER REFERENCE')}</span>
@@ -339,42 +344,7 @@ const CharacterCard: React.FC<CharacterCardProps> = ({
           )}
         </div>
 
-        {imageHistory.length > 0 && (
-          <div className="mb-3 rounded-lg border border-[var(--border-primary)] bg-[var(--bg-elevated)]/25 p-2.5">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-[var(--text-tertiary)]">
-                <History className="h-3 w-3" />
-                {text('历史版本', 'History')}
-              </span>
-              <span className="text-[9px] text-[var(--text-muted)]">
-                {imageHistory.length} {text('个版本', imageHistory.length === 1 ? 'version' : 'versions')}
-              </span>
-            </div>
-            <div className="flex gap-2 overflow-x-auto pb-1">
-              {imageHistory.map((entry, index) => {
-                const isCurrent = activeImageView === 'casting' && sameCharacterImage(entry.imageUrl, character.referenceImage);
-                return (
-                  <div key={entry.id} className="w-[4.75rem] shrink-0">
-                    <button
-                      onClick={() => onImageClick(entry.imageUrl, imageHistory.map((item) => item.imageUrl))}
-                      className={`aspect-square w-full overflow-hidden rounded border bg-[var(--bg-deep)] transition-colors ${isCurrent ? 'border-[var(--accent)]' : 'border-[var(--border-primary)] hover:border-[var(--border-secondary)]'}`}
-                      aria-label={text(`历史版本 ${index + 1}`, `History version ${index + 1}`)}
-                    >
-                      <img src={entry.imageUrl} alt={text(`历史版本 ${index + 1}`, `History version ${index + 1}`)} className="h-full w-full object-cover object-top" />
-                    </button>
-                    <button
-                      onClick={() => onApplyHistory(entry.imageUrl)}
-                      disabled={isCurrent}
-                      className={`mt-1 w-full rounded border px-1 py-1 text-[8px] font-bold uppercase tracking-wider transition-colors ${isCurrent ? 'cursor-default border-[var(--accent-border)] bg-[var(--accent-bg)] text-[var(--accent-text)]' : 'border-[var(--border-secondary)] bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
-                    >
-                      {isCurrent ? text('当前', 'Current') : text('使用', 'Use')}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
+        <AssetImageHistoryStrip history={imageHistory} currentImage={activeImageView === 'casting' ? character.referenceImage : undefined} onPreview={onImageClick} onApply={onApplyHistory} onDelete={onDeleteHistory} imageClassName="object-top" />
 
         <div className="mt-2 flex gap-2">
           <button

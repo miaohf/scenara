@@ -135,6 +135,14 @@ const buildShotAssessmentContext = (shot: Shot, scriptData?: ScriptData | null) 
       : null,
     characters,
     props,
+    continuityLedger: shot.agent?.continuityLedger
+      ? {
+          stateIn: shot.agent.continuityLedger.stateIn,
+          stateDelta: shot.agent.continuityLedger.stateDelta,
+          stateOut: shot.agent.continuityLedger.stateOut,
+          deterministicIssues: shot.agent.continuityLedger.issues,
+        }
+      : null,
     keyframes: {
       start: {
         status: startFrame?.status || 'pending',

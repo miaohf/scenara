@@ -524,6 +524,10 @@ export const callImageApi = async (
   }
 
   const apiFormat = getImageApiFormat(activeModel);
+  // Cursor SDK runs in the backend process; always use the authenticated job API.
+  if (apiFormat === 'cursor-sdk' || apiFormat === 'cursor-acp') {
+    return apiCallImage(options, activeModel.id);
+  }
   if (isApiAiMode() && apiFormat === 'comfyui') {
     const promptLimitResult = truncatePromptToMaxChars(options.prompt, MAX_IMAGE_PROMPT_CHARS);
     if (promptLimitResult.wasTruncated) {

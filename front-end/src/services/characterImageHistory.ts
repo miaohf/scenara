@@ -4,6 +4,7 @@ import type {
   CharacterImageHistorySource,
   CharacterImageView,
 } from '@/types';
+import { assetImageKey, isAssetImageRemoved } from './assetImageHistory';
 
 const MAX_CHARACTER_IMAGE_HISTORY = 12;
 
@@ -21,7 +22,7 @@ export function addCharacterImageHistory(
   source: CharacterImageHistorySource,
   prompt?: string,
 ): void {
-  if (!imageUrl) return;
+  if (!imageUrl || isAssetImageRemoved(character.removedImageKeys, imageUrl)) return;
   const previous = character.imageHistory || [];
   const existing = previous.find((entry) => sameCharacterImage(entry.imageUrl, imageUrl));
   const entry: CharacterImageHistoryEntry = {
@@ -38,8 +39,8 @@ export function addCharacterImageHistory(
 }
 
 export const getCharacterImageHistory = (character: Character): CharacterImageHistoryEntry[] => {
-  const history = [...(character.imageHistory || [])];
-  if (character.referenceImage && !history.some((entry) => sameCharacterImage(entry.imageUrl, character.referenceImage))) {
+  const history = (character.imageHistory || []).filter((entry) => !isAssetImageRemoved(character.removedImageKeys, entry.imageUrl));
+  if (character.referenceImage && !isAssetImageRemoved(character.removedImageKeys, character.referenceImage) && !history.some((entry) => sameCharacterImage(entry.imageUrl, character.referenceImage))) {
     history.unshift({
       id: `current-${character.id}`,
       imageUrl: character.referenceImage,
@@ -54,10 +55,13 @@ export const getCharacterImageHistory = (character: Character): CharacterImageHi
 export const mergeCharacterImageHistories = (
   local: CharacterImageHistoryEntry[] | undefined,
   server: CharacterImageHistoryEntry[] | undefined,
+  removedImageKeys?: string[],
 ): CharacterImageHistoryEntry[] | undefined => {
   if (!local?.length && !server?.length) return local;
   const merged: CharacterImageHistoryEntry[] = [];
   for (const entry of [...(local || []), ...(server || [])].sort((a, b) => b.createdAt - a.createdAt)) {
+    const key = assetImageKey(entry.imageUrl);
+    if (!key || isAssetImageRemoved(removedImageKeys, entry.imageUrl)) continue;
     if (!merged.some((item) => sameCharacterImage(item.imageUrl, entry.imageUrl))) merged.push(entry);
   }
   const limited = merged.slice(0, MAX_CHARACTER_IMAGE_HISTORY);

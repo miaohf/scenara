@@ -39,6 +39,7 @@ import {
   withTemplateFallback,
 } from '../promptTemplateService';
 import { normalizeSceneId } from '../storyboardIdUtils';
+import { getDefaultPropIdsForCharacters } from '../characterLoadoutService';
 import { resolveEndpointUrl } from '../urlUtils';
 import { formatProductionBibleForPrompt, resolveProductionBible } from '../productionBibleService';
 import {
@@ -150,44 +151,12 @@ const normalizeImageInput = (image: string): string => {
 const sanitizeStylePrompt = (raw: string): string => {
   const fallback = String(raw || '').replace(/\s+/g, ' ').trim();
   if (!fallback) return '';
-
-  // Keep style phrase only: cut at sentence separators first.
-  let value = fallback.split(/[;；。.!！？\n\r]+/)[0]?.trim() || fallback;
-
-  // Remove bracketed details like "(DOF, soft lighting)".
-  value = value.replace(/[（(][^()（）]{0,80}[)）]/g, ' ');
-
-  // Remove common quality/camera/scene control terms from style prompt.
-  const removablePatterns: RegExp[] = [
-    /\b(?:4k|8k|2k|uhd|fhd|hdr|1080p|720p|high[-\s]?res(?:olution)?)\b/gi,
-    /\b(?:cinematic|lighting|global illumination|depth of field|dof|bokeh|camera|lens|shot|composition|scene|background)\b/gi,
-    /(电影级|光照|全局光照|景深|虚化|构图|镜头|场景|背景|分辨率|细节清晰|材质|定帧感)/g,
-  ];
-
-  for (const pattern of removablePatterns) {
-    value = value.replace(pattern, ' ');
-  }
-
-  value = value
-    .replace(/[,:，、]+/g, ' ')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-
-  // If still too long, keep only the first phrase chunk.
-  if (value.length > 36) {
-    const chunk = value.split(/[，,、]/)[0]?.trim();
-    if (chunk) value = chunk;
-  }
-
-  // Hard length clamp.
-  const hasCJK = /[\u4e00-\u9fff]/.test(value);
-  const maxLen = hasCJK ? 32 : 72;
-  if (value.length > maxLen) {
-    value = value.slice(0, maxLen).trim();
-  }
-
-  return value || fallback;
+  // 保留与内置预设相同粒度的完整风格描述，不再压缩成单个标签。
+  return fallback.slice(0, 1200).trim();
 };
+
+const sanitizeStyleNegativePrompt = (raw: string): string =>
+  String(raw || '').replace(/\s+/g, ' ').trim().slice(0, 1000);
 
 type ConcurrentBatchOptions = {
   concurrency: number;
@@ -250,6 +219,7 @@ const SHOT_SCENE_TASK_STAGGER_MS = 200;
 
 export interface VisualStyleInferenceResult {
   stylePrompt: string;
+  negativePrompt?: string;
   styleKeySuggestion?: PresetVisualStyleKey | 'custom';
   styleLabel: string;
   confidence?: number;
@@ -286,13 +256,13 @@ export const inferVisualStyleFromImage = async (
           {
             type: 'text',
             text:
-              `Analyze the image and infer a reusable visual style prompt string.\n` +
-              `The style prompt should be a concise phrase focused on style only (not scene/camera/lighting/quality controls).\n` +
-              `Avoid resolution or control words like 4K, 8K, HDR, depth of field, composition, camera, scene.\n` +
-              `Prefer one short phrase (Chinese <= 18 chars or English <= 12 words).\n` +
+              `Analyze the image and infer a reusable visual style profile with the same level of detail as a professional built-in preset.\n` +
+              `Write a rich positive style prompt of roughly 40-80 words (or equivalent Chinese length), covering rendering medium, mark-making or line/brush behavior, material and texture treatment, color palette, tonal contrast, lighting character, and overall mood.\n` +
+              `Write a separate negative prompt of roughly 20-40 words listing style contradictions and common rendering failures to avoid.\n` +
+              `Describe reusable visual language only; do not describe the particular person, objects, location, story, or exact composition in the uploaded image.\n` +
               `Also provide an optional preset suggestion using: anime, 2d-animation, 3d-animation, cyberpunk, oil-painting, live-action, or custom.\n` +
               `Reply in ${language}.\n` +
-              `Return JSON only: {"stylePrompt":"...", "styleLabel":"...", "styleKeySuggestion":"...", "confidence":0-1, "reason":"..."}`
+              `Return JSON only: {"stylePrompt":"...", "negativePrompt":"...", "styleLabel":"...", "styleKeySuggestion":"...", "confidence":0-1, "reason":"..."}`
           },
           {
             type: 'image_url',
@@ -358,6 +328,9 @@ export const inferVisualStyleFromImage = async (
       String(parsed?.styleLabel || parsed?.styleName || '').trim() ||
       responseText;
     const stylePrompt = sanitizeStylePrompt(stylePromptRaw);
+    const negativePrompt = sanitizeStyleNegativePrompt(
+      String(parsed?.negativePrompt || parsed?.negative || parsed?.styleNegativePrompt || '')
+    );
 
     const styleKeyRaw = String(
       parsed?.styleKeySuggestion ||
@@ -385,6 +358,7 @@ export const inferVisualStyleFromImage = async (
 
     return {
       stylePrompt,
+      negativePrompt,
       styleKeySuggestion: styleKey,
       styleLabel,
       confidence,
@@ -461,6 +435,33 @@ export const parseScriptStructure = async (
       : undefined;
   };
 
+  const normalizeStringArray = (value: unknown, fallback: string[] = []): string[] =>
+    Array.isArray(value)
+      ? Array.from(new Set(value.map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 12)
+      : fallback;
+
+  const normalizeAssetDNA = (value: any, fallbackIdentity: string, fallbackMaterial = '') => ({
+    identityAnchors: normalizeStringArray(value?.identityAnchors, fallbackIdentity ? [fallbackIdentity] : []),
+    materialAnchors: normalizeStringArray(value?.materialAnchors, fallbackMaterial ? [fallbackMaterial] : []),
+    colorAnchors: normalizeStringArray(value?.colorAnchors),
+    forbiddenChanges: normalizeStringArray(value?.forbiddenChanges),
+  });
+
+  const normalizeSpatialTopology = (value: any, location: string) => ({
+    zones: Array.isArray(value?.zones)
+      ? value.zones.map((zone: any, index: number) => ({
+          id: String(zone?.id || `zone-${index + 1}`),
+          label: String(zone?.label || `区域${index + 1}`),
+          relation: zone?.relation ? String(zone.relation) : undefined,
+        })).slice(0, 12)
+      : [{ id: 'primary-zone', label: location }],
+    entrances: normalizeStringArray(value?.entrances),
+    exits: normalizeStringArray(value?.exits),
+    landmarks: normalizeStringArray(value?.landmarks),
+    dominantAxis: String(value?.dominantAxis || '未建立；分镜时保持单一屏幕方向'),
+    cameraSafeSide: value?.cameraSafeSide ? String(value.cameraSafeSide) : undefined,
+  });
+
   const normalizeStructure = (parsed: any): ScriptData => {
     const characters: Character[] = Array.isArray(parsed.characters)
       ? parsed.characters.map((c: any, idx: number) => ({
@@ -471,6 +472,7 @@ export const parseScriptStructure = async (
           personality: String(c?.personality || ''),
           species: c?.species ? String(c.species) : undefined,
           wardrobe: c?.wardrobe ? String(c.wardrobe) : undefined,
+          assetDNA: normalizeAssetDNA(c?.assetDNA, String(c?.coreFeatures || `${c?.name || `角色${idx + 1}`}的稳定身份与轮廓`), String(c?.wardrobe || '')),
           visualPrompt: c?.visualPrompt ? String(c.visualPrompt) : undefined,
           negativePrompt: c?.negativePrompt ? String(c.negativePrompt) : undefined,
           variations: Array.isArray(c?.variations)
@@ -496,6 +498,8 @@ export const parseScriptStructure = async (
           location: String(s?.location || `场景${idx + 1}`),
           time: String(s?.time || ''),
           atmosphere: String(s?.atmosphere || ''),
+          spatialTopology: normalizeSpatialTopology(s?.spatialTopology, String(s?.location || `场景${idx + 1}`)),
+          assetDNA: normalizeAssetDNA(s?.assetDNA, String(s?.location || `场景${idx + 1}`), String(s?.atmosphere || '')),
           visualPrompt: s?.visualPrompt ? String(s.visualPrompt) : undefined,
           negativePrompt: s?.negativePrompt ? String(s.negativePrompt) : undefined
         }))
@@ -507,6 +511,7 @@ export const parseScriptStructure = async (
           name: String(p?.name || `道具${idx + 1}`),
           category: normalizePropCategory(String(p?.category || '其他')),
           description: String(p?.description || ''),
+          assetDNA: normalizeAssetDNA(p?.assetDNA, String(p?.name || `道具${idx + 1}`), String(p?.description || '')),
           isWearable: Boolean(p?.isWearable),
           presentationMode: normalizePropPresentationMode(p?.presentationMode) || 'unknown',
           presentationNote: p?.presentationNote ? String(p.presentationNote) : undefined,
@@ -570,7 +575,7 @@ export const parseScriptStructure = async (
     1. Extract title, genre, logline, and historicalContext (in ${language}).
        - historicalContext must state only period/region/cultural constraints supported by the script or a clearly named source text. Include concrete clothing, hairstyle, architecture, material, and anti-anachronism constraints when justified.
        - If the period is genuinely unknown, return an empty string. Never invent a dynasty merely from a vague "ancient" setting.
-    2. Extract characters (id, name, gender, age, personality, species, wardrobe, variations).
+    2. Extract characters (id, name, gender, age, personality, species, wardrobe, variations, assetDNA).
        - species is REQUIRED for every character.
        - Use "human" only for actual humans.
        - For animals, pets, or non-human creatures, write the specific species in ${language} (e.g. "黑背幼犬", "拟人棕猫", "German Shepherd puppy").
@@ -578,8 +583,10 @@ export const parseScriptStructure = async (
        - wardrobe is the exact clothing/appearance wording from the script. Preserve garment names, colors, materials, and style literally; do not harmonize, translate, simplify, or replace them.
        - wardrobe is the base/first costume. If the script explicitly changes costume, add each later costume to variations with a stable id, short name, exact wardrobe wording, and applicable sceneIds.
        - Do not invent costume changes that are not present in the script.
-    3. Extract scenes (id, location, time, atmosphere).
-    4. Extract recurring props/items that appear in multiple scenes (id, name, category, description, isWearable, presentationMode, presentationNote, forbiddenPresentationModes).
+    3. Extract scenes (id, location, time, atmosphere, spatialTopology, assetDNA).
+       - spatialTopology contains only script-supported zones, entrances, exits, landmarks, dominantAxis, and cameraSafeSide. Do not invent a detailed floor plan when the script is silent; use one primary zone and mark the axis as not established.
+    4. Extract recurring props/items that appear in multiple scenes (id, name, category, description, isWearable, presentationMode, presentationNote, forbiddenPresentationModes, assetDNA).
+       - assetDNA contains concise identityAnchors, materialAnchors, colorAnchors, and forbiddenChanges that must remain stable across images and shots. Use only facts supported by the script.
        - Do not classify clothing already worn by a character as a shot prop; set isWearable=true only for wearable items that must be tracked separately.
        - presentationMode is a conservative default: handheld, worn, placed, mounted, background, used, or unknown. Use unknown when the script does not explicitly establish how the prop is presented.
        - presentationNote records only concise spatial/handling facts that are explicit in the script (for example, "held by the short top handle"). Do not invent handling details.
@@ -594,9 +601,9 @@ export const parseScriptStructure = async (
       "genre": "string",
       "logline": "string",
       "historicalContext": "string or empty when unknown",
-      "characters": [{"id": "string", "name": "string", "gender": "string", "age": "string", "personality": "string", "species": "string", "wardrobe": "exact base clothing description from script", "variations": [{"id":"string","name":"string","wardrobe":"exact changed clothing description","sceneIds":["scene-id"]}]}],
-      "scenes": [{"id": "string", "location": "string", "time": "string", "atmosphere": "string"}],
-      "props": [{"id":"string","name":"string","category":"string","description":"string","isWearable":false,"presentationMode":"handheld|worn|placed|mounted|background|used|unknown","presentationNote":"string","forbiddenPresentationModes":["string"]}],
+      "characters": [{"id": "string", "name": "string", "gender": "string", "age": "string", "personality": "string", "species": "string", "wardrobe": "exact base clothing description from script", "assetDNA":{"identityAnchors":["string"],"materialAnchors":["string"],"colorAnchors":["string"],"forbiddenChanges":["string"]}, "variations": [{"id":"string","name":"string","wardrobe":"exact changed clothing description","sceneIds":["scene-id"]}]}],
+      "scenes": [{"id": "string", "location": "string", "time": "string", "atmosphere": "string", "spatialTopology":{"zones":[{"id":"string","label":"string","relation":"string"}],"entrances":["string"],"exits":["string"],"landmarks":["string"],"dominantAxis":"string","cameraSafeSide":"string"}, "assetDNA":{"identityAnchors":["string"],"materialAnchors":["string"],"colorAnchors":["string"],"forbiddenChanges":["string"]}}],
+      "props": [{"id":"string","name":"string","category":"string","description":"string","isWearable":false,"presentationMode":"handheld|worn|placed|mounted|background|used|unknown","presentationNote":"string","forbiddenPresentationModes":["string"],"assetDNA":{"identityAnchors":["string"],"materialAnchors":["string"],"colorAnchors":["string"],"forbiddenChanges":["string"]}}],
       "storyParagraphs": [{"id": number, "text": "string", "sceneRefId": "string"}]
     }
   `;
@@ -840,7 +847,7 @@ export const enrichScriptDataVisuals = async (
           nextData.language || language,
           artDirection,
           abortSignal,
-          undefined,
+          props.map(p => p.name),
           historicalContext,
         ),
       apply: (prompts) => {
@@ -2030,15 +2037,15 @@ export const generateShotList = async (
       }
 
       const result = normalizedShots.map((s: any, shotIndex: number) => {
-        const normalizedCharacters = Array.from(
-          new Set(
+        const normalizedCharacters: string[] = Array.from(
+          new Set<string>(
             (Array.isArray(s?.characters) ? s.characters : [])
               .map((id: any) => String(id))
               .filter((id: string) => validCharacterIds.has(id))
           )
         );
-        const normalizedProps = Array.from(
-          new Set(
+        const normalizedProps: string[] = Array.from(
+          new Set<string>(
             (Array.isArray(s?.props) ? s.props : [])
               .map((id: any) => String(id))
               .filter((id: string) => validPropIds.has(id))
@@ -2049,7 +2056,10 @@ export const generateShotList = async (
           ...s,
           sceneId: String(scene.id),
           characters: normalizedCharacters,
-          props: normalizedProps,
+          props: Array.from(new Set([
+            ...normalizedProps,
+            ...getDefaultPropIdsForCharacters(normalizedCharacters, scriptData),
+          ])),
           keyframes: normalizeShotKeyframes(
             {
               ...(s as Shot),
@@ -2145,13 +2155,12 @@ export const generateShotList = async (
         characters,
         scriptData.characters
       ),
-      props: Array.from(
-        new Set(
-          (Array.isArray(s.props) ? s.props : [])
-            .map(id => String(id))
-            .filter(id => validPropIds.has(id))
-        )
-      ),
+      props: Array.from(new Set([
+        ...(Array.isArray(s.props) ? s.props : [])
+          .map(id => String(id))
+          .filter(id => validPropIds.has(id)),
+        ...getDefaultPropIdsForCharacters(characters, scriptData),
+      ])),
       keyframes: normalizeShotKeyframes(s, idx, visualStyle)
     };
   });
@@ -2227,6 +2236,21 @@ export const generateShotList = async (
       directorPlan,
       model,
       abortSignal,
+    );
+    // Field repairs may alter wardrobe, prop ownership, scene, or screen
+    // direction. Rebuild the structured ledger after the final semantic pass.
+    qualityCheckedShots = attachShotAgentMetadata(
+      qualityCheckedShots,
+      scriptData,
+      directorPlan,
+      shotDurationSeconds,
+    );
+    qualityCheckedShots = applyScriptStageQualityPipeline(
+      qualityCheckedShots,
+      scriptData,
+      validCharacterIds,
+      validPropIds,
+      visualStyle,
     );
   }
   logScriptProgress(`分镜生成完成，总耗时 ${Math.round((Date.now() - overallStartTime) / 1000)}s`);

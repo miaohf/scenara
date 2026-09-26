@@ -23,4 +23,5 @@ dependencies = [
     "celery>=5.4.0",
     "comfy-sdk>=0.1.8",
     "Pillow>=11.0.0",
+    "cursor-sdk>=0.1.0",
 ]

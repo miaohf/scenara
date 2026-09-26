@@ -57,9 +57,9 @@ export const resolveStoryboardGridLayout = (panelCount?: number): StoryboardGrid
 };
 
 export const NINE_GRID_SPLIT_PROMPT = {
-  system: `你是专业分镜师。请把同一镜头拆成{panelCount}个不重复视角，用于{gridLayout}网格分镜。网格布局必须严格为 {layoutInstruction}。保持同一场景与角色连续性。`,
+  system: `你是专业分镜师。请把同一镜头的场景变化过程拆成{panelCount}个不重复的连续画面，用于{gridLayout}网格分镜。网格布局必须严格为 {layoutInstruction}。这不是人物定妆、角色转面或人物排列图；每格都必须是同一场景中的电影分镜，保持场景、动作与角色连续性。`,
 
-  user: `请将以下镜头动作拆解为{panelCount}个不同的摄影视角，用于生成一张{gridLayout}网格分镜图。
+  user: `请将以下镜头动作拆解为{panelCount}个“同一场景中动作逐步发生”的连续摄影视角，用于生成一张{gridLayout}网格分镜图。每格必须表现环境、主体位置和动作推进；禁止把角色单独抠出做成肖像/定妆/转面参考图。
 网格硬约束：必须严格为 {layoutInstruction}，顺序为从左到右、从上到下。{layoutSpecificConstraint}
 行列顺序示意：{layoutExample}
 【镜头动作】{actionSummary}
@@ -79,12 +79,13 @@ export const NINE_GRID_SPLIT_PROMPT = {
 };
 
 export const NINE_GRID_IMAGE_PROMPT_TEMPLATE = {
-  prefix: `Create ONE cinematic storyboard contact sheet.
-Fixed layout: exactly {layoutInstruction} ({panelCount} equal panels, thin white separators).
+  prefix: `Create ONE cinematic storyboard contact sheet for a SINGLE SHOT and its action progression.
+Fixed layout: exactly {layoutInstruction} ({panelCount} equal panels, thin dark charcoal separators; never white separators).
 Panel order: {layoutExample}
 {layoutSpecificConstraint}
 The grid geometry is non-negotiable. Every panel must have identical size; no panel may span multiple cells.
-All panels depict the SAME scene; vary camera angle and shot size only.
+All panels depict the SAME location and the SAME shot evolving over time. This is a storyboard of scene change, not a character design sheet, character turnaround, lineup, cast sheet, or portrait collage.
+Every panel must show a cinematic scene composition with the environment visible. Vary the camera angle, shot size, pose, and action beat only as specified by the panel descriptions; do not replace the scene with isolated full-body character portraits.
 Style: {visualStyle}
 Panels (left-to-right, top-to-bottom):`,
 
@@ -93,7 +94,9 @@ Panels (left-to-right, top-to-bottom):`,
   suffix: `Constraints:
 - Output one single storyboard grid image only
 - Exact layout = {layoutInstruction} and exactly {panelCount} panels total
-- Keep character identity consistent across all panels
+- This is a STORYBOARD SEQUENCE showing one scene changing from panel to panel, never a character turnaround/reference sheet
+- Keep the location, spatial layout, lighting, action continuity, and character identity consistent across all panels
+- If reference images are provided: use the scene reference as the environmental canvas; use character references only to preserve identity, face, hair, wardrobe, and proportions. Never copy a character reference-sheet layout into the grid
 - Keep lighting/color/mood consistent across all panels
 - Each panel is a complete cinematic keyframe
 - All panel sizes must be identical; no merged cells, no oversized panels, no inset panels

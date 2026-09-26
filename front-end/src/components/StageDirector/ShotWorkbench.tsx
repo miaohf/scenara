@@ -30,6 +30,7 @@ import {
   NineGridData,
   NineGridPanel,
   StoryboardGridPanelCount,
+  ShotReferencePolicyItem,
 } from '../../types';
 import SceneContext from './SceneContext';
 import KeyframeEditor from './KeyframeEditor';
@@ -59,6 +60,7 @@ interface ShotWorkbenchProps {
   currentVideoModelId: string;
   nextShotHasStartFrame?: boolean;
   isAIOptimizing?: boolean;
+  optimizingKeyframeTypes?: Array<'start' | 'end'>;
   isAIReassessing?: boolean;
   isSplittingShot?: boolean;
   onClose: () => void;
@@ -75,6 +77,7 @@ interface ShotWorkbenchProps {
   onSceneChange: (sceneId: string) => void;
   onAddProp?: (propId: string) => void;
   onRemoveProp?: (propId: string) => void;
+  onToggleReferenceLock?: (item: ShotReferencePolicyItem) => void;
   onGenerateKeyframe: (type: 'start' | 'end') => void;
   onReviewKeyframe: (type: 'start' | 'end') => void;
   onRepairKeyframe: (type: 'start' | 'end') => void;
@@ -86,6 +89,7 @@ interface ShotWorkbenchProps {
   onCopyNextStartFrame: () => void;
   useAIEnhancement: boolean;
   onToggleAIEnhancement: () => void;
+  enableVisualReview: boolean;
   onGenerateVideo: (aspectRatio: AspectRatio, duration: VideoDuration, modelId: string, quality?: 'standard' | 'turbo') => void | Promise<void>;
   onCancelVideo?: () => void;
   onCancelKeyframe?: (type: 'start' | 'end') => void;
@@ -94,7 +98,7 @@ interface ShotWorkbenchProps {
   onClearDubbing: () => void;
   onEditVideoPrompt: (modelId?: string, duration?: VideoDuration) => void;
   onVideoModelChange: (modelId: string) => void;
-  onImageClick: (url: string, title: string) => void;
+  onImageClick: (url: string, title: string, imageUrls?: string[]) => void;
   videoInputMode?: 'keyframes' | 'storyboard-grid';
   onVideoInputModeChange: (mode: 'keyframes' | 'storyboard-grid') => void;
   onGenerateNineGrid: (panelCount?: StoryboardGridPanelCount) => void;
@@ -115,6 +119,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   currentVideoModelId,
   nextShotHasStartFrame = false,
   isAIOptimizing = false,
+  optimizingKeyframeTypes = [],
   isAIReassessing = false,
   isSplittingShot = false,
   onClose,
@@ -131,6 +136,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   onSceneChange,
   onAddProp,
   onRemoveProp,
+  onToggleReferenceLock,
   onGenerateKeyframe,
   onReviewKeyframe,
   onRepairKeyframe,
@@ -142,6 +148,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   onCopyNextStartFrame,
   useAIEnhancement,
   onToggleAIEnhancement,
+  enableVisualReview,
   onGenerateVideo,
   onCancelVideo,
   onCancelKeyframe,
@@ -165,10 +172,20 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   const availableCharacters = scriptData?.characters.filter((c) => !shot.characters.includes(c.id)) || [];
   const activeProps = (scriptData?.props || []).filter((p) => (shot.props || []).includes(p.id));
   const availablePropsForShot = (scriptData?.props || []).filter((p) => !(shot.props || []).includes(p.id));
-  const previewEntries = useMemo(
-    () => getRefImagesForShot(shot, scriptData || null).entries,
+  const previewReferenceResult = useMemo(
+    () => getRefImagesForShot(shot, scriptData || null),
     [shot, scriptData],
   );
+  const previewEntries = previewReferenceResult.entries;
+  const shotMediaPreviewUrls = useMemo(() => {
+    const candidates = [
+      shot.keyframes?.find((frame) => frame.type === 'start')?.imageUrl,
+      shot.keyframes?.find((frame) => frame.type === 'end')?.imageUrl,
+      ...Object.values(shot.nineGridVariants || {}).map((grid) => grid?.imageUrl),
+      shot.nineGrid?.imageUrl,
+    ].filter((url): url is string => Boolean(url));
+    return Array.from(new Set(candidates));
+  }, [shot]);
   const previewEntrySignature = previewEntries
     .map((entry) => {
       const imageIdentity = entry.image.startsWith('data:')
@@ -236,7 +253,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
     buildReferenceImagePack(previewEntries, {
       maxReferenceImages: previewReferenceLimit,
       reservedReferenceSlots: previewReservedReferenceSlots,
-      alwaysCompositeTypes: ['character', 'prop'],
+      alwaysCompositeTypes: ['prop'],
     })
       .then((pack) => {
         if (!cancelled) setReferencePreviewPack(pack);
@@ -332,9 +349,11 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   );
   const keyframeReady = isR2VModel
     ? previewEntries.length > 0
-    : effectiveVideoInputMode === 'storyboard-grid'
-    ? startFrameReviewed
-    : startFrameReviewed && (!hasEndFrame || endFrameReviewed);
+    : !enableVisualReview
+      ? hasStartFrame
+      : effectiveVideoInputMode === 'storyboard-grid'
+        ? startFrameReviewed
+        : startFrameReviewed && (!hasEndFrame || endFrameReviewed);
   const hasActionSummary = (shot.actionSummary || '').trim().length > 0;
   const hasVideo = !!shot.interval?.videoUrl;
   const isVideoGenerating = shot.interval?.status === 'generating';
@@ -923,6 +942,36 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                                 ))}
                               </div>
                             )}
+                            {previewReferenceResult.policyDecisions.some((item) => item.policy === 'textOnly' || item.policy === 'omitted') && (
+                              <div className="rounded-md border border-[var(--border-primary)] bg-[var(--bg-base)] p-2">
+                                <p className="text-[9px] font-bold text-[var(--text-secondary)]">{text('降级为文字约束', 'Text-only References')}</p>
+                                {previewReferenceResult.policyDecisions
+                                  .filter((item) => item.policy === 'textOnly' || item.policy === 'omitted')
+                                  .map((item) => (
+                                    <p key={`${item.assetType}:${item.assetId || item.label}`} className="mt-1 text-[9px] text-[var(--text-muted)]">
+                                      {item.label} — {item.reason}
+                                    </p>
+                                  ))}
+                              </div>
+                            )}
+                            {onToggleReferenceLock && previewReferenceResult.policyDecisions.length > 0 && (
+                              <div className="rounded-md border border-[var(--border-primary)] bg-[var(--bg-base)] p-2">
+                                <p className="text-[9px] font-bold text-[var(--text-secondary)]">{text('参考图语义锁定', 'Reference Policy Locks')}</p>
+                                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                                  {previewReferenceResult.policyDecisions.map((item) => (
+                                    <button
+                                      type="button"
+                                      key={`${item.assetType}:${item.assetId || item.label}:lock`}
+                                      onClick={() => onToggleReferenceLock(item)}
+                                      className={`rounded border px-2 py-1 text-[9px] ${item.lockedByUser ? 'border-[var(--accent-border)] bg-[var(--accent-bg)] text-[var(--accent-text)]' : 'border-[var(--border-primary)] text-[var(--text-muted)]'}`}
+                                      title={item.reason}
+                                    >
+                                      {item.lockedByUser ? '🔒 ' : ''}{item.label} · {item.policy}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </>
@@ -1065,6 +1114,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                   canCopyPrevious={shotIndex > 0}
                   canCopyNext={shotIndex < totalShots - 1 && nextShotHasStartFrame}
                   isAIOptimizing={isAIOptimizing}
+                  optimizingKeyframeTypes={optimizingKeyframeTypes}
                   useAIEnhancement={useAIEnhancement}
                   onToggleAIEnhancement={onToggleAIEnhancement}
                   onGenerateKeyframe={onGenerateKeyframe}
@@ -1075,7 +1125,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                   onOptimizeBothWithAI={onOptimizeBothKeyframes}
                   onCopyPrevious={onCopyPreviousEndFrame}
                   onCopyNext={onCopyNextStartFrame}
-                  onImageClick={onImageClick}
+                  onImageClick={(url, title) => onImageClick(url, title, shotMediaPreviewUrls)}
                 />}
                 {!isR2VModel && <div className="grid grid-cols-1 @min-[520px]:grid-cols-2 gap-2">
                   {[startKf, (showEndFrame || endKf?.imageUrl || endKf?.visualReview) ? endKf : undefined]
@@ -1114,7 +1164,9 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                         </div>
                         <p className="mt-1 text-[9px] leading-relaxed text-[var(--text-muted)]">
                           {!review
-                            ? text('等待画面语义审核', 'Waiting for visual semantic review')
+                            ? enableVisualReview
+                              ? text('等待画面语义审核', 'Waiting for visual semantic review')
+                              : text('已关闭生图后二次校验', 'Post-generation visual review is disabled')
                             : reviewing
                               ? text('正在检查构图、角色、道具和相邻镜头重复度…', 'Checking composition, identity, props, and adjacent-shot similarity…')
                               : passed
@@ -1149,7 +1201,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
                             )}
                           </div>
                         )}
-                        {!reviewing && (
+                        {enableVisualReview && !reviewing && (
                           <div className="mt-2 flex gap-1.5">
                             <button
                               type="button"

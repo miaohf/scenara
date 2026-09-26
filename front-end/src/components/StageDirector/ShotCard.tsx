@@ -103,9 +103,6 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
           {getShotDisplayNumber()}
         </span>
         <div className="flex items-center gap-1.5">
-          <span className="text-[9px] px-1.5 py-0.5 bg-[var(--bg-hover)] text-[var(--text-tertiary)] rounded uppercase">
-            {shot.cameraMovement}
-          </span>
           {onDelete && (
             <button
               onClick={(e) => {
@@ -181,7 +178,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
           )}
           {videoStatus === 'running' && (
             <div
-              className="min-w-7 h-7 px-1.5 rounded-full bg-[var(--accent)] text-[var(--accent-on)] flex items-center justify-center shadow-lg font-mono text-[9px]"
+              className="min-w-7 h-7 px-1.5 rounded-full bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] ring-1 ring-[var(--accent-border)] flex items-center justify-center shadow-lg font-mono text-[9px] font-bold"
               title={typeof videoJob?.progress === 'number' ? text(`生成中 ${videoJob.progress}%`, `Generating ${videoJob.progress}%`) : text('生成中', 'Generating')}
             >
               {typeof videoJob?.progress === 'number' ? `${videoJob.progress}%` : <Loader2 className="w-3.5 h-3.5 animate-spin" />}
@@ -189,7 +186,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
           )}
           {videoStatus === 'queued' && (
             <div
-              className="w-7 h-7 rounded-full bg-[var(--warning)] text-[var(--bg-base)] flex items-center justify-center shadow-lg"
+              className="w-7 h-7 rounded-full bg-[var(--btn-primary-bg)] text-[var(--btn-primary-text)] ring-1 ring-[var(--warning-border)] flex items-center justify-center shadow-lg"
               title={queuePosition ? text(`排队 #${queuePosition}`, `Queued #${queuePosition}`) : text('排队中', 'Queued')}
             >
               <Clock3 className="w-3.5 h-3.5" />
@@ -214,7 +211,7 @@ const ShotCard: React.FC<ShotCardProps> = ({ shot, index, isActive, onClick, onD
 
       {/* Footer */}
       <div className="p-3">
-        <p className="text-xs text-[var(--text-tertiary)] line-clamp-2 leading-relaxed">
+        <p className="text-xs text-[var(--text-secondary)] line-clamp-2 leading-relaxed">
           {shot.actionSummary}
         </p>
       </div>

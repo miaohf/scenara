@@ -79,9 +79,9 @@ Instructions:
 7. 'characters': Return ONLY IDs from provided Characters list.
 8. 'characterVariations': For each visible character using a non-base costume, map its character ID to one valid variation ID from that character. Use {} for base wardrobes. Respect variation sceneIds and never invent IDs.
 9. 'props': Return ONLY IDs from provided Props list when a prop is visibly involved. Never return a prop marked 'isWearable: true' when that item is worn by a character; worn clothing belongs to the character wardrobe. Use [] if none.
-10. Before drafting 'visualPrompt', first decide the shot's nested agent.executionPlan: one dominant story beat, at most 3 chronological action phases, explicit subject blocking, prop blocking, camera plan, synchronized sound, and one readable end state. The visualPrompt, actionSummary, cameraMovement, and keyframes MUST be derived from that same plan; do not add a second major action that is absent from the plan.
-11. 'visualPrompt': Write a shot-specific visual description for image generation in {visualStyle} style (OUTPUT IN {lang}). Normally use 60-110 words, or the equivalent level of detail in Chinese. It MUST include: visible subject and current action, spatial placement, important prop relationships, shot size/camera angle, motivated camera movement, lighting/atmosphere, and continuity with the previous or next beat. Do not output only generic style labels or repeat the full character prompt. {artDirectionVisualPromptConstraint} Do not contradict the selected character wardrobe or costume variation.
-12. keyframes MUST contain BOTH a start frame and an end frame. Each keyframe visualPrompt must describe a reachable visual state of this specific shot, including subject action, composition, environment, and continuity; do not use a generic "起始状态/结束状态" placeholder when shot-specific details are available. The end keyframe MUST match agent.executionPlan.endState.
+10. Before drafting 'visualPrompt', first decide the shot's nested agent.executionPlan: one dominant story beat, at most 3 chronological action phases, explicit subject blocking, prop blocking, camera plan, synchronized sound, and one readable end state. subjectBlocking MUST state each visible character's screen position (left/center/right and foreground/midground/background), body orientation, eyeline target, and the visible action or stillness that serves the story beat. propBlocking MUST state the owner/holder, relationship, position, and state of every action-critical prop. Also create frameDirections.start and frameDirections.end: they are STATIC visual facts for each frame, not a summary of the full action. Each must separately state storyState, blocking, performance, and propState. When possible, populate characterBlocking with one item per visible character role and an explicit count for multiple instances; populate propStates with holder, hand, position, state, and visible. Create constraintPolicy with only 3-6 required facts, a few preferred facts, flexible decorative details, and forbiddenProps. The visualPrompt, actionSummary, cameraMovement, keyframes, frameDirections, and constraintPolicy MUST be derived from that same plan; do not add a second major action that is absent from the plan.
+11. 'visualPrompt': Write a shot-specific visual description for image generation in {visualStyle} style (OUTPUT IN {lang}). Normally use 60-110 words, or the equivalent level of detail in Chinese. It MUST include: the dramatic purpose, visible subject and current action, screen placement, body orientation, gaze target, readable facial expression/emotional change, important prop relationships, shot size/camera angle, motivated camera movement, lighting/atmosphere, and continuity with the previous or next beat. Describe observable performance rather than abstract emotion alone. Do not output only generic style labels or repeat the full character prompt. {artDirectionVisualPromptConstraint} Do not contradict the selected character wardrobe or costume variation.
+12. keyframes MUST contain BOTH a start frame and an end frame. Each keyframe visualPrompt must describe a reachable visual state of this specific shot, including subject action, composition, spatial placement, body orientation, gaze, facial expression, prop relationship, environment, and continuity; do not use a generic "起始状态/结束状态" placeholder when shot-specific details are available. The start frame shows the readable pre-action or action-onset state; the end keyframe shows the completed result and MUST match agent.executionPlan.endState.
 13. Every shot MUST include all required keys. Do not omit keys; use "", [], or {} when a value is empty.
 14. Keys and string values MUST use standard JSON double quotes only.
 
@@ -98,6 +98,11 @@ Output ONLY a valid JSON OBJECT with this exact structure (no markdown, no extra
       "characters": ["string"],
       "characterVariations": {"character_id": "variation_id"},
       "props": ["string"],
+      "frameDirections": {
+        "start": {"storyState":"string","blocking":"string","performance":"string","propState":"string","characterBlocking":[],"propStates":{}},
+        "end": {"storyState":"string","blocking":"string","performance":"string","propState":"string","characterBlocking":[],"propStates":{}}
+      },
+      "constraintPolicy": {"required":[],"preferred":[],"flexible":[],"forbiddenProps":[]},
       "keyframes": [
         {"id": "string", "type": "start|end", "visualPrompt": "string (MUST include {visualStyle} style keywords{keyframeVisualPromptConstraint})"}
       ]
@@ -118,6 +123,10 @@ JSON Example (shape reference only — replace the content, but keep the schema 
       "characters": ["char_1"],
       "characterVariations": {},
       "props": [],
+      "frameDirections": {
+        "start": {"storyState":"The character pauses before entering.","blocking":"Character stands at the doorway, facing inward.","performance":"Cautious eyes, held breath.","propState":"No action-critical prop."},
+        "end": {"storyState":"The character has committed to entering.","blocking":"Character has crossed the threshold.","performance":"Resolve replaces hesitation.","propState":"No action-critical prop."}
+      },
       "keyframes": [
         {"id": "scene-{sceneIndex}-shot-1-start", "type": "start", "visualPrompt": "{visualStyle} style, the character pauses at the doorway, cautious posture, interior shadows, cinematic framing"},
         {"id": "scene-{sceneIndex}-shot-1-end", "type": "end", "visualPrompt": "{visualStyle} style, the character pushes the door and steps inside, motion implied, consistent lighting, cinematic framing"}
@@ -146,7 +155,7 @@ Requirements:
 1. Return EXACTLY {shotsPerScene} shots in JSON object format: {"shots":[...]}.
 2. Keep story continuity and preserve the original cinematic intent.
 3. Each shot represents about {shotDurationSeconds} seconds.
-4. Include fields: id, sceneId, actionSummary, dialogue, cameraMovement, shotSize, characters, characterVariations, props, keyframes.
+4. Include fields: id, sceneId, actionSummary, dialogue, cameraMovement, shotSize, characters, characterVariations, props, frameDirections, keyframes. frameDirections must contain static start/end storyState, blocking, performance, and propState; never put the full movement timeline into one frame.
 5. characters/props must be arrays of valid IDs from provided context; characterVariations must be {} or a valid character-to-variation mapping.
 6. keyframes must include type=start/end and visualPrompt.
 7. Do not omit keys; use "" or [] when a value is empty.
@@ -363,6 +372,9 @@ JSON Example (shape reference only):
 ## 视觉风格
 {styleDesc}
 
+## 已确定的帧状态与道具关系（必须保留）
+{frameContext}
+
 ## 任务要求
 
 你需要为这个8-10秒的镜头创作**起始帧**和**结束帧**两个关键画面的视觉描述。
@@ -470,6 +482,9 @@ JSON Example (shape reference only):
 ## 视觉风格
 {styleDesc}
 
+## 已确定的帧状态与道具关系（必须保留）
+{frameContext}
+
 ## 任务要求
 
 作为{frameLabel}，你需要重点描述：**{frameFocus}**
@@ -554,8 +569,8 @@ JSON Example (shape reference only):
 仅输出最终提示词文本:`,
   },
   nineGrid: {
-    splitSystem: `你是专业分镜师。请把同一镜头拆成{panelCount}个不重复视角，用于{gridLayout}网格分镜。网格布局必须严格为 {layoutInstruction}。保持同一场景与角色连续性。`,
-    splitUser: `请将以下镜头动作拆解为{panelCount}个不同的摄影视角，用于生成一张{gridLayout}网格分镜图。
+    splitSystem: `你是专业分镜师。请把同一镜头的场景变化过程拆成{panelCount}个不重复的连续画面，用于{gridLayout}网格分镜。网格布局必须严格为 {layoutInstruction}。这不是人物定妆、角色转面或人物排列图；每格都必须是同一场景中的电影分镜，保持场景、动作与角色连续性。`,
+    splitUser: `请将以下镜头动作拆解为{panelCount}个“同一场景中动作逐步发生”的连续摄影视角，用于生成一张{gridLayout}网格分镜图。每格必须表现环境、主体位置和动作推进；禁止把角色单独抠出做成肖像/定妆/转面参考图。
 网格硬约束：必须严格为 {layoutInstruction}，顺序为从左到右、从上到下。{layoutSpecificConstraint}
 行列顺序示意：{layoutExample}
 
@@ -573,19 +588,22 @@ JSON Example (shape reference only):
 5) 视角多样性：shotSize + cameraAngle 组合不得重复；当{panelCount}>=6时，至少使用3种不同 shotSize（否则至少2种）
 6) 叙事节奏：index=0 建立场景与主体，最后一格呈现动作结果/情绪落点，中间格逐步推进动作
 7) 连续性：保持角色外观、服装、道具、主运动方向一致；若需要反打/轴线跨越，必须在 description 明确说明动机`,
-    imagePrefix: `Create ONE cinematic storyboard contact sheet.
-Fixed layout: exactly {layoutInstruction} ({panelCount} equal panels, thin white separators).
+    imagePrefix: `Create ONE cinematic storyboard contact sheet for a SINGLE SHOT and its action progression.
+Fixed layout: exactly {layoutInstruction} ({panelCount} equal panels, thin dark charcoal separators; never white separators).
 Panel order: {layoutExample}
 {layoutSpecificConstraint}
 The grid geometry is non-negotiable. Every panel must have identical size; no panel may span multiple cells.
-All panels depict the SAME scene; vary camera angle and shot size only.
+All panels depict the SAME location and the SAME shot evolving over time. This is a storyboard of scene change, not a character design sheet, character turnaround, lineup, cast sheet, or portrait collage.
+Every panel must show a cinematic scene composition with the environment visible. Vary the camera angle, shot size, pose, and action beat only as specified by the panel descriptions; do not replace the scene with isolated full-body character portraits.
 Style: {visualStyle}
 Panels (left-to-right, top-to-bottom):`,
     imagePanelTemplate: `Panel {index} ({position}): [{shotSize} / {cameraAngle}] - {description}`,
     imageSuffix: `Constraints:
 - Output one single storyboard grid image only
 - Exact layout = {layoutInstruction} and exactly {panelCount} panels total
-- Keep character identity consistent across all panels
+- This is a STORYBOARD SEQUENCE showing one scene changing from panel to panel, never a character turnaround/reference sheet
+- Keep the location, spatial layout, lighting, action continuity, and character identity consistent across all panels
+- If reference images are provided: use the scene reference as the environmental canvas; use character references only to preserve identity, face, hair, wardrobe, and proportions. Never copy a character reference-sheet layout into the grid
 - Keep lighting/color/mood consistent across all panels
 - Each panel is a complete cinematic keyframe
 - All panel sizes must be identical; no merged cells, no oversized panels, no inset panels

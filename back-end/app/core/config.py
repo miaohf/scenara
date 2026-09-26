@@ -41,6 +41,12 @@ class Settings(BaseSettings):
 
     default_api_key: str = ""
 
+    # Cursor SDK 生图（SDK 本身负责调用 Cursor Agent 的原生 image generation tool）
+    cursor_api_key: str = ""
+    cursor_sdk_model: str = "composer-2.5"
+    cursor_acp_command: str = "agent"
+    cursor_acp_timeout: int = 600
+
     # API易（gpt-image-2 / 2.5 等）；写入 model_registry 的 apiyi provider
     apiyi_base_url: str = "https://api.apiyi.com"
     apiyi_api_key: str = ""

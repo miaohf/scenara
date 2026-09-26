@@ -34,6 +34,7 @@ import {
   CHARACTER_ATTIRE_INSTRUCTION,
 } from './promptConstants';
 import { compressPromptWithLLM } from './promptCompressionService';
+import { compileQwenImage21Prompt, isQwenImage21Workflow } from './qwenImagePromptCompiler';
 import { getImageApiFormat } from '../imageModelUtils';
 import { callImageApi } from '../adapters/imageAdapter';
 
@@ -199,6 +200,7 @@ export const generateAllCharacterPrompts = async (
   - Age: ${c.age}
   - Personality: ${c.personality}
   - Creative Direction: ${c.creativeDirection ? JSON.stringify(c.creativeDirection) : '[follow established personality]'}
+  - Asset DNA (LOCKED): ${c.assetDNA ? JSON.stringify(c.assetDNA) : '[derive only from supplied facts]'}
   - Base Wardrobe (EXACT SCRIPT WORDING; MUST NOT be changed): ${c.wardrobe || '[not specified]'}
   - Later Costume Variants (context only; do not apply to base look): ${costumeVariants || '[none]'}`;
   }).join('\n\n');
@@ -293,9 +295,9 @@ Output ONLY the JSON, no explanations.`;
       const charResult = charResults[i];
       if (charResult && charResult.visualPrompt) {
         results.push({
-          visualPrompt: normalizeCharacterWardrobeInPrompt(
-            stripProjectPropsFromPrompt(charResult.visualPrompt.trim(), excludePropNames || []),
-            characters[i]
+          visualPrompt: stripProjectPropsFromPrompt(
+            normalizeCharacterWardrobeInPrompt(charResult.visualPrompt.trim(), characters[i]),
+            excludePropNames || []
           ),
           negativePrompt: negativePrompt,
         });
@@ -374,6 +376,7 @@ Character Data:
 - Age: ${char.age}
 - Personality: ${char.personality}
 - Creative Direction: ${char.creativeDirection ? JSON.stringify(char.creativeDirection) : '[follow established personality]'}
+- Asset DNA (LOCKED): ${char.assetDNA ? JSON.stringify(char.assetDNA) : '[derive only from supplied facts]'}
 - Historical / Cultural Context: ${historicalContext?.trim() || '[not specified]'}
 
 REQUIRED STRUCTURE (output in ${language}):
@@ -407,9 +410,16 @@ CRITICAL RULES:
 Output ONLY the visual prompt text, no explanations.`;
   } else if (type === 'scene') {
     const scene = data as Scene;
+    const namedHeroProps = (excludePropNames || [])
+      .map(name => String(name || '').trim())
+      .filter(Boolean);
+    const scenePropExclusionBlock = namedHeroProps.length > 0
+      ? `\n## DEDICATED PROP EXCLUSION (MANDATORY)\nThe following are dedicated project prop assets: ${namedHeroProps.join(', ')}. Do NOT mention, depict, or prominently feature any of them in this environment prompt. They must be introduced later at shot level using their own prop references. Ordinary architecture, furniture, and non-identity-defining background objects are allowed.\n`
+      : '';
     prompt = `You are an expert cinematographer and AI prompt engineer for ${visualStyle} productions.
 ${artDirectionBlock}
 ${historicalContextBlock}
+${scenePropExclusionBlock}
 Create a cinematic scene/environment prompt with this structure:
 
 Scene Data:
@@ -417,6 +427,8 @@ Scene Data:
 - Time: ${scene.time}
 - Atmosphere: ${scene.atmosphere}
 - Creative Direction: ${scene.creativeDirection ? JSON.stringify(scene.creativeDirection) : '[follow established scene facts]'}
+- Spatial Topology (LOCKED): ${scene.spatialTopology ? JSON.stringify(scene.spatialTopology) : '[one primary zone; axis not established]'}
+- Asset DNA (LOCKED): ${scene.assetDNA ? JSON.stringify(scene.assetDNA) : '[derive only from supplied facts]'}
 - Genre: ${genre}
 
 REQUIRED STRUCTURE (output in ${language}):
@@ -433,6 +445,7 @@ CRITICAL RULES:
 - ⚠️ MUST follow the Global Art Direction above - this scene must visually match the same project as all characters
 - Texture/material rendering: ${artDirection.textureStyle}
 - Mood: ${artDirection.moodKeywords.join(', ')}` : ''}
+- Do not include any dedicated project prop named in the DEDICATED PROP EXCLUSION block. Do not replace it with an equivalent signature weapon or hero object.
 - Use professional cinematography terminology
 - Specify light sources and direction (e.g., "golden hour backlight from right")
 - Include composition guidelines (rule of thirds, leading lines, depth of field)
@@ -454,6 +467,7 @@ Prop Data:
 - Name: ${prop.name}
 - Category: ${prop.category}
 - Description: ${prop.description}
+- Asset DNA (LOCKED): ${prop.assetDNA ? JSON.stringify(prop.assetDNA) : '[derive only from supplied facts]'}
 - Genre Context: ${genre}
 
 REQUIRED STRUCTURE (output in ${language}):
@@ -483,9 +497,9 @@ Output ONLY the visual prompt text, no explanations.`;
 
   return {
     visualPrompt: type === 'character'
-      ? normalizeCharacterWardrobeInPrompt(
-          stripProjectPropsFromPrompt(visualPrompt.trim(), excludePropNames || []),
-          data as Character
+      ? stripProjectPropsFromPrompt(
+          normalizeCharacterWardrobeInPrompt(visualPrompt.trim(), data as Character),
+          excludePropNames || []
         )
       : visualPrompt.trim(),
     negativePrompt: negativePrompt
@@ -571,9 +585,10 @@ const MAX_IMAGE_PROMPT_CHARS = 5000;
 const IMAGE_PROMPT_SOFT_TARGET_CHARS = 4700;
 const MAX_NEGATIVE_PROMPT_TERMS = 64;
 const MAX_REFERENCE_IMAGES_PER_REQUEST = 5;
+const MAX_QWEN_IMAGE_21_REFERENCE_IMAGES = 10;
 /**
- * ComfyUI 参考图上限：Qwen Edit Utils 5 张，Klein Edit 4 张。前端按 5 收集，多出的槽由后端裁掉。
- * 前端按 5 截断会让日志说“保留 5 张”，实际后端又静默丢掉第 5 张。
+ * 默认 ComfyUI 参考图上限：旧 Qwen Edit Utils 5 张，Klein Edit 4 张。
+ * Qwen Image 2.1 Edit 单独使用 10 个工作流槽位，见 MAX_QWEN_IMAGE_21_REFERENCE_IMAGES。
  */
 const MAX_COMFY_REFERENCE_IMAGES = 5;
 
@@ -919,9 +934,18 @@ export const generateImage = async (
       ? imageModelParams.referenceSteps ?? imageModelParams.steps
       : imageModelParams.steps);
 
+  const qwenImage21Workflow = isQwenImage21Workflow(
+    selectedWorkflowName,
+    `${activeImageModel?.id || ''} ${activeImageModel?.apiModel || ''}`,
+  );
+
   // 参考图上限随实际后端而定，避免前端报“保留 5 张”而后端只吃 4 张
   const qwenBuiltinEdit = /qwen_image_edit/i.test(selectedWorkflowName) && !/flf/i.test(selectedWorkflowName);
-  const maxComfyRefs = qwenBuiltinEdit ? 3 : MAX_COMFY_REFERENCE_IMAGES;
+  const maxComfyRefs = qwenImage21Workflow
+    ? MAX_QWEN_IMAGE_21_REFERENCE_IMAGES
+    : qwenBuiltinEdit
+      ? 3
+      : MAX_COMFY_REFERENCE_IMAGES;
   const boundedReferences = buildBoundedReferenceImages(
     referenceImages,
     options?.continuityReferenceImage,
@@ -950,6 +974,9 @@ export const generateImage = async (
 
   try {
     const normalizedUserPrompt = normalizePromptWhitespace(prompt);
+    const roleConstrainedPrompt = referencePackType === 'scene'
+      ? `${normalizedUserPrompt}\n\n[Scene asset boundary] Generate an environment reference only. Do not invent or prominently feature weapons, hero props, or other named signature objects unless the scene brief explicitly requires them. Ordinary background furnishings and architecture are allowed.`
+      : normalizedUserPrompt;
     const referenceMapping = (options?.referenceAnnotations || [])
       .map((annotation, index) => String(annotation || '').trim()
         ? `- Reference ${index + 1}: ${String(annotation).trim()}`
@@ -968,7 +995,7 @@ export const generateImage = async (
             ? effectiveReferenceImages[0]
             : undefined);
 
-      let comfyPrompt = normalizedUserPrompt;
+      let comfyPrompt = roleConstrainedPrompt;
       const qwenEditShot =
         referencePackType === 'shot'
         && hasAnyReference
@@ -980,7 +1007,7 @@ export const generateImage = async (
       if (continuityReferenceImage) {
         comfyPrompt += '\n\n[ComfyUI end frame] Keep the same subject identity, body plan, attire, and scene from the reference image, but show a clearly different pose, camera angle, and action moment for the END frame. Shot-listed props may be added from prop reference images; do not invent a different item.';
       } else if (qwenEditShot) {
-        comfyPrompt += `\n\n[ComfyUI qwen-edit] Image 1 is the SCENE/location. Build this shot in that environment and lighting. Image 2 is the lead character identity reference${hasTurnaround ? ' and may be a turnaround or three-view sheet; select the panel matching the requested camera angle' : ''}: copy face, hair, body, and outfit only — discard the reference-sheet layout, studio backdrop, posing block, and duplicate views. Later images are props or background extras standing in that location, not another studio portrait.`;
+        comfyPrompt += `\n\n[ComfyUI qwen-edit] Follow the submitted Reference mapping exactly; the image count and order are dynamic. Any scene reference establishes only the location, lighting, atmosphere, and spatial layout; do not copy weapons, hero props, or prominent objects from it unless the shot explicitly calls for them. Every character reference locks only its named subject's face, hair, body, and wardrobe${hasTurnaround ? '; a multi-view sheet may be used only for the matching subject and camera angle' : ''}. Place all named characters naturally in the scene; never copy a studio background, posing block, reference-sheet layout, or duplicate views. Prop references are the sole design authority for their named props and apply only when those props are requested by the shot.`;
       } else if (characterRef) {
         if (referencePackType === 'shot') {
           comfyPrompt += `\n\n[ComfyUI character anchor] Image 1 is the character identity lock${hasTurnaround ? ' and may be a turnaround or three-view sheet; use the panel matching the requested camera angle' : ''}. Copy that exact subject appearance, body plan, and outfit into this shot; never reproduce the sheet layout or duplicate views. Later images are scene or prop references only. Shot-listed props may be added from prop reference images; do not invent a different item. A missing carried item in the character reference does not forbid it in this shot. Apply the shot description for pose, camera and environment.`;
@@ -993,6 +1020,19 @@ export const generateImage = async (
 
       if (referenceMapping) {
         comfyPrompt += `\n\n[Reference mapping]\n${referenceMapping}`;
+      }
+
+      if (qwenImage21Workflow) {
+        comfyPrompt = compileQwenImage21Prompt({
+          prompt: comfyPrompt,
+          mode: hasAnyReference ? 'edit' : 't2i',
+          referencePackType,
+          referenceAnnotations: options?.referenceAnnotations,
+          referenceCount: effectiveReferenceImages.length,
+          hasTurnaround,
+          isVariation,
+          hasContinuityReference: Boolean(continuityReferenceImage),
+        });
       }
 
       comfyPrompt = await translatePromptForComfyUi(comfyPrompt);
@@ -1038,7 +1078,7 @@ export const generateImage = async (
       return imageUrl;
     }
 
-    let finalPrompt = normalizedUserPrompt;
+    let finalPrompt = roleConstrainedPrompt;
     if (hasAnyReference) {
       if (isVariation) {
         const compactVariationPrompt = compactTextByWordsAndChars(normalizedUserPrompt, 220, 1400);
@@ -1107,9 +1147,9 @@ Output one cinematic still image.`;
                 ? 'style-controlled image with shape reference'
                 : 'cinematic shot';
         const sceneConsistencyRule = referencePackType === 'shot'
-          ? 'Strictly preserve scene visual style, lighting logic, and environment continuity from references.'
+          ? 'Use scene references only for visual style, lighting logic, environment continuity, and spatial layout. Ignore unrequested weapons or hero props visible in scene references.'
           : referencePackType === 'scene'
-            ? 'Strictly preserve scene layout, atmosphere, and lighting logic.'
+            ? 'Strictly preserve scene layout, atmosphere, and lighting logic. Do not invent or prominently feature weapons or hero props unless explicitly requested in the scene brief.'
             : referencePackType === 'shape'
               ? 'Use references only for silhouette and spatial geometry; style and lighting must follow textual prompt.'
             : 'Keep visual style and lighting coherent with prompt and references.';
@@ -1122,7 +1162,7 @@ Output one cinematic still image.`;
           ? 'Props/items must match references exactly (shape, material, color, details).'
           : referencePackType === 'shape'
             ? 'If props/items appear, preserve major shape cues from references while following prompt-defined style/material treatment.'
-          : 'Referenced props/items in shot must match shape, material, color, and details. If the character lookbook has no such item, still add it from the prop reference rather than inventing a different one.';
+          : 'Only shot-requested props/items should appear. When a prop is requested, its dedicated prop reference is the sole design authority for shape, material, color, and details; ignore conflicting prop details from scene references.';
         const continuityGuide = continuityReferenceImage
           ? '- Last image is continuity reference; preserve transition continuity for identity, lighting, and spatial placement.'
           : null;

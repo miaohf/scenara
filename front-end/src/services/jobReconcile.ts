@@ -1,7 +1,8 @@
-import type { Character, Episode, Keyframe, Shot } from "@/types";
+import type { Character, Episode, Keyframe, Prop, Scene, Shot } from "@/types";
 import { extractJobMedia, type JobStatus } from "./aiApiAdapter";
 import { sameShotRef } from "./generationQueue";
 import { addCharacterImageHistory, mergeCharacterImageHistories } from "./characterImageHistory";
+import { addAssetImageHistory, assetImageKey, isAssetImageRemoved, mergeAssetImageHistories, unionRemovedImageKeys } from "./assetImageHistory";
 
 const sameId = (left: unknown, right: unknown): boolean => String(left) === String(right);
 
@@ -85,8 +86,14 @@ export function reconcileEpisodeWithJobs(
             threeView: item.threeView ? { ...item.threeView } : item.threeView,
             imageHistory: item.imageHistory?.map((entry) => ({ ...entry })),
           })),
-          scenes: episode.scriptData.scenes.map((item) => ({ ...item })),
-          props: (episode.scriptData.props || []).map((item) => ({ ...item })),
+          scenes: episode.scriptData.scenes.map((item) => ({
+            ...item,
+            imageHistory: item.imageHistory?.map((entry) => ({ ...entry })),
+          })),
+          props: (episode.scriptData.props || []).map((item) => ({
+            ...item,
+            imageHistory: item.imageHistory?.map((entry) => ({ ...entry })),
+          })),
         }
       : episode.scriptData,
     shots: episode.shots.map((shot) => ({
@@ -127,16 +134,27 @@ export function reconcileEpisodeWithJobs(
             : next.scriptData?.props;
       const item = list?.find((row) => sameId(row.id, target.id));
       if (!item) continue;
-      // 角色有手动历史选图，completed 时不能被旧任务覆盖；场景/道具没有
-      // 历史选择，按 created_at 顺序处理任务后，最后一个完成结果就是当前图。
-      // 否则刷新时数据库中的旧 completed 图片会让所有新任务结果被跳过。
-      const shouldApplyGeneratedAsset = target.kind === "character"
-        ? !item.referenceImage || item.status === "generating"
-        : true;
+      // 和角色定妆一样：只有当前这次生成任务能写回图片。
+      // 否则重新生图时会按时间重放全部旧任务，把用户删掉的历史图又加回来。
+      const tracked = item as Character | Scene | Prop;
+      const inflight = tracked.referenceGenerationIds?.length
+        ? tracked.referenceGenerationIds
+        : tracked.referenceGenerationId
+          ? [tracked.referenceGenerationId]
+          : [];
+      const acceptsThisJob = inflight.length === 0 || inflight.includes(job.id);
+      const shouldApplyGeneratedAsset = (!item.referenceImage || item.status === "generating") && acceptsThisJob;
+      const releaseGeneration = (doneStatus: "completed" | "failed" | "pending") => {
+        const remaining = inflight.filter((id) => id !== job.id);
+        tracked.referenceGenerationIds = remaining.length ? remaining : undefined;
+        tracked.referenceGenerationId = remaining.at(-1);
+        tracked.status = remaining.length ? "generating" : doneStatus;
+      };
       if (
         url &&
         isNewerMedia(item.referenceImage, url) &&
-        shouldApplyGeneratedAsset
+        shouldApplyGeneratedAsset &&
+        !isAssetImageRemoved(item.removedImageKeys, url)
       ) {
         if (target.kind === "character") {
           const character = item as Character;
@@ -144,16 +162,35 @@ export function reconcileEpisodeWithJobs(
           if (character.referenceImage) addCharacterImageHistory(character, character.referenceImage, "generated", character.visualPrompt);
           addCharacterImageHistory(character, url, "generated", character.visualPrompt);
           if (shouldActivate) character.activeImageView = "casting";
+          releaseGeneration("completed");
+        } else {
+          const asset = item as Scene | Prop;
+          if (asset.referenceImage) addAssetImageHistory(asset, asset.referenceImage, "generated", asset.visualPrompt);
+          addAssetImageHistory(asset, url, "generated", asset.visualPrompt);
+          releaseGeneration("completed");
         }
         item.referenceImage = url;
         if (target.kind === "scene" || target.kind === "prop") {
           (item as typeof item & { referenceImageUpdatedAt?: number }).referenceImageUpdatedAt =
             job.created_at ? Date.parse(job.created_at) : Date.now();
         }
-        item.status = "completed";
         changed = true;
-      } else if ((job.status === "failed" || job.status === "cancelled") && item.status === "generating" && !url) {
-        item.status = job.status === "cancelled" && item.referenceImage ? "completed" : job.status === "cancelled" ? "pending" : "failed";
+      } else if (
+        (job.status === "failed" || job.status === "cancelled")
+        && item.status === "generating"
+        && !url
+        && (!inflight.length || inflight.includes(job.id))
+      ) {
+        const remaining = inflight.filter((id) => id !== job.id);
+        tracked.referenceGenerationIds = remaining.length ? remaining : undefined;
+        tracked.referenceGenerationId = remaining.at(-1);
+        item.status = remaining.length
+          ? "generating"
+          : job.status === "cancelled" && item.referenceImage
+            ? "completed"
+            : job.status === "cancelled"
+              ? "pending"
+              : "failed";
         changed = true;
       } else if (isActive(job.status) && item.status !== "generating" && !item.referenceImage) {
         item.status = "generating";
@@ -259,9 +296,21 @@ export function reconcileEpisodeWithJobs(
       } else if ((job.status === "failed" || job.status === "cancelled") && frame.status === "generating" && !url) {
         frame.status = job.status === "cancelled" && frame.imageUrl ? "completed" : job.status === "cancelled" ? "pending" : "failed";
         changed = true;
-      } else if (isActive(job.status) && frame.status !== "generating") {
-        frame.status = "generating";
-        changed = true;
+      } else if (isActive(job.status)) {
+        // 某些 ComfyUI 任务已经产出图片并被写回剧集，但 Job 状态仍停在
+        // pending/running（例如 worker 在写回或 SSE 丢包时）。有同一代的
+        // 图片结果时，以媒体结果为准，避免关键帧和页面永久显示 Queued。
+        const sameGeneration =
+          !target.generationId ||
+          !frame.generationId ||
+          target.generationId === frame.generationId;
+        if (frame.imageUrl && sameGeneration && frame.status === "generating") {
+          frame.status = "completed";
+          changed = true;
+        } else if (frame.status !== "generating") {
+          frame.status = "generating";
+          changed = true;
+        }
       }
       continue;
     }
@@ -448,13 +497,32 @@ export function mergeEpisodeMediaFromServer(
 ): { episode: Episode; changed: boolean } {
   let changed = false;
 
-  const mergeAsset = <T extends { id: string; status?: string; referenceImage?: string; referenceImageUpdatedAt?: number }>(
+  const mergeAsset = <T extends { id: string; status?: string; referenceImage?: string; referenceImageUpdatedAt?: number; imageHistory?: Scene["imageHistory"]; removedImageKeys?: string[] }>(
     localItems: T[] | undefined,
     serverItems: T[] | undefined,
   ): T[] | undefined => {
     if (!localItems) return localItems;
     return localItems.map((item) => {
-      const next = takeServerMedia(item, serverItems?.find((row) => sameId(row.id, item.id)), "referenceImage");
+      const serverItem = serverItems?.find((row) => sameId(row.id, item.id));
+      let next = takeServerMedia(item, serverItem, "referenceImage");
+      const removedImageKeys = unionRemovedImageKeys(item.removedImageKeys, serverItem?.removedImageKeys);
+      if (removedImageKeys !== item.removedImageKeys) {
+        changed = true;
+        next = { ...next, removedImageKeys };
+      }
+      if (next.referenceImage && isAssetImageRemoved(removedImageKeys, next.referenceImage) && !item.referenceImage) {
+        changed = true;
+        next = { ...next, referenceImage: undefined, status: item.status === "generating" ? item.status : "pending" };
+      }
+      const imageHistory = mergeAssetImageHistories(item.imageHistory, serverItem?.imageHistory, removedImageKeys);
+      if (imageHistory !== item.imageHistory) {
+        changed = true;
+        next = { ...next, imageHistory };
+      }
+      if (imageHistory !== item.imageHistory) {
+        changed = true;
+        next = { ...next, imageHistory };
+      }
       if (next !== item) changed = true;
       return next;
     });
@@ -490,10 +558,11 @@ export function mergeEpisodeMediaFromServer(
             changed = true;
             next = { ...next, threeView };
           }
-          const imageHistory = mergeCharacterImageHistories(character.imageHistory, serverChar?.imageHistory);
-          if (imageHistory !== character.imageHistory) {
+          const removedImageKeys = unionRemovedImageKeys(character.removedImageKeys, serverChar?.removedImageKeys);
+          const imageHistory = mergeCharacterImageHistories(character.imageHistory, serverChar?.imageHistory, removedImageKeys);
+          if (imageHistory !== character.imageHistory || removedImageKeys !== character.removedImageKeys) {
             changed = true;
-            next = { ...next, imageHistory };
+            next = { ...next, imageHistory, ...(removedImageKeys ? { removedImageKeys } : {}) };
           }
           // activeImageView 是用户在当前页面选择的展示状态，不是媒体生成结果。
           // 普通后台刷新不能用旧服务端快照覆盖它；首次加载时仍会从服务端读取，
@@ -525,8 +594,23 @@ export function mergeEpisodeMediaFromServer(
         serverFrame,
         "imageUrl",
       );
-      if (merged !== frame) changed = true;
-      return merged;
+      // 服务端已经写回结果，但 URL 可能与本地已有的预览相同。
+      // 这种情况下不能只依赖 isNewerMedia，否则帧会永久停留在 generating。
+      if (merged !== frame) {
+        changed = true;
+        return merged;
+      }
+      if (
+        frame.status === "generating" &&
+        serverFrame?.imageUrl &&
+        frame.imageUrl &&
+        !isNewerMedia(frame.imageUrl, serverFrame.imageUrl) &&
+        (!frame.generationId || !serverFrame.generationId || frame.generationId === serverFrame.generationId)
+      ) {
+        changed = true;
+        return { ...frame, status: "completed" as const };
+      }
+      return frame;
     });
     const interval = shot.interval
       ? takeServerMedia(shot.interval, serverShot?.interval, "videoUrl")

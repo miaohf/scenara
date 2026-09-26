@@ -8,7 +8,13 @@ export const getImageApiFormat = (
   model?: Partial<ImageModelDefinition> | null
 ): ImageApiFormat => {
   const explicitFormat = model?.params?.apiFormat;
-  if (explicitFormat === 'gemini' || explicitFormat === 'openai' || explicitFormat === 'comfyui') {
+  if (
+    explicitFormat === 'gemini' ||
+    explicitFormat === 'openai' ||
+    explicitFormat === 'comfyui' ||
+    explicitFormat === 'cursor-sdk' ||
+    explicitFormat === 'cursor-acp'
+  ) {
     return explicitFormat;
   }
 

@@ -1,11 +1,14 @@
 import React from 'react';
-import { Package, Check, Loader2, Trash2, Edit2, AlertCircle, FolderPlus, Upload, X } from 'lucide-react';
+import { Package, Loader2, Trash2, Edit2, AlertCircle, FolderPlus, Upload, X } from 'lucide-react';
 import { Prop, PropPresentationMode } from '../../types';
 import { PROP_CATEGORIES } from './constants';
 import PromptEditor from './PromptEditor';
 import ImageUploadButton from './ImageUploadButton';
 import InlineEditableText from './InlineEditableText';
+import AssetIntelligenceEditor from './AssetIntelligenceEditor';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
+import AssetImageHistoryStrip from './AssetImageHistoryStrip';
+import { getAssetImageHistory } from '../../services/assetImageHistory';
 
 interface PropCardProps {
   prop: Prop;
@@ -18,7 +21,9 @@ interface PropCardProps {
   onPromptSave: (newPrompt: string) => void;
   onRegeneratePrompt?: () => void;
   isRegeneratingPrompt?: boolean;
-  onImageClick: (imageUrl: string) => void;
+  onImageClick: (imageUrl: string, imageUrls?: string[], onDelete?: (imageUrl: string) => void, onApply?: (imageUrl: string) => void) => void;
+  onApplyHistory: (imageUrl: string) => void;
+  onDeleteHistory: (imageUrl: string) => void;
   onDelete: () => void;
   onUpdateInfo: (updates: {
     name?: string;
@@ -28,6 +33,7 @@ interface PropCardProps {
     presentationNote?: string;
   }) => void;
   onAddToLibrary: () => void;
+  onSaveAssetDNA: (assetDNA: NonNullable<Prop['assetDNA']>) => void;
 }
 
 const PropCard: React.FC<PropCardProps> = ({
@@ -42,11 +48,15 @@ const PropCard: React.FC<PropCardProps> = ({
   onRegeneratePrompt,
   isRegeneratingPrompt = false,
   onImageClick,
+  onApplyHistory,
+  onDeleteHistory,
   onDelete,
   onUpdateInfo,
   onAddToLibrary,
+  onSaveAssetDNA,
 }) => {
   const { text } = useInterfaceLanguage();
+  const imageHistory = getAssetImageHistory(prop);
   const handleShapeReferenceChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -58,14 +68,19 @@ const PropCard: React.FC<PropCardProps> = ({
     <div className="bg-[var(--bg-surface)] border border-[var(--border-primary)] rounded-xl overflow-hidden flex flex-col group hover:border-[var(--border-secondary)] transition-all hover:shadow-lg">
       <div
         className="aspect-video bg-[var(--bg-elevated)] relative cursor-pointer"
-        onClick={() => prop.referenceImage && onImageClick(prop.referenceImage)}
+        onClick={() => {
+          if (isGenerating || !prop.referenceImage) return;
+          onImageClick(prop.referenceImage, imageHistory.map((item) => item.imageUrl), onDeleteHistory);
+        }}
       >
         {prop.referenceImage ? (
           <>
             <img src={prop.referenceImage} alt={prop.name} className="w-full h-full object-cover" />
-            <div className="absolute top-2 right-2 p-1 bg-[var(--accent)] text-[var(--accent-on)] rounded shadow-lg backdrop-blur">
-              <Check className="w-3 h-3" />
-            </div>
+            {isGenerating && (
+              <div className="absolute inset-0 flex items-center justify-center bg-[var(--bg-base)]/35 backdrop-blur-[1px]">
+                <Loader2 className="h-9 w-9 animate-spin text-[var(--accent-text)] drop-shadow" />
+              </div>
+            )}
           </>
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center text-[var(--text-muted)] p-4 text-center">
@@ -204,6 +219,14 @@ const PropCard: React.FC<PropCardProps> = ({
             maxHeight="max-h-[160px]"
           />
         </div>
+
+        <AssetIntelligenceEditor
+          key={JSON.stringify(prop.assetDNA || {})}
+          assetDNA={prop.assetDNA}
+          onSaveAssetDNA={onSaveAssetDNA}
+        />
+
+        <AssetImageHistoryStrip history={imageHistory} currentImage={prop.referenceImage} onPreview={onImageClick} onApply={onApplyHistory} onDelete={onDeleteHistory} />
 
         {prop.referenceImage && (
           <div className="mt-3 pt-3 border-t border-[var(--border-primary)]">

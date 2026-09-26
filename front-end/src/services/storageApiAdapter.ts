@@ -72,6 +72,7 @@ function projectFromApi(p: ApiProject): SeriesProject {
     visualStyle: (settings.visualStyle as string) || "",
     language: (settings.language as string) || "中文",
     artDirection: settings.artDirection as SeriesProject["artDirection"],
+    visualStyleProfiles: settings.visualStyleProfiles as SeriesProject["visualStyleProfiles"],
     characterLibrary: (p.character_library || []) as SeriesProject["characterLibrary"],
     sceneLibrary: (p.scene_library || []) as SeriesProject["sceneLibrary"],
     propLibrary: (p.prop_library || []) as SeriesProject["propLibrary"],
@@ -92,6 +93,7 @@ function projectToApiBody(sp: SeriesProject) {
       visualStyle: sp.visualStyle,
       language: sp.language,
       artDirection: sp.artDirection,
+      visualStyleProfiles: sp.visualStyleProfiles,
     },
   };
 }

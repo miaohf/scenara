@@ -14,6 +14,7 @@ interface KeyframeEditorProps {
   canCopyPrevious: boolean;
   canCopyNext: boolean; // 是否可以复制下一镜头的首帧（需要有下一个镜头且已生成首帧）
   isAIOptimizing?: boolean;
+  optimizingKeyframeTypes?: Array<'start' | 'end'>;
   useAIEnhancement: boolean;
   onToggleAIEnhancement: () => void;
   onGenerateKeyframe: (type: 'start' | 'end') => void;
@@ -85,6 +86,7 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
   canCopyPrevious,
   canCopyNext,
   isAIOptimizing = false,
+  optimizingKeyframeTypes = [],
   useAIEnhancement,
   onToggleAIEnhancement,
   onGenerateKeyframe,
@@ -107,12 +109,15 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
     label: string,
     keyframe?: Keyframe
   ) => {
+    const isOptimizingThisKeyframe = optimizingKeyframeTypes.includes(type);
     const job = findShotKeyframeJob(jobs, shotId, type, shotIndex);
-    const display = job ? jobDisplayState(job, jobs) : (keyframe?.status === 'generating' ? 'queued' : undefined);
+    // Worker/SSE 状态可能比已经写回的图片慢一拍；有完成图片时忽略滞后的活动任务。
+    const effectiveJob = keyframe?.imageUrl && keyframe.status !== 'generating' ? undefined : job;
+    const display = effectiveJob ? jobDisplayState(effectiveJob, jobs) : (keyframe?.status === 'generating' ? 'queued' : undefined);
     const isGenerating = keyframe?.status === 'generating' || display === 'running' || display === 'queued';
     const hasFailed = keyframe?.status === 'failed' && !isGenerating;
     const progressLabel = display
-      ? formatJobProgressLabel(job, display)
+      ? formatJobProgressLabel(effectiveJob, display)
       : null;
     
     return (
@@ -124,11 +129,11 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
           <div className="flex items-center gap-1">
             <button
               onClick={() => onOptimizeWithAI(type)}
-              disabled={isAIOptimizing}
+              disabled={isOptimizingThisKeyframe || isAIOptimizing}
               className="p-1 text-[var(--accent-text)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               title={text('AI优化提示词', 'Optimize prompt with AI')}
             >
-              {isAIOptimizing ? (
+              {isOptimizingThisKeyframe ? (
                 <Loader2 className="w-3 h-3 animate-spin" />
               ) : (
                 <Sparkles className="w-3 h-3" />
@@ -274,11 +279,11 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
         {showEndFrame && (
           <button
             onClick={onOptimizeBothWithAI}
-            disabled={isAIOptimizing}
+            disabled={isAIOptimizing || optimizingKeyframeTypes.length > 0}
             className="px-3 py-1.5 bg-[var(--btn-primary-bg)] hover:bg-[var(--btn-primary-hover)] text-[var(--btn-primary-text)] rounded text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
             title={text('AI一次性优化起始帧和结束帧（推荐）', 'Optimize start and end frames with AI (recommended)')}
           >
-            {isAIOptimizing ? (
+            {optimizingKeyframeTypes.length > 0 ? (
               <>
                 <Loader2 className="w-3 h-3 animate-spin" />
                 <span>{text('优化中...', 'Optimizing...')}</span>

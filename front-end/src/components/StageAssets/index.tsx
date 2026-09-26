@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Users, Sparkles, RefreshCw, Loader2, MapPin, Archive, X, Search, Trash2, Package, Link2 } from 'lucide-react';
-import { ProjectState, CharacterVariation, Character, Scene, Prop, AspectRatio, AssetLibraryItem, CharacterTurnaroundPanel, PropPresentationMode } from '../../types';
+import { ProjectState, CharacterVariation, Character, Scene, Prop, AspectRatio, AssetLibraryItem, CharacterTurnaroundPanel, PropPresentationMode, AssetDNA, SceneSpatialTopology } from '../../types';
 import type { ImageModelParams } from '../../types/model';
 import { generateImage, generateVisualPrompts, generateArtDirection, generateCharacterTurnaroundPanels, generateCharacterTurnaroundImage, generateCharacterThreeViewImage, resolveCharacterCastingAspectRatio, applyCharacterCastingPositivePrompt, buildLookbookRegenerateVariation, listProjectPropNames, inferCharacterWardrobe, isWearableProp, normalizeCharacterWardrobeInPrompt, dedupeRepeatedPromptClauses, mergeCharacterCastingNegativePrompt, CHARACTER_IDENTITY_LOCK } from '../../services/aiService';
 import { 
@@ -33,7 +33,35 @@ import { SeriesProject } from '../../types';
 import BilingualLabel from '../BilingualLabel';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 import { addCharacterImageHistory, resolveCharacterImageView, sameCharacterImage } from '../../services/characterImageHistory';
+import { addAssetImageHistory, dismissAssetImage, sameAssetImage } from '../../services/assetImageHistory';
 import { resolveProductionBible } from '../../services/productionBibleService';
+
+type GenerationTarget = {
+  status?: string;
+  referenceGenerationId?: string;
+  referenceGenerationIds?: string[];
+};
+
+const beginGeneration = (asset: GenerationTarget, pendingId: string) => {
+  asset.status = 'generating';
+  const ids = asset.referenceGenerationIds || [];
+  asset.referenceGenerationIds = ids.includes(pendingId) ? ids : [...ids, pendingId];
+  asset.referenceGenerationId = pendingId;
+};
+
+const noteGenerationJob = (asset: GenerationTarget, pendingId: string, jobId: string) => {
+  const ids = (asset.referenceGenerationIds || []).map((id) => (id === pendingId ? jobId : id));
+  asset.referenceGenerationIds = ids.includes(jobId) ? ids : [...ids, jobId];
+  if (!asset.referenceGenerationId || asset.referenceGenerationId === pendingId) asset.referenceGenerationId = jobId;
+};
+
+const finishGeneration = (asset: GenerationTarget, tokens: Array<string | undefined>, status: 'completed' | 'failed') => {
+  const drop = new Set(tokens.filter((token): token is string => !!token));
+  const ids = (asset.referenceGenerationIds || []).filter((id) => !drop.has(id));
+  asset.referenceGenerationIds = ids.length ? ids : undefined;
+  asset.referenceGenerationId = ids.at(-1);
+  if (!ids.length) asset.status = status;
+};
 
 interface Props {
   project: ProjectState;
@@ -47,8 +75,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   const { text } = useInterfaceLanguage();
   const [batchProgress, setBatchProgress] = useState<{current: number, total: number} | null>(null);
   const [selectedCharId, setSelectedCharId] = useState<string | null>(null);
-  const [previewImage, setPreviewImage] = useState<{ url: string; imageUrls?: string[] } | null>(null);
-  const openImagePreview = (url: string, imageUrls?: string[]) => setPreviewImage({ url, imageUrls });
+  const [previewImage, setPreviewImage] = useState<{ url: string; imageUrls?: string[]; onDelete?: (url: string) => void; onApply?: (url: string) => void } | null>(null);
+  const openImagePreview = (url: string, imageUrls?: string[], onDelete?: (url: string) => void, onApply?: (url: string) => void) => setPreviewImage({ url, imageUrls, onDelete, onApply });
   const [showLibraryModal, setShowLibraryModal] = useState(false);
   const [libraryItems, setLibraryItems] = useState<AssetLibraryItem[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
@@ -291,18 +319,18 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     const scriptSnapshot = project.scriptData;
     if (!scriptSnapshot) return;
     const historicalContext = resolveProductionBible(scriptSnapshot).historicalContext;
+    setPreviewImage(null);
+    const pendingId = `pending:${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    let createdJobId: string | undefined;
 
-    // 设置生成状态
+    // 设置生成状态。连续点击各自占一个任务，互不覆盖。
     updateProject(prev => {
       if (!prev.scriptData) return prev;
       const newData = cloneScriptData(prev.scriptData);
-      if (type === 'character') {
-        const c = newData.characters.find(c => compareIds(c.id, id));
-        if (c) c.status = 'generating';
-      } else {
-        const s = newData.scenes.find(s => compareIds(s.id, id));
-        if (s) s.status = 'generating';
-      }
+      const asset = type === 'character'
+        ? newData.characters.find(c => compareIds(c.id, id))
+        : newData.scenes.find(s => compareIds(s.id, id));
+      if (asset) beginGeneration(asset, pendingId);
       return { ...prev, scriptData: newData };
     });
 
@@ -369,7 +397,18 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
             prompt = scene.visualPrompt;
             negativePrompt = scene.negativePrompt || '';
           } else {
-            const prompts = await generateVisualPrompts('scene', scene, genre, shotPromptModel, visualStyle, language);
+            const prompts = await generateVisualPrompts(
+              'scene',
+              scene,
+              genre,
+              shotPromptModel,
+              visualStyle,
+              language,
+              scriptSnapshot.artDirection,
+              undefined,
+              listProjectPropNames(scriptSnapshot.props),
+              historicalContext,
+            );
             prompt = prompts.visualPrompt;
             negativePrompt = prompts.negativePrompt;
 
@@ -469,9 +508,35 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         negativePrompt,
         shapeReferenceImage
           ? { referencePackType: 'shape', target: { kind: type, id } }
-          : type === 'character'
-            ? { referencePackType: 'character', target: { kind: type, id } }
-            : { referencePackType: 'scene', target: { kind: type, id } }
+            : type === 'character'
+            ? {
+                referencePackType: 'character',
+                target: { kind: type, id },
+                onJobCreated: (job) => {
+                  createdJobId = job.id;
+                  updateProject(prev => {
+                    if (!prev.scriptData) return prev;
+                    const newData = cloneScriptData(prev.scriptData);
+                    const c = newData.characters.find(c => compareIds(c.id, id));
+                    if (c && c.status === 'generating') noteGenerationJob(c, pendingId, job.id);
+                    return { ...prev, scriptData: newData };
+                  });
+                },
+              }
+            : {
+                referencePackType: 'scene',
+                target: { kind: type, id },
+                onJobCreated: (job) => {
+                  createdJobId = job.id;
+                  updateProject(prev => {
+                    if (!prev.scriptData) return prev;
+                    const newData = cloneScriptData(prev.scriptData);
+                    const s = newData.scenes.find(scene => compareIds(scene.id, id));
+                    if (s && s.status === 'generating') noteGenerationJob(s, pendingId, job.id);
+                    return { ...prev, scriptData: newData };
+                  });
+                },
+              }
       );
 
       // 更新状态
@@ -483,16 +548,18 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           if (c) {
             if (c.referenceImage) addCharacterImageHistory(c, c.referenceImage, 'generated', c.visualPrompt);
             c.referenceImage = imageUrl;
-            c.status = 'completed';
             c.activeImageView = 'casting';
+            finishGeneration(c, [pendingId, createdJobId], 'completed');
             addCharacterImageHistory(c, imageUrl, 'generated', c.visualPrompt);
           }
         } else {
           const s = newData.scenes.find(s => compareIds(s.id, id));
           if (s) {
+            addAssetImageHistory(s, s.referenceImage, 'generated', s.visualPrompt);
             s.referenceImage = imageUrl;
             s.referenceImageUpdatedAt = Date.now();
-            s.status = 'completed';
+            finishGeneration(s, [pendingId, createdJobId], 'completed');
+            addAssetImageHistory(s, imageUrl, 'generated', s.visualPrompt);
           }
         }
         return { ...prev, scriptData: newData };
@@ -506,10 +573,10 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         const newData = cloneScriptData(prev.scriptData);
         if (type === 'character') {
           const c = newData.characters.find(c => compareIds(c.id, id));
-          if (c) c.status = 'failed';
+          if (c) finishGeneration(c, [pendingId, createdJobId], 'failed');
         } else {
           const s = newData.scenes.find(s => compareIds(s.id, id));
-          if (s) s.status = 'failed';
+          if (s) finishGeneration(s, [pendingId, createdJobId], 'failed');
         }
         return { ...prev, scriptData: newData };
       });
@@ -529,7 +596,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     const isRegenerate = itemsToGen.length === 0;
 
     if (isRegenerate) {
-      showAlert(`确定要重新生成所有${type === 'character' ? '角色' : '场景'}图吗？`, {
+      const label = type === 'character' ? '角色' : '场景';
+      showAlert(`确定重新生成全部${label}参考图吗？当前参考图会被替换为新图，旧图保留在历史记录中；已有提示词不会被修改。`, {
         type: 'warning',
         showCancel: true,
         onConfirm: async () => {
@@ -558,6 +626,238 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
   };
 
   /**
+   * 只批量更新场景生图提示词，不生成或替换任何场景参考图。
+   * 场景提示词会显式排除项目中已有独立设计的道具，避免把英雄道具烘焙进背景图。
+   */
+  const handleBatchRegenerateScenePrompts = () => {
+    const scenes = project.scriptData?.scenes || [];
+    if (!scenes.length) return;
+
+    showAlert(
+      '确定重新生成全部场景提示词吗？这会覆盖当前场景提示词，但不会生成、删除或替换场景参考图。旧提示词会保留在提示词历史中。',
+      {
+        type: 'warning',
+        showCancel: true,
+        onConfirm: async () => {
+          await executeBatchRegenerateScenePrompts();
+        }
+      }
+    );
+  };
+
+  const executeBatchRegenerateScenePrompts = async () => {
+    if (!project.scriptData) return;
+    const scriptSnapshot = cloneScriptData(project.scriptData);
+    const scenes = scriptSnapshot.scenes || [];
+    if (!scenes.length) return;
+
+    setBatchProgress({ current: 0, total: scenes.length });
+    try {
+      let artDirection = scriptSnapshot.artDirection;
+      if (!artDirection?.visualStyle || artDirection.visualStyle !== visualStyle) {
+        artDirection = await generateArtDirection(
+          scriptSnapshot.title || '未命名剧本',
+          genre,
+          scriptSnapshot.logline || '',
+          (scriptSnapshot.characters || []).map(char => ({
+            name: char.name,
+            gender: char.gender,
+            age: char.age,
+            personality: char.personality,
+            species: char.species,
+          })),
+          scenes.map(scene => ({
+            location: scene.location,
+            time: scene.time,
+            atmosphere: scene.atmosphere,
+          })),
+          visualStyle,
+          language,
+          shotPromptModel,
+        );
+        scriptSnapshot.artDirection = artDirection;
+        updateProject(prev => {
+          if (!prev.scriptData) return prev;
+          const nextData = cloneScriptData(prev.scriptData);
+          nextData.artDirection = artDirection;
+          return { ...prev, scriptData: nextData };
+        });
+      }
+
+      const propNames = listProjectPropNames(scriptSnapshot.props);
+      const historicalContext = resolveProductionBible(scriptSnapshot).historicalContext;
+
+      for (let index = 0; index < scenes.length; index++) {
+        const scene = scenes[index];
+        const key = `scene:${scene.id}`;
+        markPromptRegenerating(key, true);
+        try {
+          const prompts = await generateVisualPrompts(
+            'scene',
+            scene,
+            genre,
+            shotPromptModel,
+            visualStyle,
+            language,
+            artDirection,
+            undefined,
+            propNames,
+            historicalContext,
+          );
+
+          updateProject(prev => {
+            if (!prev.scriptData) return prev;
+            const nextData = cloneScriptData(prev.scriptData);
+            const target = nextData.scenes.find(item => compareIds(item.id, scene.id));
+            if (!target) return prev;
+            target.promptVersions = updatePromptWithVersion(
+              target.visualPrompt,
+              prompts.visualPrompt,
+              target.promptVersions,
+              'ai-generated',
+              'Batch regenerated scene prompt (dedicated props excluded)'
+            );
+            target.visualPrompt = prompts.visualPrompt;
+            target.negativePrompt = prompts.negativePrompt;
+            nextData.artDirection = artDirection;
+            return { ...prev, scriptData: invalidateShotGenerationMeta(nextData) };
+          });
+        } finally {
+          markPromptRegenerating(key, false);
+        }
+
+        setBatchProgress({ current: index + 1, total: scenes.length });
+        if (index < scenes.length - 1) await delay(DEFAULTS.batchGenerateDelay);
+      }
+    } catch (error: any) {
+      console.error('Failed to batch regenerate scene prompts:', error);
+      if (!onApiKeyError?.(error)) {
+        showAlert(error?.message || '批量重新生成场景提示词失败', { type: 'error' });
+      }
+    } finally {
+      setBatchProgress(null);
+    }
+  };
+
+  /** 角色与道具的批量提示词更新：不重新生成或替换任何参考图。 */
+  const handleBatchRegenerateAssetPrompts = (type: 'character' | 'prop') => {
+    const items = type === 'character'
+      ? project.scriptData?.characters || []
+      : (project.scriptData?.props || []).filter(prop => !isWearableProp(prop));
+    if (!items.length) return;
+
+    const label = type === 'character' ? '角色定妆' : '道具';
+    const extra = type === 'character'
+      ? '独立武器、法宝和手持道具会从角色定妆提示词中排除。'
+      : '道具会按当前项目美术方向重新整理为独立产品参考提示词。';
+    showAlert(
+      `确定重新生成全部${label}提示词吗？这会覆盖当前提示词，但不会生成、删除或替换参考图。旧提示词会保留在提示词历史中。${extra}`,
+      {
+        type: 'warning',
+        showCancel: true,
+        onConfirm: async () => {
+          await executeBatchRegenerateAssetPrompts(type);
+        }
+      }
+    );
+  };
+
+  const executeBatchRegenerateAssetPrompts = async (type: 'character' | 'prop') => {
+    if (!project.scriptData) return;
+    const scriptSnapshot = cloneScriptData(project.scriptData);
+    const items = (type === 'character'
+      ? scriptSnapshot.characters || []
+      : (scriptSnapshot.props || []).filter(prop => !isWearableProp(prop))) as Array<Character | Prop>;
+    if (!items.length) return;
+
+    setBatchProgress({ current: 0, total: items.length });
+    try {
+      let artDirection = scriptSnapshot.artDirection;
+      if (!artDirection?.visualStyle || artDirection.visualStyle !== visualStyle) {
+        artDirection = await generateArtDirection(
+          scriptSnapshot.title || '未命名剧本',
+          genre,
+          scriptSnapshot.logline || '',
+          (scriptSnapshot.characters || []).map(char => ({
+            name: char.name,
+            gender: char.gender,
+            age: char.age,
+            personality: char.personality,
+            species: char.species,
+          })),
+          (scriptSnapshot.scenes || []).map(scene => ({
+            location: scene.location,
+            time: scene.time,
+            atmosphere: scene.atmosphere,
+          })),
+          visualStyle,
+          language,
+          shotPromptModel,
+        );
+      }
+
+      const propNames = listProjectPropNames(scriptSnapshot.props);
+      const historicalContext = resolveProductionBible(scriptSnapshot).historicalContext;
+      for (let index = 0; index < items.length; index++) {
+        const item = items[index];
+        const key = `${type}:${item.id}`;
+        markPromptRegenerating(key, true);
+        try {
+          const promptData = type === 'character'
+            ? { ...(item as Character), wardrobe: inferCharacterWardrobe(item as Character, scriptSnapshot.props) }
+            : item as Prop;
+          const prompts = await generateVisualPrompts(
+            type,
+            promptData,
+            genre,
+            shotPromptModel,
+            visualStyle,
+            language,
+            artDirection,
+            undefined,
+            type === 'character' ? propNames : undefined,
+            historicalContext,
+          );
+
+          updateProject(prev => {
+            if (!prev.scriptData) return prev;
+            const nextData = cloneScriptData(prev.scriptData);
+            const target = type === 'character'
+              ? nextData.characters.find(char => compareIds(char.id, item.id))
+              : (nextData.props || []).find(prop => compareIds(prop.id, item.id));
+            if (!target) return prev;
+            target.promptVersions = updatePromptWithVersion(
+              target.visualPrompt,
+              prompts.visualPrompt,
+              target.promptVersions,
+              'ai-generated',
+              type === 'character'
+                ? 'Batch regenerated character prompt (dedicated props excluded)'
+                : 'Batch regenerated prop prompt'
+            );
+            target.visualPrompt = prompts.visualPrompt;
+            target.negativePrompt = prompts.negativePrompt;
+            nextData.artDirection = artDirection;
+            return { ...prev, scriptData: invalidateShotGenerationMeta(nextData) };
+          });
+        } finally {
+          markPromptRegenerating(key, false);
+        }
+
+        setBatchProgress({ current: index + 1, total: items.length });
+        if (index < items.length - 1) await delay(DEFAULTS.batchGenerateDelay);
+      }
+    } catch (error: any) {
+      console.error(`Failed to batch regenerate ${type} prompts:`, error);
+      if (!onApiKeyError?.(error)) {
+        showAlert(error?.message || '批量重新生成提示词失败', { type: 'error' });
+      }
+    } finally {
+      setBatchProgress(null);
+    }
+  };
+
+  /**
    * 上传角色图片
    */
   const handleUploadCharacterImage = async (charId: string, file: File) => {
@@ -573,6 +873,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           char.referenceImage = base64;
           char.status = 'completed';
           char.activeImageView = 'casting';
+          char.referenceGenerationId = undefined;
           addCharacterImageHistory(char, base64, 'uploaded', char.visualPrompt);
         }
         return { ...prev, scriptData: newData };
@@ -593,6 +894,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       char.referenceImage = imageUrl;
       char.status = 'completed';
       char.activeImageView = 'casting';
+      char.referenceGenerationId = undefined;
       addCharacterImageHistory(char, imageUrl, selected?.source || 'generated', selected?.prompt || char.visualPrompt);
       return { ...prev, scriptData: newData };
     });
@@ -626,14 +928,88 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         const newData = cloneScriptData(prev.scriptData);
         const scene = newData.scenes.find(s => compareIds(s.id, sceneId));
         if (scene) {
+          addAssetImageHistory(scene, scene.referenceImage, 'generated', scene.visualPrompt);
           scene.referenceImage = base64;
           scene.status = 'completed';
+          addAssetImageHistory(scene, base64, 'uploaded', scene.visualPrompt);
         }
         return { ...prev, scriptData: newData };
       });
     } catch (e: any) {
       showAlert(e.message, { type: 'error' });
     }
+  };
+
+  const handleApplySceneHistory = (sceneId: string, imageUrl: string) => {
+    updateProject(prev => {
+      if (!prev.scriptData) return prev;
+      const data = cloneScriptData(prev.scriptData);
+      const scene = data.scenes.find(item => compareIds(item.id, sceneId));
+      if (!scene || sameAssetImage(scene.referenceImage, imageUrl)) return prev;
+      addAssetImageHistory(scene, scene.referenceImage, 'generated', scene.visualPrompt);
+      scene.referenceImage = imageUrl;
+      scene.referenceImageUpdatedAt = Date.now();
+      scene.status = 'completed';
+      addAssetImageHistory(scene, imageUrl, 'generated', scene.visualPrompt);
+      return { ...prev, scriptData: data };
+    });
+  };
+
+  const handleApplyPropHistory = (propId: string, imageUrl: string) => {
+    updateProject(prev => {
+      if (!prev.scriptData) return prev;
+      const data = cloneScriptData(prev.scriptData);
+      const prop = (data.props || []).find(item => compareIds(item.id, propId));
+      if (!prop || sameAssetImage(prop.referenceImage, imageUrl)) return prev;
+      addAssetImageHistory(prop, prop.referenceImage, 'generated', prop.visualPrompt);
+      prop.referenceImage = imageUrl;
+      prop.referenceImageUpdatedAt = Date.now();
+      prop.status = 'completed';
+      addAssetImageHistory(prop, imageUrl, 'generated', prop.visualPrompt);
+      return { ...prev, scriptData: data };
+    });
+  };
+
+  const confirmDeleteHistory = (type: 'character' | 'scene' | 'prop', id: string, imageUrl: string, onDeleted?: () => void) => {
+    const label = type === 'character' ? '角色' : type === 'scene' ? '场景' : '道具';
+    showAlert(`确定删除这张${label}历史图片吗？删除后不可恢复。`, {
+      type: 'warning',
+      showCancel: true,
+      onConfirm: () => {
+        updateProject(prev => {
+          if (!prev.scriptData) return prev;
+          const data = cloneScriptData(prev.scriptData);
+          const asset: any = type === 'character'
+            ? data.characters.find((item: Character) => compareIds(item.id, id))
+            : type === 'scene'
+              ? data.scenes.find((item: Scene) => compareIds(item.id, id))
+              : (data.props || []).find((item: Prop) => compareIds(item.id, id));
+          if (!asset) return prev;
+          dismissAssetImage(asset, imageUrl);
+          if (sameAssetImage(asset.referenceImage, imageUrl)) {
+            asset.referenceImage = undefined;
+            asset.referenceImageUpdatedAt = undefined;
+            asset.status = 'pending';
+            if (type === 'character') asset.activeImageView = 'casting';
+          }
+          return { ...prev, scriptData: data };
+        });
+        onDeleted?.();
+      },
+    });
+  };
+
+  const keepPreviewAfterHistoryDelete = (imageUrl: string) => {
+    setPreviewImage((current) => {
+      if (!current) return current;
+      const remainingUrls = (current.imageUrls || []).filter((url) => !sameAssetImage(url, imageUrl));
+      if (remainingUrls.length === 0) return null;
+      return {
+        ...current,
+        url: sameAssetImage(current.url, imageUrl) ? remainingUrls[0] : current.url,
+        imageUrls: remainingUrls,
+      };
+    });
   };
 
   const handleUploadShapeReferenceImage = async (
@@ -893,7 +1269,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
           language,
           artDirection,
           undefined,
-          undefined,
+          listProjectPropNames(project.scriptData.props),
           historicalContext,
         );
         updateProject(prev => {
@@ -971,6 +1347,15 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     }
   };
 
+  const handleSaveCharacterAssetDNA = (charId: string, assetDNA: AssetDNA) => {
+    if (!project.scriptData) return;
+    const newData = cloneScriptData(project.scriptData);
+    const character = newData.characters.find((item) => compareIds(item.id, charId));
+    if (!character) return;
+    character.assetDNA = assetDNA;
+    updateProject({ scriptData: invalidateShotGenerationMeta(newData) });
+  };
+
   /**
    * 保存场景提示词
    */
@@ -1003,6 +1388,24 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       if (updates.atmosphere !== undefined) scene.atmosphere = updates.atmosphere;
       updateProject({ scriptData: invalidateShotGenerationMeta(newData) });
     }
+  };
+
+  const handleSaveSceneAssetDNA = (sceneId: string, assetDNA: AssetDNA) => {
+    if (!project.scriptData) return;
+    const newData = cloneScriptData(project.scriptData);
+    const scene = newData.scenes.find((item) => compareIds(item.id, sceneId));
+    if (!scene) return;
+    scene.assetDNA = assetDNA;
+    updateProject({ scriptData: invalidateShotGenerationMeta(newData) });
+  };
+
+  const handleSaveSceneTopology = (sceneId: string, spatialTopology: SceneSpatialTopology) => {
+    if (!project.scriptData) return;
+    const newData = cloneScriptData(project.scriptData);
+    const scene = newData.scenes.find((item) => compareIds(item.id, sceneId));
+    if (!scene) return;
+    scene.spatialTopology = spatialTopology;
+    updateProject({ scriptData: invalidateShotGenerationMeta(newData) });
   };
 
   /**
@@ -1100,6 +1503,13 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       location: '新场景',
       time: '未设定',
       atmosphere: '待补充',
+      spatialTopology: {
+        zones: [{ id: 'primary-zone', label: '新场景主区域' }],
+        entrances: [],
+        exits: [],
+        landmarks: [],
+        dominantAxis: '尚未建立；首次分镜需确立单一屏幕方向。',
+      },
       visualPrompt: '',
       status: 'pending'
     };
@@ -1226,13 +1636,15 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     const scriptSnapshot = project.scriptData;
     if (!scriptSnapshot) return;
     const historicalContext = resolveProductionBible(scriptSnapshot).historicalContext;
+    setPreviewImage(null);
+    const pendingId = `pending:${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    let createdJobId: string | undefined;
 
-    // 设置生成状态
     updateProject(prev => {
       if (!prev.scriptData) return prev;
       const newData = cloneScriptData(prev.scriptData);
       const p = (newData.props || []).find(prop => compareIds(prop.id, propId));
-      if (p) p.status = 'generating';
+      if (p) beginGeneration(p, pendingId);
       return { ...prev, scriptData: newData };
     });
 
@@ -1296,7 +1708,20 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         negativePrompt,
         shapeReferenceImage
           ? { referencePackType: 'shape', target: { kind: 'prop', id: propId } }
-          : { referencePackType: 'prop', target: { kind: 'prop', id: propId } }
+          : {
+              referencePackType: 'prop',
+              target: { kind: 'prop', id: propId },
+              onJobCreated: (job) => {
+                createdJobId = job.id;
+                updateProject(prev => {
+                  if (!prev.scriptData) return prev;
+                  const newData = cloneScriptData(prev.scriptData);
+                  const prop = (newData.props || []).find(item => compareIds(item.id, propId));
+                  if (prop && prop.status === 'generating') noteGenerationJob(prop, pendingId, job.id);
+                  return { ...prev, scriptData: newData };
+                });
+              },
+            }
       );
 
       // 更新状态
@@ -1305,9 +1730,11 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         const updatedData = cloneScriptData(prev.scriptData);
         const updated = (updatedData.props || []).find(p => compareIds(p.id, propId));
         if (updated) {
+          addAssetImageHistory(updated, updated.referenceImage, 'generated', updated.visualPrompt);
           updated.referenceImage = imageUrl;
           updated.referenceImageUpdatedAt = Date.now();
-          updated.status = 'completed';
+          finishGeneration(updated, [pendingId, createdJobId], 'completed');
+          addAssetImageHistory(updated, imageUrl, 'generated', updated.visualPrompt);
           if (!updated.visualPrompt) {
             updated.promptVersions = updatePromptWithVersion(
               updated.visualPrompt,
@@ -1330,7 +1757,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         if (!prev.scriptData) return prev;
         const errData = cloneScriptData(prev.scriptData);
         const errP = (errData.props || []).find(p => compareIds(p.id, propId));
-        if (errP) errP.status = 'failed';
+        if (errP) finishGeneration(errP, [pendingId, createdJobId], 'failed');
         return { ...prev, scriptData: errData };
       });
       if (onApiKeyError && onApiKeyError(e)) return;
@@ -1344,8 +1771,10 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
         const newData = cloneScriptData(prev.scriptData);
         const prop = (newData.props || []).find(p => compareIds(p.id, propId));
         if (prop) {
+          addAssetImageHistory(prop, prop.referenceImage, 'generated', prop.visualPrompt);
           prop.referenceImage = base64;
           prop.status = 'completed';
+          addAssetImageHistory(prop, base64, 'uploaded', prop.visualPrompt);
         }
         return { ...prev, scriptData: newData };
       });
@@ -1396,6 +1825,15 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     }
   };
 
+  const handleSavePropAssetDNA = (propId: string, assetDNA: AssetDNA) => {
+    if (!project.scriptData) return;
+    const newData = cloneScriptData(project.scriptData);
+    const prop = (newData.props || []).find((item) => compareIds(item.id, propId));
+    if (!prop) return;
+    prop.assetDNA = assetDNA;
+    updateProject({ scriptData: invalidateShotGenerationMeta(newData) });
+  };
+
   /**
    * 加入资产库（道具）
    */
@@ -1434,7 +1872,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     const isRegenerate = itemsToGen.length === 0;
 
     if (isRegenerate) {
-      showAlert('确定要重新生成所有道具图吗？', {
+      showAlert('确定重新生成全部道具参考图吗？当前参考图会被替换为新图，旧图保留在历史记录中；已有提示词不会被修改。', {
         type: 'warning',
         showCancel: true,
         onConfirm: async () => {
@@ -1492,6 +1930,35 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     if (!char) return;
     char.wardrobe = wardrobe;
     updateProject({ scriptData: newData });
+  };
+
+  /**
+   * 默认装备会写入角色资产，并安全地补入该角色当前已有的镜头。
+   * 取消勾选时不反向删除镜头里的道具，避免误删用户手动指定的镜头道具。
+   */
+  const handleSaveDefaultEquipment = (charId: string, propIds: string[]) => {
+    updateProject(prev => {
+      if (!prev.scriptData) return prev;
+      const newData = cloneScriptData(prev.scriptData);
+      const validPropIds = new Set((newData.props || [])
+        .filter(prop => !isWearableProp(prop))
+        .map(prop => String(prop.id)));
+      const normalizedIds = Array.from(new Set(propIds.map(id => String(id)).filter(id => validPropIds.has(id))));
+      const character = newData.characters.find(item => compareIds(item.id, charId));
+      if (!character) return prev;
+      character.defaultPropIds = normalizedIds;
+
+      const nextShots = prev.shots.map(shot => (
+        (shot.characters || []).some(id => compareIds(id, charId))
+          ? { ...shot, props: Array.from(new Set([...(shot.props || []), ...normalizedIds])) }
+          : shot
+      ));
+      return {
+        ...prev,
+        scriptData: invalidateShotGenerationMeta({ ...newData, continuityLedger: undefined }),
+        shots: nextShots,
+      };
+    });
   };
 
   /**
@@ -1858,32 +2325,19 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       <ImagePreviewModal 
         imageUrl={previewImage?.url || null}
         imageUrls={previewImage?.imageUrls}
-        onClose={() => setPreviewImage(null)} 
+        onClose={() => setPreviewImage(null)}
+        onDeleteImage={previewImage?.onDelete}
+        onApplyImage={previewImage?.onApply}
       />
-
-      {/* Global Progress Overlay */}
-      {batchProgress && (
-        <div className="absolute inset-0 z-50 bg-[var(--bg-base)]/80 flex flex-col items-center justify-center backdrop-blur-md animate-in fade-in">
-          <Loader2 className="w-12 h-12 text-[var(--accent)] animate-spin mb-6" />
-          <h3 className="text-xl font-bold text-[var(--text-primary)] mb-2">正在批量生成资源...</h3>
-          <div className="w-64 h-1.5 bg-[var(--bg-hover)] rounded-full overflow-hidden mb-2">
-            <div 
-              className="h-full bg-[var(--accent)] transition-all duration-300" 
-              style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
-            />
-          </div>
-          <p className="text-[var(--text-tertiary)] font-mono text-xs">
-            进度: {batchProgress.current} / {batchProgress.total}
-          </p>
-        </div>
-      )}
 
       {/* Wardrobe Modal */}
       {selectedChar && (
         <WardrobeModal
           character={selectedChar}
+          availableProps={(project.scriptData?.props || []).filter(prop => !isWearableProp(prop))}
           onClose={() => setSelectedCharId(null)}
           onBaseWardrobeSave={handleSaveBaseWardrobe}
+          onDefaultEquipmentSave={handleSaveDefaultEquipment}
           onAddVariation={handleAddVariation}
           onDeleteVariation={handleDeleteVariation}
           onGenerateVariation={handleGenerateVariation}
@@ -2131,8 +2585,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
               </h3>
               <p className="text-xs text-[var(--text-tertiary)] mt-1 pl-3.5">{text('全身棚拍定妆，只锁脸、体型、服装和鞋子；背包等道具在镜头里再加', 'Full-body casting references lock the face, build, wardrobe, and footwear; shot-specific props are added later.')}</p>
             </div>
-            <div className="flex gap-2">
-              <button 
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
                 onClick={handleAddCharacter}
                 disabled={!!batchProgress}
                 className="px-3 py-1.5 bg-[var(--bg-hover)] hover:bg-[var(--border-secondary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
@@ -2161,6 +2615,15 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
               >
                 <Archive className="w-3 h-3" />
                 {text('从资产库选择', 'Choose Asset')}
+              </button>
+              <button
+                onClick={() => handleBatchRegenerateAssetPrompts('character')}
+                disabled={!!batchProgress || project.scriptData.characters.length === 0}
+                className={STYLES.secondaryButton}
+                title={text('仅更新角色定妆提示词；独立道具不会写入定妆', 'Update casting prompts only; dedicated props stay out of casting')}
+              >
+                <RefreshCw className="w-3 h-3" />
+                {text('重新生成角色提示词', 'Regenerate Character Prompts')}
               </button>
               <button 
                 onClick={() => handleBatchGenerate('character')}
@@ -2198,6 +2661,8 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 onAddToLibrary={() => handleAddCharacterToLibrary(char)}
                 onReplaceFromLibrary={() => openLibrary('character', char.id)}
                 onApplyHistory={(imageUrl) => handleApplyCharacterHistory(char.id, imageUrl)}
+                onDeleteHistory={(imageUrl) => confirmDeleteHistory('character', char.id, imageUrl, () => keepPreviewAfterHistoryDelete(imageUrl))}
+                onSaveAssetDNA={(assetDNA) => handleSaveCharacterAssetDNA(char.id, assetDNA)}
               />
             ))}
           </div>
@@ -2213,7 +2678,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
               </h3>
               <p className="text-xs text-[var(--text-tertiary)] mt-1 pl-3.5">{text('为剧本场景生成环境参考图', 'Create environment references for the locations in the script.')}</p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               <button 
                 onClick={handleAddScene}
                 disabled={!!batchProgress}
@@ -2241,6 +2706,15 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 {text('从资产库选择', 'Choose Asset')}
               </button>
               <button 
+                onClick={handleBatchRegenerateScenePrompts}
+                disabled={!!batchProgress || project.scriptData.scenes.length === 0}
+                className={STYLES.secondaryButton}
+                title={text('仅更新提示词；排除已设计道具，不重新生成图片', 'Update prompts only; exclude dedicated props without regenerating images')}
+              >
+                <RefreshCw className="w-3 h-3" />
+                {text('重新生成场景提示词', 'Regenerate Scene Prompts')}
+              </button>
+              <button
                 onClick={() => handleBatchGenerate('scene')}
                 disabled={!!batchProgress}
                 className={allScenesReady ? STYLES.secondaryButton : STYLES.primaryButton}
@@ -2266,8 +2740,12 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 onRegeneratePrompt={() => handleRegenerateAssetPrompt('scene', scene.id)}
                 isRegeneratingPrompt={regeneratingPromptIds.has(`scene:${scene.id}`)}
                 onImageClick={openImagePreview}
+                onApplyHistory={(imageUrl) => handleApplySceneHistory(scene.id, imageUrl)}
+                onDeleteHistory={(imageUrl) => confirmDeleteHistory('scene', scene.id, imageUrl, () => keepPreviewAfterHistoryDelete(imageUrl))}
                 onDelete={() => handleDeleteScene(scene.id)}
                 onUpdateInfo={(updates) => handleUpdateSceneInfo(scene.id, updates)}
+                onSaveAssetDNA={(assetDNA) => handleSaveSceneAssetDNA(scene.id, assetDNA)}
+                onSaveSpatialTopology={(spatialTopology) => handleSaveSceneTopology(scene.id, spatialTopology)}
                 onAddToLibrary={() => handleAddSceneToLibrary(scene)}
               />
             ))}
@@ -2284,7 +2762,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
               </h3>
               <p className="text-xs text-[var(--text-tertiary)] mt-1 pl-3.5">{text('管理分镜中需要保持一致性的道具/物品', 'Manage props and objects that must stay consistent across shots.')}</p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               <button 
                 onClick={handleAddProp}
                 disabled={!!batchProgress}
@@ -2311,6 +2789,17 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 <Archive className="w-3 h-3" />
                 {text('从资产库选择', 'Choose Asset')}
               </button>
+              {visibleProps.length > 0 && (
+                <button
+                  onClick={() => handleBatchRegenerateAssetPrompts('prop')}
+                  disabled={!!batchProgress}
+                  className={STYLES.secondaryButton}
+                  title={text('仅更新道具提示词，不重新生成图片', 'Update prop prompts only; do not regenerate images')}
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  {text('重新生成道具提示词', 'Regenerate Prop Prompts')}
+                </button>
+              )}
               {visibleProps.length > 0 && (
                 <button 
                   onClick={handleBatchGenerateProps}
@@ -2344,8 +2833,11 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                   onRegeneratePrompt={() => handleRegenerateAssetPrompt('prop', prop.id)}
                   isRegeneratingPrompt={regeneratingPromptIds.has(`prop:${prop.id}`)}
                 onImageClick={openImagePreview}
+                  onApplyHistory={(imageUrl) => handleApplyPropHistory(prop.id, imageUrl)}
+                  onDeleteHistory={(imageUrl) => confirmDeleteHistory('prop', prop.id, imageUrl, () => keepPreviewAfterHistoryDelete(imageUrl))}
                   onDelete={() => handleDeleteProp(prop.id)}
                   onUpdateInfo={(updates) => handleUpdatePropInfo(prop.id, updates)}
+                  onSaveAssetDNA={(assetDNA) => handleSavePropAssetDNA(prop.id, assetDNA)}
                   onAddToLibrary={() => handleAddPropToLibrary(prop)}
                 />
               ))}

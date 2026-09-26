@@ -6,6 +6,10 @@ import {
   parseJsonWithRecovery,
   retryOperation,
 } from './apiCore';
+import {
+  buildScreenwritingGuidance,
+  type ScreenwritingModuleId,
+} from './screenwritingModuleRouter';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -71,6 +75,8 @@ export interface ScriptRewriteAgentOptions {
   abortSignal?: AbortSignal;
   onEvent?: (event: ScriptRewriteAgentEvent) => void;
   onDraftUpdate?: (draft: string, stage: 'rewriting' | 'repairing') => void;
+  /** Optional explicit module selection; otherwise modules are routed from the task. */
+  screenwritingModules?: ScreenwritingModuleId[];
 }
 
 export interface ScriptRewriteAgentResult {
@@ -519,6 +525,7 @@ const buildPlanningPrompt = (
   language: string,
   options: ScriptRewriteAgentOptions,
 ): string => `你是短视频项目的首席编剧与剧本统筹。先分析原稿并给出可公开展示、可执行的改写方案；不要输出隐藏推理过程。
+${buildScreenwritingGuidance({ script: originalScript, instruction: options.instruction, targetDuration: options.targetDuration, requestedModules: options.screenwritingModules, mode: 'diagnose' })}
 
 目标：提高开场钩子、叙事因果、冲突升级、角色弧光、对白辨识度、视觉叙事、节奏和结尾回报，同时让后续分镜 Agent 可以直接消费。
 
@@ -557,6 +564,7 @@ const buildRewritePrompt = (
   language: string,
   options: ScriptRewriteAgentOptions,
 ): string => `你是执行改写的资深编剧。严格依据“已批准改写方案”改写原稿。
+${buildScreenwritingGuidance({ script: originalScript, instruction: options.instruction, targetDuration: options.targetDuration, requestedModules: options.screenwritingModules, mode: 'rewrite' })}
 
 要求：
 - 只输出完整改写剧本，不要解释、总结、JSON、Markdown 代码围栏或隐藏推理。
@@ -582,6 +590,7 @@ const buildReviewPrompt = (
   language: string,
   options: ScriptRewriteAgentOptions,
 ): string => `你是独立剧本审稿 Agent。比较原稿、改写方案和改写稿，输出可公开展示的质量报告；不要输出隐藏推理。
+${buildScreenwritingGuidance({ script: rewrittenScript, instruction: options.instruction, targetDuration: options.targetDuration, requestedModules: options.screenwritingModules, mode: 'diagnose' })}
 
 检查：故事事实忠实度、因果完整性、角色一致性、对白语言与辨识度、节奏与钩子、视觉可拍摄性、结尾回报、字符完整性和 Markdown 场次结构。只有会明显影响质量或后续分镜的具体问题才要求修复。
 
@@ -624,6 +633,7 @@ const buildRepairPrompt = (
   language: string,
   options: ScriptRewriteAgentOptions,
 ): string => `你是终稿修订 Agent。根据审稿问题对改写稿做定点修复。
+${buildScreenwritingGuidance({ script: rewrittenScript, instruction: options.instruction, targetDuration: options.targetDuration, requestedModules: options.screenwritingModules, mode: 'rewrite' })}
 
 要求：
 - 只输出修复后的完整剧本，不要解释、报告、JSON、代码围栏或隐藏推理。

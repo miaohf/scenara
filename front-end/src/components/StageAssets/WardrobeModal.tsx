@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
-import { User, X, Shirt, Plus, RefreshCw, Loader2, Upload, AlertCircle, Save } from 'lucide-react';
-import { Character } from '../../types';
+import { User, X, Shirt, Plus, RefreshCw, Loader2, Upload, AlertCircle, Save, Package } from 'lucide-react';
+import { Character, Prop } from '../../types';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface WardrobeModalProps {
   character: Character;
+  availableProps: Prop[];
   onClose: () => void;
   onBaseWardrobeSave: (charId: string, wardrobe: string) => void;
+  onDefaultEquipmentSave: (charId: string, propIds: string[]) => void;
   onAddVariation: (charId: string, name: string, prompt: string) => void;
   onDeleteVariation: (charId: string, varId: string) => void;
   onGenerateVariation: (charId: string, varId: string) => void;
@@ -16,8 +18,10 @@ interface WardrobeModalProps {
 
 const WardrobeModal: React.FC<WardrobeModalProps> = ({
   character,
+  availableProps,
   onClose,
   onBaseWardrobeSave,
+  onDefaultEquipmentSave,
   onAddVariation,
   onDeleteVariation,
   onGenerateVariation,
@@ -26,6 +30,7 @@ const WardrobeModal: React.FC<WardrobeModalProps> = ({
 }) => {
   const { text } = useInterfaceLanguage();
   const [baseWardrobe, setBaseWardrobe] = useState(character.wardrobe || '');
+  const [defaultPropIds, setDefaultPropIds] = useState<string[]>(character.defaultPropIds || []);
   const [newVarName, setNewVarName] = useState('');
   const [newVarPrompt, setNewVarPrompt] = useState('');
 
@@ -96,6 +101,46 @@ const WardrobeModal: React.FC<WardrobeModalProps> = ({
                 >
                   <Save className="w-3 h-3" /> {text('保存基础服装', 'Save Base Wardrobe')}
                 </button>
+                <div className="mt-4 pt-4 border-t border-[var(--border-primary)]">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Package className="w-3.5 h-3.5 text-[var(--accent-text)]" />
+                    <label className="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider">
+                      {text('默认装备组', 'Default Equipment')}
+                    </label>
+                  </div>
+                  <p className="text-[10px] text-[var(--text-muted)] leading-relaxed mb-2">
+                    {text('角色进入新镜头时自动携带；已有镜头会补入。可在单个镜头的“道具”中移除。基础服装不在此列。', 'Added when this character enters a new shot and applied to existing shots. Remove per shot in Props. Base wardrobe stays separate.')}
+                  </p>
+                  {availableProps.length === 0 ? (
+                    <p className="text-[10px] text-[var(--text-muted)]">{text('暂无可选独立道具', 'No standalone props available')}</p>
+                  ) : (
+                    <div className="space-y-1.5 max-h-28 overflow-y-auto pr-1">
+                      {availableProps.map(prop => {
+                        const checked = defaultPropIds.includes(prop.id);
+                        return (
+                          <label key={prop.id} className="flex items-center gap-2 rounded px-2 py-1.5 bg-[var(--bg-surface)] border border-[var(--border-primary)] cursor-pointer hover:border-[var(--border-secondary)]">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => setDefaultPropIds(prev => (
+                                checked ? prev.filter(id => id !== prop.id) : [...prev, prop.id]
+                              ))}
+                              className="accent-[var(--accent)]"
+                            />
+                            <span className="text-[11px] text-[var(--text-secondary)] truncate">{prop.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <button
+                    onClick={() => onDefaultEquipmentSave(character.id, defaultPropIds)}
+                    disabled={JSON.stringify([...defaultPropIds].sort()) === JSON.stringify([...(character.defaultPropIds || [])].sort())}
+                    className="mt-2 w-full py-2 bg-[var(--bg-hover)] hover:bg-[var(--border-secondary)] text-[var(--text-secondary)] rounded text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 disabled:opacity-40 transition-colors"
+                  >
+                    <Save className="w-3 h-3" /> {text('保存默认装备', 'Save Default Equipment')}
+                  </button>
+                </div>
                 <details className="mt-3">
                   <summary className="text-[10px] text-[var(--text-muted)] cursor-pointer uppercase tracking-wider">
                     {text('查看完整角色提示词', 'View full character prompt')}

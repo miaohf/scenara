@@ -387,6 +387,22 @@ wheels = [
 ]
 
 [[package]]
+name = "cursor-sdk"
+version = "1.0.32"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/14/27/f018b131088f5053bc89f50d22d414fd0f92f418ce465b0de6609bf5d7d1/cursor_sdk-1.0.32.tar.gz", hash = "sha256:c02442ff190c804dac0061587d616226721d23bdea2e87592331df368f6f4a88", size = 1177, upload-time = "2026-09-22T18:50:39.838Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/61/47/aee9bb9247606bc7be06416250922bab320ae1db75ace8d94e2b20553f1e/cursor_sdk-1.0.32-py3-none-macosx_11_0_arm64.whl", hash = "sha256:8d604fcfd9269ec0682a5775b4679427eb5ca53ce3f4c2e295554dede40a3184", size = 48993368, upload-time = "2026-09-22T18:50:25.168Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/de/69f1c0d5dda3b57a190f9d17e370b688a4f853599de7980e4e9917c9f443/cursor_sdk-1.0.32-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:e0d28fb4f477128771733d1006e9e3d012c0f7bd238a1d44baf90d20790cb763", size = 50502106, upload-time = "2026-09-22T18:50:28.004Z" },
+    { url = "https://files.pythonhosted.org/packages/11/a2/84db69794aadfabdbf5ed5b45ebf1237e4183b9ac5b48a71cc23d953ed1f/cursor_sdk-1.0.32-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:77ec88589a76137febabf8787713e6167c7a2c359049c4d23a6aa355aed69f19", size = 58109097, upload-time = "2026-09-22T18:50:30.655Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/4d/68b6e075d30191eefffd7707ed42a8eebdf0e82a2b1080a1463c603609da/cursor_sdk-1.0.32-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:c90a458b86d76ab9e0c1eb8590f6da728c48af330d14adc834a158013b448a92", size = 58798913, upload-time = "2026-09-22T18:50:35.064Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/ca/473c26bc1e2dbae52eac857cba012174e83025fddacab4c5548d67392da3/cursor_sdk-1.0.32-py3-none-win_amd64.whl", hash = "sha256:a92ac2c82f340631b21c005ef2d622d9a60c605224bc4fd13ffc08ae80440ba9", size = 45083805, upload-time = "2026-09-22T18:50:37.871Z" },
+]
+
+[[package]]
 name = "dnspython"
 version = "2.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -863,6 +879,7 @@ dependencies = [
     { name = "boto3" },
     { name = "celery" },
     { name = "comfy-sdk" },
+    { name = "cursor-sdk" },
     { name = "email-validator" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -885,6 +902,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.35.0" },
     { name = "celery", specifier = ">=5.4.0" },
     { name = "comfy-sdk", specifier = ">=0.1.8" },
+    { name = "cursor-sdk", specifier = ">=0.1.0" },
     { name = "email-validator", specifier = ">=2.2.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", specifier = ">=0.28.0" },

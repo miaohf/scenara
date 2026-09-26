@@ -35,8 +35,7 @@ export const VISUAL_STYLE_OPTIONS = [
   { label: '👾 3D动画', value: '3d-animation', desc: '皮克斯/梦工厂风格' , previewImage: '/style-previews/3d-animation.png'},
   { label: '🌌 赛博朋克', value: 'cyberpunk', desc: '高科技赛博朋克风' , previewImage: '/style-previews/cyberpunk.png'},
   { label: '🖼️ 油画风格', value: 'oil-painting', desc: '油画质感艺术风' , previewImage: '/style-previews/oil-painting.png'},
-  { label: '🎬 真人影视', value: 'live-action', desc: '超写实电影/电视剧风格' , previewImage: '/style-previews/live-action.png'},
-  { label: '✨ 其他 (自定义)', value: 'custom', desc: '手动输入风格' }
+  { label: '🎬 真人影视', value: 'live-action', desc: '超写实电影/电视剧风格' , previewImage: '/style-previews/live-action.png'}
 ];
 
 export const STYLES = {

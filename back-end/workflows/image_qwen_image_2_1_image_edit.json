@@ -66,6 +66,46 @@
       "title": "Load Image"
     }
   },
+  "476": {
+    "inputs": { "image": "ref-3.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference Image 3" }
+  },
+  "477": {
+    "inputs": { "image": "ref-4.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference Image 4" }
+  },
+  "478": {
+    "inputs": { "image": "ref-5.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference Image 5" }
+  },
+  "479": {
+    "inputs": { "image": "ref-6.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference Image 6" }
+  },
+  "480": {
+    "inputs": { "image": "ref-7.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference Image 7" }
+  },
+  "481": {
+    "inputs": { "image": "ref-8.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference Image 8" }
+  },
+  "482": {
+    "inputs": { "image": "ref-9.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference Image 9" }
+  },
+  "483": {
+    "inputs": { "image": "ref-10.png" },
+    "class_type": "LoadImage",
+    "_meta": { "title": "Reference Image 10" }
+  },
   "459:451": {
     "inputs": {
       "unet_name": "qwen_image_2.1_bf16.safetensors",
@@ -209,6 +249,38 @@
       ],
       "images.image_2": [
         "475",
+        0
+      ],
+      "images.image_3": [
+        "476",
+        0
+      ],
+      "images.image_4": [
+        "477",
+        0
+      ],
+      "images.image_5": [
+        "478",
+        0
+      ],
+      "images.image_6": [
+        "479",
+        0
+      ],
+      "images.image_7": [
+        "480",
+        0
+      ],
+      "images.image_8": [
+        "481",
+        0
+      ],
+      "images.image_9": [
+        "482",
+        0
+      ],
+      "images.image_10": [
+        "483",
         0
       ]
     },

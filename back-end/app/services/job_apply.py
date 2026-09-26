@@ -52,31 +52,33 @@ def _image_identity(url: Any) -> str:
     return str(url or "").split("?", 1)[0]
 
 
-def _append_character_history(
-    character: dict[str, Any],
+def _append_image_history(
+    asset: dict[str, Any],
     image_url: str | None,
     source: str = "generated",
 ) -> None:
     if not image_url:
         return
-    history = character.get("imageHistory")
+    history = asset.get("imageHistory")
     if not isinstance(history, list):
         history = []
     key = _image_identity(image_url)
+    if key in set(_removed_image_keys(asset)):
+        return
     existing = next(
         (entry for entry in history if isinstance(entry, dict) and _image_identity(entry.get("imageUrl")) == key),
         None,
     )
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     entry = {
-        "id": existing.get("id") if existing else f"character-image-{now_ms}",
+        "id": existing.get("id") if existing else f"asset-image-{now_ms}",
         "imageUrl": image_url,
         "createdAt": existing.get("createdAt") if existing else now_ms,
         "source": existing.get("source", source) if existing else source,
     }
-    if character.get("visualPrompt"):
-        entry["prompt"] = character["visualPrompt"]
-    character["imageHistory"] = [entry] + [
+    if asset.get("visualPrompt"):
+        entry["prompt"] = asset["visualPrompt"]
+    asset["imageHistory"] = [entry] + [
         row
         for row in history
         if not isinstance(row, dict) or _image_identity(row.get("imageUrl")) != key
@@ -93,6 +95,19 @@ _GENERATING_STATUSES = {"generating", "generating_image", "generating_panels"}
 
 
 _EMPTY_SNAPSHOT_STATUSES = _GENERATING_STATUSES | {"failed", "pending"}
+
+
+def _removed_image_keys(*items: dict[str, Any]) -> list[str]:
+    removed: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        for key in item.get("removedImageKeys") or []:
+            text = _image_identity(key)
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            removed.append(text)
+    return removed[-48:]
 
 
 def _preserve_completed_media(
@@ -149,11 +164,22 @@ def _merge_named_assets(old_items: list[Any], new_items: list[Any]) -> list[Any]
             continue
         old = old_by_id.get(str(item.get("id")), {})
         next_item = _preserve_completed_media(old, item, "referenceImage")
+        removed = _removed_image_keys(old, next_item)
+        if removed:
+            next_item["removedImageKeys"] = removed
+        removed_set = set(removed)
+        incoming_image = _image_identity(item.get("referenceImage"))
+        if _image_identity(next_item.get("referenceImage")) in removed_set and (
+            not incoming_image or incoming_image in removed_set
+        ):
+            next_item["referenceImage"] = None
+            if str(item.get("status") or "") not in _GENERATING_STATUSES:
+                next_item["status"] = item.get("status") or "pending"
         # 资产图的旧 completed 快照也会晚于 Worker 回写抵达；按生成时间裁决，
         # 避免刷新后把刚生成的新场景/道具图刷回旧图。
         if int(old.get("referenceImageUpdatedAt") or 0) > int(
             next_item.get("referenceImageUpdatedAt") or 0
-        ):
+        ) and _image_identity(old.get("referenceImage")) not in removed_set:
             next_item["referenceImage"] = old.get("referenceImage")
             next_item["referenceImageUpdatedAt"] = old.get("referenceImageUpdatedAt")
         for view_key in ("turnaround", "threeView"):
@@ -165,7 +191,7 @@ def _merge_named_assets(old_items: list[Any], new_items: list[Any]) -> list[Any]
             if not isinstance(entry, dict):
                 continue
             identity = _image_identity(entry.get("imageUrl"))
-            if not identity or identity in seen:
+            if not identity or identity in seen or identity in removed_set:
                 continue
             seen.add(identity)
             history.append(entry)
@@ -228,14 +254,13 @@ def apply_target_to_payload(
         if not item:
             return None
         if url:
-            if kind == "character":
-                _append_character_history(item, item.get("referenceImage"))
+            _append_image_history(item, item.get("referenceImage"))
             item["referenceImage"] = url
             item["referenceImageUpdatedAt"] = int(datetime.now(timezone.utc).timestamp() * 1000)
             item["status"] = "completed"
+            _append_image_history(item, url)
             if kind == "character":
                 item["activeImageView"] = "casting"
-                _append_character_history(item, url)
         elif item.get("status") == "generating":
             item["status"] = _idle_status(bool(item.get("referenceImage")), job_status)
         return next_payload

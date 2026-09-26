@@ -58,7 +58,10 @@ IMG2IMG_DENOISE_CHARACTER = 0.78
 FLUX2_EDIT_MAX_REFS = 4
 QWEN_EDIT_MAX_REFS = 5
 QWEN_IMAGE_21_EDIT_MAX_REFS = 10  # 官方 Image Edit (Qwen Image 2.1) 最多 image_1..image_10
-COMFY_EDIT_MAX_REFS = QWEN_EDIT_MAX_REFS
+# The request collector is shared by legacy Qwen Edit (5 slots) and Qwen Image
+# 2.1 Edit (10 slots). The workflow-capacity check below still caps each job to
+# its real graph, so do not truncate a valid 2.1 request before that check.
+COMFY_EDIT_MAX_REFS = QWEN_IMAGE_21_EDIT_MAX_REFS
 QWEN_EDIT_SLOT_SCAN = max(QWEN_EDIT_MAX_REFS, QWEN_IMAGE_21_EDIT_MAX_REFS)
 
 

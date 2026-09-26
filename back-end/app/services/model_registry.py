@@ -72,6 +72,22 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
             "isDefault": False,
         },
         {
+            "id": "cursor-sdk",
+            "name": "Cursor SDK Agent",
+            "baseUrl": "",
+            "apiKey": cfg.cursor_api_key or "",
+            "isBuiltIn": True,
+            "isDefault": False,
+        },
+        {
+            "id": "cursor-acp",
+            "name": "Cursor ACP Agent",
+            "baseUrl": "",
+            "apiKey": cfg.cursor_api_key or "",
+            "isBuiltIn": True,
+            "isDefault": False,
+        },
+        {
             "id": "volcengine",
             "name": "Volcengine Ark",
             "baseUrl": "https://ark.cn-beijing.volces.com",
@@ -113,6 +129,22 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
                 "keyframeSteps": 20,
                 "turnaroundWorkflowName": "qwen_image_edit_2511_fp8_character_turnaround",
                 "turnaroundSteps": 4,
+            },
+        },
+        {
+            "id": "cursor-sdk-image",
+            "apiModel": cfg.cursor_sdk_model,
+            "name": "Cursor ACP 原生生图",
+            "type": "image",
+            "providerId": "cursor-acp",
+            "description": "通过 Cursor ACP 调用 Agent 原生生图能力；支持文生图与参考图",
+            "isBuiltIn": True,
+            "isEnabled": True,
+            "params": {
+                "apiFormat": "cursor-acp",
+                "agentModel": cfg.cursor_sdk_model,
+                "defaultAspectRatio": "16:9",
+                "supportedAspectRatios": ["16:9", "9:16", "1:1"],
             },
         },
         {
@@ -551,6 +583,9 @@ def _provider_env_overrides(settings: Settings) -> dict[str, dict[str, str]]:
         }
     if (settings.apiyi_api_key or "").strip():
         overrides.setdefault("apiyi", {})["apiKey"] = settings.apiyi_api_key.strip()
+    if os.getenv("CURSOR_API_KEY") or (settings.cursor_api_key or "").strip():
+        overrides.setdefault("cursor-sdk", {})["apiKey"] = settings.cursor_api_key.strip()
+        overrides.setdefault("cursor-acp", {})["apiKey"] = settings.cursor_api_key.strip()
     return overrides
 
 

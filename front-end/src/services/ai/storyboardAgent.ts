@@ -9,6 +9,7 @@ import type {
   Shot,
   ShotAgentMetadata,
   ShotExecutionPlan,
+  ShotReferencePolicyItem,
   ShotQualityAssessment,
   ShotSemanticReview,
   ShotTimelineBeat,
@@ -22,6 +23,10 @@ import type {
   StoryOutlineReview,
 } from '../../types';
 import { formatProductionBibleForPrompt } from '../productionBibleService';
+import { applyContinuityLedgerToShots } from '../continuityLedgerService';
+import { formatSeriesContinuityForPrompt } from '../seriesContinuityService';
+import { enrichScriptAssetIntelligence } from '../assetIntelligenceService';
+import { buildScreenwritingGuidance } from './screenwritingModuleRouter';
 import {
   chatCompletion,
   getActiveChatModelName,
@@ -223,7 +228,7 @@ export const developScriptForProduction = async (
   model: string = getActiveChatModelName(),
   abortSignal?: AbortSignal,
 ): Promise<ScriptData> => {
-  const nextData = cloneScriptData(scriptData);
+  const nextData = enrichScriptAssetIntelligence(cloneScriptData(scriptData));
   nextData.storyboardAgentRun = createAgentRun();
   nextData.storyboardDirectorPlan = undefined;
   logScriptProgress('编剧 Agent：正在建立全片钩子、冲突、角色表演与场景转折...');
@@ -243,6 +248,7 @@ export const developScriptForProduction = async (
       personality: character.personality,
       wardrobe: character.wardrobe,
       coreFeatures: character.coreFeatures,
+      assetDNA: character.assetDNA,
       variations: (character.variations || []).map((variation) => ({
         id: variation.id,
         name: variation.name,
@@ -255,12 +261,22 @@ export const developScriptForProduction = async (
       location: scene.location,
       time: scene.time,
       atmosphere: scene.atmosphere,
+      spatialTopology: scene.spatialTopology,
+      assetDNA: scene.assetDNA,
+    })),
+    props: (nextData.props || []).map((prop) => ({
+      id: prop.id,
+      name: prop.name,
+      description: prop.description,
+      presentationMode: prop.presentationMode,
+      assetDNA: prop.assetDNA,
     })),
     storyParagraphs: (nextData.storyParagraphs || []).map((paragraph) => ({
       id: paragraph.id,
       sceneRefId: paragraph.sceneRefId,
       text: cleanLines(paragraph.text, 1800),
     })),
+    seriesContinuity: nextData.seriesContinuity,
   };
 
   const prompt = `You are the lead screenwriter and performance director for a short-form cinematic production.
@@ -274,6 +290,14 @@ NON-NEGOTIABLE RULES:
 - Character visual notes must be concrete and renderable, but wardrobeIntent describes narrative purpose only and MUST NOT replace explicit wardrobe facts.
 - Use stable IDs exactly as supplied. Output descriptive strings in ${nextData.language || '中文'}.
 - Output JSON only.
+
+${buildScreenwritingGuidance({
+  script: nextData.storyParagraphs.map((paragraph) => paragraph.text).join('\n'),
+  targetDuration: nextData.targetDuration,
+  mode: 'rewrite',
+})}
+
+${formatSeriesContinuityForPrompt(nextData.seriesContinuity)}
 
 Required JSON shape:
 {
@@ -505,6 +529,14 @@ Goals:
 
 ${formatProductionBibleForPrompt(scriptData)}
 
+${formatSeriesContinuityForPrompt(scriptData.seriesContinuity)}
+
+${buildScreenwritingGuidance({
+  script: scriptData.storyParagraphs.map((paragraph) => paragraph.text).join('\n'),
+  targetDuration: scriptData.targetDuration,
+  mode: 'rewrite',
+})}
+
 Creative development:
 ${JSON.stringify(scriptData.creativeDevelopment || {}, null, 2)}
 
@@ -604,6 +636,25 @@ This scene beat:
 
 export const buildShotAgentContract = (shotDurationSeconds: number): string => `
 [SHOT AGENT CONTRACT — REQUIRED FOR EVERY SHOT]
+In addition to the existing top-level shot fields, every shot MUST include:
+  "frameDirections": {
+    "start": {
+      "storyState": "static visible state at the first frame",
+      "blocking": "static screen positions, body orientation, and eyelines",
+      "performance": "visible facial expression and body tension",
+      "propState": "static prop location/holder/state",
+      "characterBlocking": [{"characterId":"existing id","count":1,"position":"left/center/right","depth":"foreground|midground|background","facing":"direction","gaze":"target","action":"visible action or stillness","expression":"visible expression"}],
+      "propStates": {"existing_prop_id": {"holderCharacterId":"existing id","hand":"left|right|both|either","position":"position","state":"visible state","visible":true}}
+    },
+    "end": "same schema, describing only the final static frame"
+  },
+  "constraintPolicy": {
+    "required": ["3-6 facts that must be visible or preserved"],
+    "preferred": ["helpful but non-blocking facts"],
+    "flexible": ["decorative details the model may vary"],
+    "forbiddenProps": ["props not allowed in this shot"]
+  }
+Do not put a full action timeline into frameDirections.start or frameDirections.end. They must describe only what is visible in that frame.
 In addition to the existing shot fields, every shot MUST include this nested object:
   "agent": {
   "directorPurpose": "what new story information or change this shot contributes",
@@ -620,6 +671,7 @@ In addition to the existing shot fields, every shot MUST include this nested obj
     "endState": "one readable final visual state",
     "soundPlan": ["diegetic sound synchronized to the action"],
     "dialogueTiming": "when dialogue occurs within the action phases and where a readable pause is needed",
+    "referencePolicy": [{"assetType":"character|scene|prop|storyboard","assetId":"existing id","label":"asset name","policy":"required|supportive|textOnly|omitted","reason":"shot-level reason","visiblePhaseIndexes":[0]}],
   },
   "timeline": [
     {"startSeconds": 0, "endSeconds": ${shotDurationSeconds}, "action": "one physically achievable action phase", "camera": "camera behavior", "sound": "diegetic sound intention"}
@@ -633,7 +685,8 @@ In addition to the existing shot fields, every shot MUST include this nested obj
   "audioIntent": "exact dialogue intention or ambient-only sound plan",
   "h3FeasibilityNotes": "how to keep motion achievable in ${shotDurationSeconds}s"
 }
-Timeline beats must be chronological, non-overlapping, and stay within 0-${shotDurationSeconds} seconds. Use at most ${maxExecutionPhasesForDuration(shotDurationSeconds)} action phases, one dominant action, and one readable end state per shot.`;
+Timeline beats must be chronological, non-overlapping, and stay within 0-${shotDurationSeconds} seconds. Use at most ${maxExecutionPhasesForDuration(shotDurationSeconds)} action phases, one dominant action, and one readable end state per shot.
+For downstream H3 Prompt Agent generation, write every agent field in English. The only exception is dialogue text, which must remain in its original spoken language.`;
 
 const normalizeTimeline = (
   value: unknown,
@@ -696,6 +749,56 @@ const normalizeExecutionPlan = (
   const actionPhases = normalizeTimeline(raw.actionPhases, shot, durationSeconds)
     .slice(0, maxExecutionPhasesForDuration(durationSeconds));
   const soundPlan = cleanStringArray(raw.soundPlan, 6, 260);
+  const rawReferencePolicy = asRecordArray(raw.referencePolicy);
+  const validPolicies = new Set(['required', 'supportive', 'textOnly', 'omitted']);
+  const referencePolicy: ShotReferencePolicyItem[] = rawReferencePolicy.length > 0
+    ? rawReferencePolicy.map((item) => ({
+        assetType: ['character', 'scene', 'prop', 'storyboard'].includes(clean(item.assetType, 40))
+          ? clean(item.assetType, 40) as ShotReferencePolicyItem['assetType']
+          : 'prop',
+        assetId: clean(item.assetId, 120) || undefined,
+        label: clean(item.label, 160),
+        policy: validPolicies.has(clean(item.policy, 40))
+          ? clean(item.policy, 40) as ShotReferencePolicyItem['policy']
+          : 'textOnly',
+        reason: clean(item.reason, 320) || 'Selected by the shot execution Agent.',
+        visiblePhaseIndexes: Array.isArray(item.visiblePhaseIndexes)
+          ? item.visiblePhaseIndexes.map(Number).filter(Number.isInteger).slice(0, 8)
+          : undefined,
+        lockedByUser: item.lockedByUser === true,
+      })).filter((item) => item.label)
+    : [
+        ...(shot.characters || []).map((id, index) => {
+          const character = scriptData.characters.find((item) => String(item.id) === String(id));
+          return {
+            assetType: 'character' as const,
+            assetId: String(id),
+            label: character?.name || String(id),
+            policy: index === 0 ? 'required' as const : 'supportive' as const,
+            reason: index === 0 ? 'Primary visible identity anchor.' : 'Supporting visible character continuity.',
+          };
+        }),
+        ...(scriptData.scenes.find((item) => String(item.id) === String(shot.sceneId))
+          ? [{
+              assetType: 'scene' as const,
+              assetId: String(shot.sceneId),
+              label: scriptData.scenes.find((item) => String(item.id) === String(shot.sceneId))?.location || String(shot.sceneId),
+              policy: 'required' as const,
+              reason: 'Primary environment and spatial-layout anchor.',
+            }]
+          : []),
+        ...(shot.props || []).map((id) => {
+          const prop = scriptData.props?.find((item) => String(item.id) === String(id));
+          const mentioned = prop?.name && clean(shot.actionSummary, 700).includes(prop.name);
+          return {
+            assetType: 'prop' as const,
+            assetId: String(id),
+            label: prop?.name || String(id),
+            policy: mentioned ? 'required' as const : 'textOnly' as const,
+            reason: mentioned ? 'Action-critical visible prop.' : 'Retained as text without spending a visual reference slot.',
+          };
+        }),
+      ];
   return {
     coreBeat: clean(raw.coreBeat, 520) || clean(shot.actionSummary, 520),
     actionPhases,
@@ -705,6 +808,7 @@ const normalizeExecutionPlan = (
     endState: clean(raw.endState, 520) || exitState,
     soundPlan: soundPlan.length > 0 ? soundPlan : Array.from(new Set(actionPhases.map((phase) => phase.sound).filter(Boolean) as string[])).slice(0, 6),
     dialogueTiming: clean(raw.dialogueTiming, 320) || (clean(shot.dialogue) ? 'Deliver dialogue during the clearest performance beat; preserve a short readable pause after the line.' : undefined),
+    referencePolicy,
   };
 };
 
@@ -832,6 +936,7 @@ Return JSON only. Preserve story intent, character identity, wardrobe, props, sc
 Duration: ${duration}s. Maximum action phases: ${maxPhases}. Use one dominant physical action.
 Do not add cuts unless the existing shot explicitly requires them. Prefer one camera setup and one motivated movement.
 Every phase must be physically achievable within its time range. The final phase must end in one clear visual state.
+Write every execution-plan value in English. Preserve dialogue in its original spoken language only.
 
 Shot:
 scene=${clean(scene ? `${scene.location} ${scene.time} ${scene.atmosphere}` : shot.sceneId, 160)}
@@ -852,10 +957,11 @@ Schema:
     "cameraPlan": "shot size, angle, and one motivated camera movement",
     "endState": "one readable final visual state",
     "soundPlan": ["sound intention"],
-    "dialogueTiming": "timing and pause, or omit when no dialogue"
+    "dialogueTiming": "timing and pause, or omit when no dialogue",
+    "referencePolicy": [{"assetType":"character|scene|prop|storyboard","assetId":"use an existing id only","label":"asset name","policy":"required|supportive|textOnly|omitted","reason":"why this shot needs or does not need its image","visiblePhaseIndexes":[0]}]
   }
 }
-Keep actionPhases chronological, non-overlapping, and within 0-${duration}s. Do not describe metadata, analysis, or multiple alternative versions.`;
+Keep actionPhases chronological, non-overlapping, and within 0-${duration}s. Reference policy must reserve images for the primary identity, environment, and action-critical props; downgrade non-visible or incidental props to textOnly. Do not invent asset ids. Do not describe metadata, analysis, or multiple alternative versions.`;
 
   try {
     let repairFeedback = '';
@@ -928,8 +1034,10 @@ export const attachShotAgentMetadata = (
     previousExitByScene.set(String(shot.sceneId), agent.continuity.exitState);
     return { ...shot, agent };
   });
+  const withLedger = applyContinuityLedgerToShots(next, scriptData);
+  scriptData.continuityLedger = withLedger.ledger;
   updateAgentRun(scriptData, 'shot-generation', { completedStage: true });
-  return next;
+  return withLedger.shots;
 };
 
 interface SemanticRepairPayload {
@@ -1076,6 +1184,14 @@ REPAIR SAFETY:
 - Output JSON only, with exactly one review per supplied shot id.
 
 ${formatProductionBibleForPrompt(scriptData)}
+
+${formatSeriesContinuityForPrompt(scriptData.seriesContinuity)}
+
+${buildScreenwritingGuidance({
+  script: scriptData.storyParagraphs.map((paragraph) => paragraph.text).join('\n'),
+  targetDuration: scriptData.targetDuration,
+  mode: 'diagnose',
+})}
 
 Whole-film director plan:
 ${JSON.stringify(plan, null, 2)}
@@ -1407,6 +1523,14 @@ HARD RULES:
 - Keep at least one shot per scene that currently has shots.
 - Output JSON only.
 
+${formatSeriesContinuityForPrompt(scriptData.seriesContinuity)}
+
+${buildScreenwritingGuidance({
+  script: scriptData.storyParagraphs.map((paragraph) => paragraph.text).join('\n'),
+  targetDuration: scriptData.targetDuration,
+  mode: 'diagnose',
+})}
+
 Script title: ${clean(scriptData.title, 120)}
 Logline: ${clean(scriptData.logline, 400)}
 Creative development:
@@ -1540,6 +1664,14 @@ ${cleanLines(rawScript, 6000)}
 
 Creative development:
 ${JSON.stringify(development || {}, null, 2)}
+
+${formatSeriesContinuityForPrompt(scriptData.seriesContinuity)}
+
+${buildScreenwritingGuidance({
+  script: rawScript,
+  targetDuration: scriptData.targetDuration,
+  mode: 'diagnose',
+})}
 
 Scenes:
 ${JSON.stringify((scriptData.scenes || []).map((scene) => ({

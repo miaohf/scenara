@@ -113,8 +113,12 @@ export {
   isMiniMaxH3OfficialSkillPrompt,
   buildMiniMaxH3Ref2VAPrompt,
   formatH3CameraMotion,
+  hasH3NonDialogueCjk,
+  generateMiniMaxH3SkillPrompt,
   type MiniMaxH3Ref2VAPromptOptions,
   type MiniMaxH3NativeAudioOptions,
+  type H3SkillGenerationOptions,
+  type H3SkillGenerationResult,
 } from './h3PromptCompiler';
 
 export {

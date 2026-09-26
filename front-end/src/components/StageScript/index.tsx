@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { ProjectState, ScriptData, ScriptGenerationCheckpoint, ScriptGenerationStep, Shot } from '../../types';
+import { BrainCircuit } from 'lucide-react';
+import { ProjectState, ScriptData, ScriptGenerationCheckpoint, ScriptGenerationStep, Shot, VisualStyleProfile } from '../../types';
 import { useAlert } from '../GlobalAlert';
 import {
   parseScriptStructure,
@@ -17,6 +18,7 @@ import {
   inferVisualStyleFromImage,
   generateVisualPrompts,
   generateArtDirection,
+  generateImage,
 } from '../../services/aiService';
 import { getFinalValue, validateConfig } from './utils';
 import { resolveShotGenerationModel, setActiveModel } from '../../services/modelRegistry';
@@ -32,11 +34,14 @@ import type {
   AgentTraceSession,
 } from './AgentActivityPanel';
 import { findAssetMatches, applyAssetMatches, AssetMatchResult } from '../../services/assetMatchService';
-import { loadSeriesProject, saveEpisodePartial } from '../../services/storageService';
+import { getEpisodesBySeries, loadEpisode, loadSeriesProject, saveEpisodePartial } from '../../services/storageService';
+import { applyIncomingSeriesContinuity, buildIncomingSeriesContinuity, updateOutgoingSeriesContinuity } from '../../services/seriesContinuityService';
 import { resolvePromptTemplateConfig } from '../../services/promptTemplateService';
 import { updatePromptWithVersion } from '../../services/promptVersionService';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 import { resolveProductionBible } from '../../services/productionBibleService';
+import { getStylePreviewPrompt, resolveVisualStyleProfile } from '../../services/visualStyleProfileService';
+import { mergeLegacyVisualStyleProfiles } from '../../services/globalVisualStyleProfileService';
 import {
   filterBySceneIdCompat,
   getNextMainShotId,
@@ -52,10 +57,15 @@ interface Props {
   updateProject: (updates: Partial<ProjectState> | ((prev: ProjectState) => ProjectState)) => void;
   onShowModelConfig?: () => void;
   onGeneratingChange?: (isGenerating: boolean) => void;
+  /** Legacy project-local profiles are imported once into the shared library. */
+  legacyVisualStyleProfiles?: VisualStyleProfile[];
+  visualStyleProfiles?: VisualStyleProfile[];
+  onUpdateVisualStyleProfiles?: (profiles: VisualStyleProfile[]) => void;
 }
 
 type TabMode = 'story' | 'script';
 type AnalyzeRunStep = ScriptGenerationStep | 'done';
+type AnalyzeRunMode = 'full' | 'framework';
 
 const inferTracePhase = (message: string): string => {
   if (/编剧 Agent/i.test(message)) return '编剧 Agent';
@@ -112,7 +122,7 @@ const summarizeRewriteValidation = (
   };
 };
 
-const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfig, onGeneratingChange }) => {
+const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfig, onGeneratingChange, legacyVisualStyleProfiles = [], visualStyleProfiles = [], onUpdateVisualStyleProfiles }) => {
   const { text } = useInterfaceLanguage();
   const { showAlert } = useAlert();
   const promptTemplates = useMemo(
@@ -396,10 +406,43 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   const [isContinuing, setIsContinuing] = useState(false);
   const [isRewriting, setIsRewriting] = useState(false);
   const [isInferringVisualStyle, setIsInferringVisualStyle] = useState(false);
+  const [generatingStylePreviewKeys, setGeneratingStylePreviewKeys] = useState<string[]>([]);
+  const [styleProfilesForUi, setStyleProfilesForUi] = useState<VisualStyleProfile[]>(visualStyleProfiles);
+  const visualStyleProfilesRef = useRef<VisualStyleProfile[]>(visualStyleProfiles);
+  useEffect(() => {
+    setStyleProfilesForUi(visualStyleProfiles);
+    visualStyleProfilesRef.current = visualStyleProfiles;
+  }, [visualStyleProfiles]);
+  useEffect(() => {
+    if (!legacyVisualStyleProfiles.length || !onUpdateVisualStyleProfiles) return;
+    const merged = mergeLegacyVisualStyleProfiles(visualStyleProfiles, legacyVisualStyleProfiles);
+    if (merged.length === visualStyleProfiles.length) return;
+    visualStyleProfilesRef.current = merged;
+    setStyleProfilesForUi(merged);
+    onUpdateVisualStyleProfiles(merged);
+  }, [legacyVisualStyleProfiles, onUpdateVisualStyleProfiles, visualStyleProfiles]);
+  useEffect(() => {
+    // 兼容本次确认弹窗上线前误删的 3D 动画预设；新删除记录带 deletedAt，不会被恢复。
+    const legacyDeleted3d = visualStyleProfiles.find(
+      (profile) => profile.styleKey === '3d-animation' && profile.deleted && !profile.deletedAt
+    );
+    if (!legacyDeleted3d || !onUpdateVisualStyleProfiles) return;
+    const restored = visualStyleProfiles.map((profile) =>
+      profile.id === legacyDeleted3d.id
+        ? { ...profile, deleted: false, updatedAt: Date.now() }
+        : profile
+    );
+    visualStyleProfilesRef.current = restored;
+    setStyleProfilesForUi(restored);
+    onUpdateVisualStyleProfiles(restored);
+    showAlert('已恢复 3D 动画视觉风格', { type: 'success' });
+  }, [visualStyleProfiles, onUpdateVisualStyleProfiles, showAlert]);
+  const [styleCreateRequest, setStyleCreateRequest] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [processingMessage, setProcessingMessage] = useState('');
   const [processingLogs, setProcessingLogs] = useState<string[]>([]);
   const [agentTraceSession, setAgentTraceSession] = useState<AgentTraceSession | null>(null);
+  const [isAgentTraceOpen, setIsAgentTraceOpen] = useState(false);
 
   // Asset match state
   const [pendingParseResult, setPendingParseResult] = useState<{
@@ -426,15 +469,18 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   const startAgentTrace = useCallback((title: string, subtitle?: string) => {
     const startedAt = Date.now();
     agentTraceCounterRef.current += 1;
-    setAgentTraceSession({
+    const session: AgentTraceSession = {
       id: `agent-trace-${startedAt}-${agentTraceCounterRef.current}`,
       title,
       subtitle,
       status: 'running',
       startedAt,
       entries: [],
-    });
-  }, []);
+    };
+    setAgentTraceSession(session);
+    setIsAgentTraceOpen(true);
+    updateProject({ agentTraceSession: session });
+  }, [updateProject]);
 
   const appendAgentTrace = useCallback((
     phase: string,
@@ -455,9 +501,11 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       const entries = existingIndex >= 0
         ? [...session.entries.filter((current) => current.id !== stableId), entry].slice(-120)
         : [...session.entries, entry].slice(-120);
-      return { ...session, entries };
+      const next = { ...session, entries };
+      updateProject({ agentTraceSession: next });
+      return next;
     });
-  }, []);
+  }, [updateProject]);
 
   const finishAgentTrace = useCallback((status: AgentTraceRunStatus) => {
     const completedAt = Date.now();
@@ -468,7 +516,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
         : status === 'cancelled'
           ? 'warning'
           : 'success';
-      return {
+      const next = {
         ...session,
         status,
         completedAt: status === 'waiting' ? undefined : completedAt,
@@ -476,8 +524,10 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           entry.status === 'running' ? { ...entry, status: entryStatus } : entry
         )),
       };
+      updateProject({ agentTraceSession: next });
+      return next;
     });
-  }, []);
+  }, [updateProject]);
 
   useEffect(() => {
     setLocalScript(project.rawScript);
@@ -492,7 +542,8 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     setSelectionRange(null);
     setLastRewriteSnapshot(null);
     setIsInferringVisualStyle(false);
-    setAgentTraceSession(null);
+    setAgentTraceSession(project.agentTraceSession || null);
+    setIsAgentTraceOpen(false);
   }, [project.id]);
 
   // 上报生成状态给父组件，用于导航锁定
@@ -604,8 +655,10 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   };
 
   const resolveStyleForPrompt = (styleValue: string, customInput?: string): string => {
-    if (styleValue !== 'custom') return styleValue;
     const trimmed = (customInput ?? customStyleInput).trim();
+    const savedProfile = styleProfilesForUi.find((profile) => profile.styleKey === styleValue && !profile.deleted);
+    if (savedProfile?.positivePrompt?.trim()) return savedProfile.positivePrompt.trim();
+    if (styleValue !== 'custom') return styleValue;
     return trimmed || project.visualStyle || DEFAULTS.visualStyle;
   };
 
@@ -685,7 +738,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           localLanguage,
           artDirection,
           undefined,
-          undefined,
+          (newData.props || []).map(p => p.name),
           historicalContext,
         );
         scene.promptVersions = updatePromptWithVersion(
@@ -783,6 +836,99 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     offerPromptRegenerateAfterStyleChange(nextStyle, prevStyle);
   };
 
+  const handleSaveVisualStyleProfile = (profile: VisualStyleProfile) => {
+    if (!onUpdateVisualStyleProfiles) return;
+    const next = visualStyleProfilesRef.current.filter((item) => item.id !== profile.id && item.styleKey !== profile.styleKey);
+    visualStyleProfilesRef.current = [...next, profile];
+    setStyleProfilesForUi(visualStyleProfilesRef.current);
+    onUpdateVisualStyleProfiles(visualStyleProfilesRef.current);
+    if (profile.styleKey?.startsWith('custom')) {
+      setCustomStyleInput(profile.positivePrompt);
+      setLocalVisualStyle(profile.styleKey);
+      setPreviewVisualStyle(profile.styleKey);
+    }
+    showAlert(`风格「${profile.label}」配置已保存`, { type: 'success' });
+  };
+
+  const handleDeleteVisualStyle = (profile: VisualStyleProfile) => {
+    if (!onUpdateVisualStyleProfiles) return;
+    showAlert(`确定删除视觉风格「${profile.label}」吗？删除后可通过重新添加恢复。`, {
+      type: 'warning',
+      title: '确认删除视觉风格',
+      showCancel: true,
+      confirmText: '确认删除',
+      cancelText: '取消',
+      onConfirm: () => {
+        const deletedAt = Date.now();
+        const nextProfiles = visualStyleProfilesRef.current.map((item) => item.id === profile.id ? { ...item, deleted: true, deletedAt, updatedAt: deletedAt } : item);
+        visualStyleProfilesRef.current = nextProfiles;
+        setStyleProfilesForUi(nextProfiles);
+        onUpdateVisualStyleProfiles(nextProfiles);
+        if (profile.styleKey === localVisualStyle) {
+          const fallback = VISUAL_STYLE_OPTIONS.find((option) => option.value !== profile.styleKey && !styleProfilesForUi.some((item) => item.styleKey === option.value && item.deleted))?.value || DEFAULTS.visualStyle;
+          setLocalVisualStyle(fallback);
+          setPreviewVisualStyle(fallback);
+          if (profile.styleKey.startsWith('custom')) setCustomStyleInput('');
+        }
+        showAlert(`风格「${profile.label}」已删除`, { type: 'success' });
+      },
+    });
+  };
+
+  const handleAddVisualStyle = () => {
+    setStyleCreateRequest((current) => current + 1);
+  };
+
+  const handleRegenerateStylePreviewForStyle = (styleKey: string) => {
+    const profile = resolveVisualStyleProfile(styleKey, styleProfilesForUi, '');
+    void handleGenerateStylePreview({ ...profile, styleKey });
+  };
+
+  const handleApplyVisualStylePreview = (styleKey: string) => {
+    setLocalVisualStyle(styleKey);
+    setPreviewVisualStyle(styleKey);
+  };
+
+  const handleInferVisualStyleProfile = async (file: File) => {
+    const imageDataUrl = await fileToDataUrl(file);
+    const result = await inferVisualStyleFromImage(imageDataUrl, getConfiguredModelForRequest(), localLanguage);
+    return {
+      stylePrompt: result.stylePrompt,
+      negativePrompt: result.negativePrompt,
+      styleLabel: result.styleLabel,
+      previewImage: imageDataUrl,
+    };
+  };
+
+  const handleGenerateStylePreview = async (profile: VisualStyleProfile) => {
+    if (!onUpdateVisualStyleProfiles) return;
+    const previewKey = profile.styleKey || profile.id;
+    if (generatingStylePreviewKeys.includes(previewKey)) return;
+    setGeneratingStylePreviewKeys((current) => [...current, previewKey]);
+    setError(null);
+    try {
+      const resolved = resolveVisualStyleProfile(profile.styleKey || 'custom', styleProfilesForUi, profile.positivePrompt);
+      const imageUrl = await generateImage(
+        getStylePreviewPrompt({ ...resolved, positivePrompt: profile.positivePrompt, negativePrompt: profile.negativePrompt }),
+        [],
+        '16:9',
+        false,
+        false,
+        profile.negativePrompt,
+        // 风格预览不是场景资产：不传 scene target，避免生成队列把它标成“场景”，结果由当前风格卡直接接收。
+        { skipComfyImg2Img: true },
+      );
+      const updated = { ...profile, previewImage: imageUrl, updatedAt: Date.now() };
+      handleSaveVisualStyleProfile(updated);
+      showAlert('风格预览图已更新', { type: 'success' });
+    } catch (err: any) {
+      setError(err?.message || '风格预览生成失败');
+      showAlert(err?.message || '风格预览生成失败', { type: 'error' });
+    } finally {
+      setGeneratingStylePreviewKeys((current) => current.filter((key) => key !== previewKey));
+    }
+  };
+
   const fileToDataUrl = (file: File): Promise<string> => new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ''));
@@ -843,7 +989,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     }
   };
 
-  const handleAnalyze = async () => {
+  const handleAnalyze = async (runMode: AnalyzeRunMode = 'full') => {
     const finalDuration = getFinalValue(localDuration, customDurationInput);
     const finalModel = getConfiguredModelForRequest();
     const pendingVisualStyle = previewVisualStyle || localVisualStyle;
@@ -893,6 +1039,13 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       targetDuration: finalDuration,
       enableQualityCheck
     });
+    const frameworkKey = buildStepKey('shots', {
+      developmentKey,
+      model: finalModel,
+      targetDuration: finalDuration,
+      enableQualityCheck,
+      mode: 'framework'
+    });
 
     const analyzeConfigKey = buildAnalyzeConfigKey({
       script: localScript,
@@ -912,6 +1065,31 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     let workingScriptData: ScriptData | null = resumeCheckpoint?.scriptData || previousScriptData || null;
     let shouldGenerateOnlyMissingVisuals = false;
     let reuseUnchangedScenes = !!previousScriptData && previousShots.length > 0;
+    const preserveFrameworkShots =
+      runMode === 'full' &&
+      previousShots.length > 0 &&
+      previousScriptData?.generationMeta?.frameworkKey === frameworkKey;
+
+    const attachPreviousEpisodeContinuity = async (scriptData: ScriptData): Promise<ScriptData> => {
+      if (!project.seriesId || project.episodeNumber <= 1) return scriptData;
+      try {
+        const summaries = await getEpisodesBySeries(project.seriesId);
+        const priorSummaries = summaries.filter((episode) => episode.episodeNumber < project.episodeNumber);
+        const priorEpisodes = await Promise.all(priorSummaries.map((episode) => loadEpisode(episode.id)));
+        const incoming = buildIncomingSeriesContinuity(project, priorEpisodes);
+        if (!incoming) return scriptData;
+        appendAgentTrace(
+          '跨集连续性',
+          `已继承第 ${incoming.sourceEpisodeNumber || '?'} 集结束状态`,
+          'info',
+          incoming.openThreads.length ? `未结线索 ${incoming.openThreads.length} 条` : '无已登记未结线索',
+        );
+        return applyIncomingSeriesContinuity(scriptData, incoming);
+      } catch (error) {
+        console.warn('Unable to load prior episode continuity; continuing without it.', error);
+        return scriptData;
+      }
+    };
 
     if (resumeCheckpoint?.scriptData) {
       nextStep = resumeCheckpoint.step;
@@ -940,6 +1118,16 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       shouldGenerateOnlyMissingVisuals = nextStep === 'structure' && visualsInputStable;
     }
 
+    if (runMode === 'framework' && nextStep === 'visuals') {
+      nextStep = 'shots';
+      shouldGenerateOnlyMissingVisuals = false;
+    }
+    if (preserveFrameworkShots && nextStep === 'visuals') {
+      // Framework-first projects may already contain hand-authored prompts.
+      // Completing the visual stage must not overwrite those edits.
+      shouldGenerateOnlyMissingVisuals = true;
+    }
+
     if (nextStep === 'done') {
       setError(null);
       setProcessingLogs([]);
@@ -965,7 +1153,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     setProcessingMessage(text('正在准备生成流程…', 'Preparing generation…'));
     setProcessingLogs([]);
     setError(null);
-    startAgentTrace('分镜 Agent 工作流', `${finalModel} · ${finalDuration} · ${getStyleOptionLabel(finalVisualStyle)}`);
+    startAgentTrace(runMode === 'framework' ? '分镜框架工作流' : '分镜 Agent 工作流', `${finalModel} · ${finalDuration} · ${getStyleOptionLabel(finalVisualStyle)}`);
 
     console.log('📌 用户选择的模型:', finalModel);
     console.log('📌 最终使用的模型:', finalModel);
@@ -1047,6 +1235,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       }
 
       if (nextStep === 'development') {
+        workingScriptData = await attachPreviousEpisodeContinuity(workingScriptData!);
         setProcessingMessage(text('编剧 Agent 正在深化剧情、角色表演与场景转折…', 'Writer agent is deepening plot, performances, and story turns…'));
         logScriptProgress('启动编剧 Agent 创作开发阶段...');
         const developed = await developScriptForProduction(
@@ -1074,7 +1263,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
         );
         shouldGenerateOnlyMissingVisuals = false;
         reuseUnchangedScenes = false;
-        nextStep = 'visuals';
+        nextStep = runMode === 'framework' ? 'shots' : 'visuals';
         await persistGenerationState({
           scriptData: workingScriptData,
           isParsingScript: true,
@@ -1120,7 +1309,39 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           scriptGenerationCheckpoint: createAnalyzeCheckpoint(nextStep, analyzeConfigKey, workingScriptData)
         });
       } else {
-        workingScriptData = attachGenerationMeta(workingScriptData!, { structureKey, developmentKey, visualsKey });
+        workingScriptData = attachGenerationMeta(
+          workingScriptData!,
+          runMode === 'framework'
+            ? { structureKey, developmentKey }
+            : { structureKey, developmentKey, visualsKey }
+        );
+      }
+
+      if (runMode === 'full' && preserveFrameworkShots && nextStep === 'shots') {
+        workingScriptData = attachGenerationMeta(
+          hydrateScriptDataMeta(workingScriptData!, {
+            targetDuration: finalDuration,
+            language: localLanguage,
+            visualStyle: finalVisualStyle,
+            model: finalModel,
+            localTitle
+          }),
+          { structureKey, developmentKey, visualsKey, frameworkKey, shotsKey }
+        );
+        const rebuiltRefs = rebuildAssetRefsFromScriptData(workingScriptData);
+        await persistGenerationState({
+          scriptData: workingScriptData,
+          characterRefs: rebuiltRefs.characterRefs,
+          sceneRefs: rebuiltRefs.sceneRefs,
+          propRefs: rebuiltRefs.propRefs,
+          isParsingScript: false,
+          title: workingScriptData.title,
+          scriptGenerationCheckpoint: null
+        });
+        appendAgentTrace('分镜框架', '已保留现有镜头结构，仅补全资产提示词。', 'success');
+        finishAgentTrace('completed');
+        setActiveTab('script');
+        return;
       }
 
       setProcessingMessage(text('正在生成分镜…', 'Generating storyboard shots…'));
@@ -1176,15 +1397,18 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           logScriptProgress(`已保存场景 ${scene.location || '未命名场景'} 的 ${completedShots.length} 条${mode === 'reused' ? '复用' : ''}分镜断点。`);
         },
       });
+      workingScriptData = updateOutgoingSeriesContinuity(workingScriptData!);
       workingScriptData = attachGenerationMeta(
-        hydrateScriptDataMeta(workingScriptData!, {
+        hydrateScriptDataMeta(workingScriptData, {
           targetDuration: finalDuration,
           language: localLanguage,
           visualStyle: finalVisualStyle,
           model: finalModel,
           localTitle
         }),
-        { structureKey, developmentKey, visualsKey, shotsKey }
+        runMode === 'framework'
+          ? { structureKey, developmentKey, frameworkKey, visualsKey: undefined, shotsKey: undefined }
+          : { structureKey, developmentKey, visualsKey, frameworkKey, shotsKey }
       );
       const reviewedShots = shots.filter((shot) => !!shot.agent?.semanticReview);
       const repairedShots = reviewedShots.filter((shot) => shot.agent?.semanticReview?.repaired);
@@ -1288,6 +1512,102 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     logScriptProgress('正在取消当前生成流程...');
   };
 
+  const handleGenerateMissingVisuals = async () => {
+    if (!project.scriptData) {
+      showAlert(text('请先生成分镜框架。', 'Generate the storyboard framework first.'), { type: 'warning' });
+      return;
+    }
+
+    const finalDuration = getFinalValue(localDuration, customDurationInput);
+    const finalModel = getConfiguredModelForRequest();
+    const finalVisualStyle = getFinalValue(previewVisualStyle || localVisualStyle, customStyleInput);
+    const structureKey = buildStepKey('structure', { script: localScript, language: localLanguage });
+    const developmentKey = buildStepKey('development', {
+      structureKey,
+      model: finalModel,
+      targetDuration: finalDuration,
+      language: localLanguage,
+    });
+    const visualsKey = buildStepKey('visuals', {
+      developmentKey,
+      language: localLanguage,
+      model: finalModel,
+      visualStyle: finalVisualStyle,
+      historicalContext: resolveProductionBible(project.scriptData).historicalContext,
+    });
+
+    analyzeAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    analyzeAbortControllerRef.current = controller;
+    setIsProcessing(true);
+    setProcessingMessage(text('正在补全资产提示词…', 'Filling missing asset prompts…'));
+    setProcessingLogs([]);
+    setError(null);
+    startAgentTrace('资产提示词工作流', `${finalModel} · ${getStyleOptionLabel(finalVisualStyle)}`);
+
+    try {
+      const beforeCount = [
+        ...(project.scriptData.characters || []),
+        ...(project.scriptData.scenes || []),
+        ...(project.scriptData.props || []),
+      ].filter((asset) => !String(asset.visualPrompt || '').trim()).length;
+      const enriched = await enrichScriptDataVisuals(
+        project.scriptData,
+        finalModel,
+        finalVisualStyle,
+        localLanguage,
+        { onlyMissing: true, abortSignal: controller.signal },
+      );
+      const nextData = attachGenerationMeta(
+        hydrateScriptDataMeta(enriched, {
+          targetDuration: finalDuration,
+          language: localLanguage,
+          visualStyle: finalVisualStyle,
+          model: finalModel,
+          localTitle,
+        }),
+        { structureKey, developmentKey, visualsKey },
+      );
+      updateProject({
+        title: nextData.title,
+        targetDuration: finalDuration,
+        language: localLanguage,
+        visualStyle: finalVisualStyle,
+        shotGenerationModel: finalModel,
+        scriptData: nextData,
+      });
+      await saveEpisodePartial(
+        {
+          ...project,
+          title: nextData.title,
+          targetDuration: finalDuration,
+          language: localLanguage,
+          visualStyle: finalVisualStyle,
+          shotGenerationModel: finalModel,
+          scriptData: nextData,
+        },
+        ['title', 'targetDuration', 'language', 'visualStyle', 'shotGenerationModel', 'scriptData'],
+      );
+      appendAgentTrace('视觉 Agent', '缺失资产提示词已补全；已有提示词保持不变。', 'success', `待补全项：${beforeCount}`);
+      finishAgentTrace('completed');
+      setActiveTab('script');
+      showAlert(text('已补全缺失的资产提示词，已有内容未覆盖。', 'Missing asset prompts were filled without overwriting existing content.'), { type: 'success' });
+    } catch (error: any) {
+      if (isAbortError(error, controller.signal)) {
+        appendAgentTrace('资产提示词工作流', '生成已取消。', 'warning');
+        finishAgentTrace('cancelled');
+      } else {
+        setError(`错误: ${error?.message || 'AI 连接失败'}`);
+        appendAgentTrace('资产提示词工作流', '生成失败。', 'error', String(error?.message || 'AI 连接失败'));
+        finishAgentTrace('error');
+      }
+    } finally {
+      if (analyzeAbortControllerRef.current === controller) analyzeAbortControllerRef.current = null;
+      setIsProcessing(false);
+      setProcessingMessage('');
+    }
+  };
+
   const handleAssetMatchConfirm = (finalMatches: AssetMatchResult) => {
     if (!pendingParseResult) return;
     const { scriptData, shots } = pendingParseResult;
@@ -1357,8 +1677,16 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     setProcessingMessage(text('AI续写中…', 'AI continuation in progress…'));
     setProcessingLogs([]);
     setError(null);
+    startAgentTrace('剧本续写 Agent', `${finalModel} · 原稿 ${baseScript.length} 字`);
+    appendAgentTrace(
+      '输入分析',
+      '已读取当前剧本并锁定续写边界',
+      'success',
+      `输出语言：${localLanguage}\n剩余可写：${continueBudget} 字\n用户要求：${rewriteInstruction.trim() || '延续当前剧情、人物与场景连续性'}`,
+    );
     let streamed = '';
     let wasTruncated = false;
+    let lastTraceLength = 0;
     try {
       const continuedContent = await continueScriptStream(
         baseScript,
@@ -1379,6 +1707,10 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           const newScript = `${baseScript}${separator}${streamed}`;
           setLocalScript(newScript);
           updateProject({ rawScript: newScript });
+          if (streamed.length - lastTraceLength >= 120) {
+            lastTraceLength = streamed.length;
+            appendAgentTrace('续写 Agent', '正在流式续写剧本', 'running', `已新增 ${streamed.length} 字`, 'continuation-draft');
+          }
         },
         {
           maxAppendChars: continueBudget,
@@ -1395,12 +1727,15 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
         setLocalScript(newScript);
         updateProject({ rawScript: newScript });
       }
+      appendAgentTrace('结果校验', wasTruncated ? '续写已按长度上限截断' : '续写完成并已写入编辑器', wasTruncated ? 'warning' : 'success', `本次新增 ${Math.min(continuedContent.length, continueBudget)} 字`);
+      finishAgentTrace(wasTruncated ? 'warning' : 'completed');
       if (wasTruncated) {
         showAlert(`续写内容已按单集上限自动截断（最大总长 ${SCRIPT_HARD_LIMIT} 字符）。`, { type: 'warning' });
       }
     } catch (err: any) {
       console.error(err);
       setError(`AI续写失败: ${err.message || "连接失败"}`);
+      appendAgentTrace('续写 Agent', '流式续写失败，正在使用兼容请求重试', 'warning', String(err.message || '连接失败'));
       try {
         const continuedContent = await continueScript(
           baseScript,
@@ -1419,8 +1754,12 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
         const newScript = `${baseScript}${separator}${safeContent}`;
         setLocalScript(newScript);
         updateProject({ rawScript: newScript });
+        appendAgentTrace('项目写回', '兼容续写完成并已写入编辑器', 'success', `本次新增 ${safeContent.length} 字`);
+        finishAgentTrace('warning');
       } catch (fallbackErr: any) {
         console.error(fallbackErr);
+        appendAgentTrace('Agent 工作流', '续写失败，未覆盖原稿', 'error', String(fallbackErr?.message || fallbackErr || '连接失败'));
+        finishAgentTrace('error');
       }
     } finally {
       setIsContinuing(false);
@@ -1775,17 +2114,17 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     !!analyzeCheckpoint.scriptData;
   const analyzeButtonLabel =
     hasResumeCheckpoint && analyzeCheckpoint?.step !== 'structure'
-      ? '继续生成分镜脚本'
-      : '生成分镜脚本';
+      ? text('继续生成分镜脚本', 'Continue Storyboard')
+      : text('生成分镜脚本', 'Generate Storyboard');
 
   const showProcessingToast = isProcessing || isContinuing || isRewriting;
   const canCancelRewrite = isRewriting && agentTraceSession?.title === '多阶段剧本改写 Agent';
   const toastMessage = processingMessage || (isProcessing
-    ? '正在生成剧本...'
+    ? text('正在生成剧本...', 'Generating script…')
     : isContinuing
-      ? 'AI续写中...'
+      ? text('AI续写中...', 'AI continuation…')
       : isRewriting
-        ? 'AI改写中...'
+        ? text('AI改写中...', 'AI rewrite…')
         : '');
 
   // Character editing handlers
@@ -2071,17 +2410,35 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
                 onClick={isProcessing ? handleCancelAnalyze : handleCancelRewrite}
                 className="rounded border border-zinc-400/60 px-2 py-1 text-[11px] text-white/90 transition-colors hover:border-white hover:text-white"
               >
-                {isProcessing ? '取消生成' : '取消改写'}
+                {isProcessing ? text('取消生成', 'Cancel generation') : text('取消改写', 'Cancel rewrite')}
               </button>
             </div>
           )}
         </div>
       )}
-      <AgentActivityPanel
-        key={agentTraceSession?.id || 'agent-trace-empty'}
-        session={agentTraceSession}
-        onClear={() => setAgentTraceSession(null)}
-      />
+      {isAgentTraceOpen && (
+        <AgentActivityPanel
+          key={agentTraceSession?.id || 'agent-trace-empty'}
+          session={agentTraceSession}
+          onClose={() => setIsAgentTraceOpen(false)}
+          onClear={() => {
+            setAgentTraceSession(null);
+            setIsAgentTraceOpen(false);
+            updateProject({ agentTraceSession: null });
+          }}
+        />
+      )}
+      {agentTraceSession && !isAgentTraceOpen && (
+        <button
+          type="button"
+          onClick={() => setIsAgentTraceOpen(true)}
+          className="fixed bottom-6 right-4 z-[9998] flex items-center gap-2 rounded-full border border-violet-400/35 bg-[var(--bg-base)]/95 px-3.5 py-2 text-xs font-semibold text-violet-200 shadow-xl backdrop-blur transition-colors hover:border-violet-300 hover:text-white"
+          title={text('查看本次剧本或分镜执行日志', 'View script or storyboard activity log')}
+        >
+          <BrainCircuit className="h-4 w-4" />
+          {text('查看工作流日志', 'View activity log')}
+        </button>
+      )}
       {activeTab === 'story' ? (
         <div className="flex h-full bg-[var(--bg-base)] text-[var(--text-secondary)]">
           <ConfigPanel
@@ -2092,9 +2449,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
             visualStyle={localVisualStyle}
             customDurationInput={customDurationInput}
             customModelInput={customModelInput}
-            customStyleInput={customStyleInput}
             isProcessing={isProcessing}
-            isInferringVisualStyle={isInferringVisualStyle}
             error={error}
             onShowModelConfig={onShowModelConfig}
             onTitleChange={setLocalTitle}
@@ -2105,11 +2460,22 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
             onVisualStylePreview={setPreviewVisualStyle}
             onCustomDurationChange={setCustomDurationInput}
             onCustomModelChange={setCustomModelInput}
-            onCustomStyleChange={setCustomStyleInput}
-            onInferVisualStyleByImage={handleInferVisualStyleByImage}
+            visualStyleProfiles={styleProfilesForUi}
+            generatingStylePreviewKeys={generatingStylePreviewKeys}
+            onSaveVisualStyleProfile={handleSaveVisualStyleProfile}
+            onGenerateStylePreview={handleGenerateStylePreview}
+            onAddVisualStyle={handleAddVisualStyle}
+            styleCreateRequest={styleCreateRequest}
+            onRegenerateStylePreview={handleRegenerateStylePreviewForStyle}
+            onApplyVisualStylePreview={handleApplyVisualStylePreview}
+            onDeleteVisualStyle={handleDeleteVisualStyle}
+            onInferVisualStyleProfile={handleInferVisualStyleProfile}
             enableQualityCheck={enableQualityCheck}
             onToggleQualityCheck={setEnableQualityCheck}
-            onAnalyze={handleAnalyze}
+            onAnalyze={() => handleAnalyze('full')}
+            onGenerateFramework={() => handleAnalyze('framework')}
+            onGenerateVisuals={handleGenerateMissingVisuals}
+            canGenerateVisuals={!!project.scriptData}
             analyzeButtonLabel={analyzeButtonLabel}
             canCancelAnalyze={!!analyzeAbortControllerRef.current}
             onCancelAnalyze={handleCancelAnalyze}

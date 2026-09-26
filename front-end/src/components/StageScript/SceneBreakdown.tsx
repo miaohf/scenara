@@ -6,6 +6,7 @@ import { filterBySceneIdCompat } from '../../services/storyboardIdUtils';
 import CharacterList from './CharacterList';
 import SceneList from './SceneList';
 import ShotRow from './ShotRow';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface Props {
   project: ProjectState;
@@ -64,6 +65,7 @@ const SceneBreakdown: React.FC<Props> = ({
   onDeleteShot,
   onBackToStory
 }) => {
+  const { text } = useInterfaceLanguage();
   const uniqueScenes = deduplicateScenes(project.scriptData?.scenes);
 
   return (
@@ -73,18 +75,18 @@ const SceneBreakdown: React.FC<Props> = ({
         <div className="flex items-center gap-6">
           <h2 className="text-lg font-light text-[var(--text-primary)] tracking-tight flex items-center gap-3">
             <List className="w-5 h-5 text-[var(--text-tertiary)]" />
-            拍摄清单
+            {text('拍摄清单', 'Shot Manifest')}
             <span className="text-xs text-[var(--text-muted)] font-mono uppercase tracking-wider ml-1">Script Manifest</span>
           </h2>
           <div className="h-6 w-px bg-[var(--border-primary)]"></div>
           
           <div className="flex items-center gap-4">
             <div className="flex flex-col">
-              <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest">项目</span>
+              <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest">{text('项目', 'Project')}</span>
               <span className="text-sm text-[var(--text-secondary)] font-medium">{project.scriptData?.title}</span>
             </div>
             <div className="flex flex-col">
-              <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest">时长</span>
+              <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest">{text('时长', 'Duration')}</span>
               <span className="text-sm font-mono text-[var(--text-tertiary)]">{project.targetDuration}</span>
             </div>
           </div>
@@ -95,7 +97,7 @@ const SceneBreakdown: React.FC<Props> = ({
           className="text-xs font-bold text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center gap-2 px-4 py-2 hover:bg-[var(--bg-hover)] rounded-lg transition-all"
         >
           <ArrowLeft className="w-3 h-3" />
-          返回编辑
+          {text('返回编辑', 'Back to editor')}
         </button>
       </div>
 
@@ -105,7 +107,7 @@ const SceneBreakdown: React.FC<Props> = ({
         <div className="w-[30%] min-w-[22rem] border-r border-[var(--border-primary)] bg-[var(--bg-primary)] flex flex-col hidden lg:flex shrink-0">
           <div className="p-6 border-b border-[var(--border-subtle)]">
             <h3 className="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-widest mb-4 flex items-center gap-2">
-              <TextQuote className="w-3 h-3" /> 故事梗概
+              <TextQuote className="w-3 h-3" /> {text('故事梗概', 'Story Summary')}
             </h3>
             <p className="text-xs text-[var(--text-tertiary)] italic leading-relaxed font-serif">"{project.scriptData?.logline}"</p>
           </div>
@@ -147,10 +149,10 @@ const SceneBreakdown: React.FC<Props> = ({
                       <button
                         onClick={() => onAddShot(scene.id)}
                         className="ml-2 px-2.5 py-1 bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--border-secondary)] rounded-md flex items-center gap-1.5 transition-colors"
-                        title="追加分镜：有镜头时会自动生成子分镜"
+                        title={text('追加分镜：有镜头时会自动生成子分镜', 'Add a shot; existing shots create a sub-shot automatically')}
                       >
                         <Plus className="w-3 h-3" />
-                        新增分镜
+                        {text('新增分镜', 'Add Shot')}
                       </button>
                     </div>
                   </div>
@@ -158,7 +160,7 @@ const SceneBreakdown: React.FC<Props> = ({
                   {/* Shot Rows */}
                   {sceneShots.length === 0 ? (
                     <div className="px-8 py-10 text-sm text-[var(--text-muted)]">
-                      当前场景还没有分镜，点击“新增分镜”开始补充。
+                      {text('当前场景还没有分镜，点击“新增分镜”开始补充。', 'This scene has no shots yet. Click “Add Shot” to add one.')}
                     </div>
                   ) : (
                     <div className="divide-y divide-zinc-800/50">

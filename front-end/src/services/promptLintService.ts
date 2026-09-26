@@ -35,6 +35,10 @@ export interface KeyframePreflightInput {
   supportedAspectRatios?: AspectRatio[];
   productionIssues?: PromptLintIssue[];
   expectedCharacterNames?: string[];
+  /** Visible action props that must be named in the final prompt. */
+  expectedPropNames?: string[];
+  /** Constraint policy facts which must survive prompt compilation. */
+  requiredConstraints?: string[];
 }
 
 export interface VideoPreflightInput {
@@ -55,6 +59,10 @@ export interface VideoPreflightInput {
   h3ExecutionPlan?: ShotExecutionPlan;
   h3AudioIntent?: string;
   referenceImageCount?: number;
+  referenceVideoCount?: number;
+  referenceAudioCount?: number;
+  h3Dialogue?: string;
+  h3AudioMode?: 'dialogue' | 'narration';
 }
 
 /** Legacy marker or official MiniMax H3 skill audio sections both satisfy native-audio preflight. */
@@ -243,6 +251,46 @@ export const runKeyframePreflight = (input: KeyframePreflightInput): PromptLintR
     }
   }
 
+  for (const characterName of (input.expectedCharacterNames || []).slice(1)) {
+    const normalizedName = characterName.trim();
+    if (!normalizedName) continue;
+    if (!normalizedPrompt.toLocaleLowerCase().includes(normalizedName.toLocaleLowerCase())) {
+      issues.push({
+        code: 'missing-visible-character',
+        severity: 'error',
+        message: `Prompt does not name a visible character: ${normalizedName}.`,
+        suggestion: 'Keep every shot.characters entry in the frame description and composition lock.',
+      });
+    }
+  }
+
+  for (const propName of input.expectedPropNames || []) {
+    const normalizedName = propName.trim();
+    if (!normalizedName) continue;
+    if (!normalizedPrompt.toLocaleLowerCase().includes(normalizedName.toLocaleLowerCase())) {
+      issues.push({
+        code: 'missing-required-prop',
+        severity: 'error',
+        message: `Prompt does not name the visible prop: ${normalizedName}.`,
+        suggestion: 'Regenerate the prompt with the prop relationship and its reference image mapping.',
+      });
+    }
+  }
+
+  for (const constraint of input.requiredConstraints || []) {
+    const normalizedConstraint = constraint.trim();
+    if (!normalizedConstraint) continue;
+    const anchor = normalizedConstraint.split(/[，。；,:：]/u)[0].trim();
+    if (anchor.length >= 4 && !normalizedPrompt.toLocaleLowerCase().includes(anchor.toLocaleLowerCase())) {
+      issues.push({
+        code: 'missing-required-constraint',
+        severity: 'warning',
+        message: `A required shot fact may have been lost during prompt compilation: ${anchor}.`,
+        suggestion: 'Keep this fact in the Qwen prompt under the required-constraints section.',
+      });
+    }
+  }
+
   return buildLintResult(issues);
 };
 
@@ -252,8 +300,12 @@ export const runVideoPreflight = (input: VideoPreflightInput): PromptLintResult 
         durationSeconds: Number(input.duration),
         expectedWorkflow: input.h3WorkflowKind,
         referenceImageCount: input.referenceImageCount,
+        referenceVideoCount: input.referenceVideoCount,
+        referenceAudioCount: input.referenceAudioCount,
         executionPlan: input.h3ExecutionPlan,
         audioIntent: input.h3AudioIntent,
+        dialogue: input.h3Dialogue,
+        audioMode: input.h3AudioMode,
       })
     : undefined;
   const normalizedPrompt = h3Validation?.prompt || input.prompt;

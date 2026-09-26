@@ -14,6 +14,8 @@ export interface H3PromptValidationContext {
   durationSeconds: number;
   expectedWorkflow: H3PromptWorkflowKind;
   referenceImageCount?: number;
+  referenceVideoCount?: number;
+  referenceAudioCount?: number;
   executionPlan?: {
     actionPhases?: Array<{
       startSeconds: number;
@@ -27,6 +29,8 @@ export interface H3PromptValidationContext {
     soundPlan?: string[];
   };
   audioIntent?: string;
+  dialogue?: string;
+  audioMode?: 'dialogue' | 'narration';
 }
 
 export interface H3PromptValidationResult {
@@ -60,6 +64,10 @@ const VISUAL_RETENTION_VALUES = new Set([
   'attribute_transfer',
   'weak_reference',
 ]);
+const CJK_OUTSIDE_DIALOGUE_RE = /[\u3400-\u9fff]/u;
+
+const stripDialogueBlocks = (value: string): string =>
+  String(value || '').replace(/<d>[\s\S]*?<\/d>/giu, '');
 
 interface ParsedSection {
   name: string;
@@ -88,6 +96,26 @@ const parseSections = (prompt: string): ParsedSection[] => {
 
 const getSection = (sections: ParsedSection[], name: string): ParsedSection | undefined =>
   sections.find((section) => section.name === name);
+
+const normalizeDuplicateH3Sections = (
+  prompt: string,
+  sections: ParsedSection[],
+  requiredSections: readonly string[],
+): string | null => {
+  const duplicateNames = requiredSections.filter(
+    (name) => sections.filter((section) => section.name === name).length > 1,
+  );
+  if (duplicateNames.length === 0) return null;
+
+  const firstSection = sections[0];
+  if (!firstSection) return null;
+  const prefix = prompt.slice(0, firstSection.headerStart).trim();
+  const body = requiredSections.map((name) => {
+    const section = getSection(sections, name);
+    return `${name}:\n${section?.content || ''}`;
+  }).join('\n\n');
+  return `${prefix ? `${prefix}\n\n` : ''}${body}`.trim();
+};
 
 const replaceSectionContent = (prompt: string, section: ParsedSection, nextContent: string): string =>
   `${prompt.slice(0, section.contentStart)}${nextContent.trim()}\n\n${prompt.slice(section.contentEnd).replace(/^\s+/, '')}`.trim();
@@ -184,7 +212,7 @@ export const validateAndRepairH3Prompt = (
   }
 
   let sections = parseSections(prompt);
-  const sectionNames = sections.map((section) => section.name);
+  let sectionNames = sections.map((section) => section.name);
   const actualWorkflow: H3PromptWorkflowKind | 'unknown' = sectionNames.includes('subject_definitions')
     ? 'ref2va'
     : sectionNames.includes('integrated_multimodal_description')
@@ -208,6 +236,21 @@ export const validateAndRepairH3Prompt = (
   }
 
   const requiredSections = context.expectedWorkflow === 'ref2va' ? REF2VA_SECTIONS : BASE_SECTIONS;
+  if (actualWorkflow === context.expectedWorkflow) {
+    const normalizedPrompt = normalizeDuplicateH3Sections(prompt, sections, requiredSections);
+    if (normalizedPrompt && normalizedPrompt !== prompt) {
+      prompt = normalizedPrompt;
+      sections = parseSections(prompt);
+      sectionNames = sections.map((section) => section.name);
+      autoFixes.push('deduplicated-h3-sections');
+      issues.push({
+        code: 'h3-duplicate-sections-autofixed',
+        severity: 'info',
+        message: 'Duplicate H3 audio/description sections were collapsed into the official section order.',
+        autoFix: `Kept one section each in the order: ${requiredSections.join(' → ')}.`,
+      });
+    }
+  }
   const missingSections = requiredSections.filter((name) => !sectionNames.includes(name));
   if (missingSections.length) {
     issues.push({
@@ -253,6 +296,101 @@ export const validateAndRepairH3Prompt = (
     sections,
     context.expectedWorkflow === 'ref2va' ? 'detailed_description' : 'integrated_multimodal_description',
   )?.content || '';
+  if (CJK_OUTSIDE_DIALOGUE_RE.test(stripDialogueBlocks(prompt))) {
+    issues.push({
+      code: 'h3-non-dialogue-cjk',
+      severity: 'error',
+      message: 'H3 skill prose contains Chinese outside <d> dialogue blocks.',
+      suggestion: 'Translate all non-dialogue descriptions, camera notes, sound notes, and reference facts into English; keep Chinese only inside <d>[Chinese] ...</d>.',
+    });
+  }
+  if (/\[VIDEO_PROMPT_POLICY_V1\b/u.test(prompt)) {
+    issues.push({
+      code: 'h3-generic-policy-block',
+      severity: 'error',
+      message: 'H3 prompt contains a generic VIDEO_PROMPT_POLICY block outside the official skill schema.',
+      suggestion: 'Rebuild the prompt as canonical H3 skill sections only; fold any needed constraints into the description section.',
+    });
+  }
+  const shotOneBlock = description.match(/\[Shot\s+1\]([\s\S]*?)(?=\[Shot\s+\d+\]|$)/iu)?.[1] || '';
+  if (!shotOneBlock.trim()) {
+    issues.push({
+      code: 'h3-missing-shot-one-anchor',
+      severity: 'error',
+      field: 'detailed_description',
+      message: 'The prompt does not contain an executable [Shot 1] block.',
+    });
+  } else if (context.expectedWorkflow === 'ref2va' && !/<Subject\s+\d+>/iu.test(shotOneBlock)) {
+    issues.push({
+      code: 'h3-shot-one-subject-anchor',
+      severity: 'error',
+      field: 'detailed_description',
+      message: '[Shot 1] does not explicitly anchor any defined Subject.',
+      suggestion: 'Name the visible character, environment, or prop Subject in the opening shot block.',
+    });
+  } else if (context.expectedWorkflow === 'base' && !/<Picture\s+1>|opening composition|opening frame/iu.test(description)) {
+    issues.push({
+      code: 'h3-shot-one-picture-anchor',
+      severity: 'warning',
+      field: 'integrated_multimodal_description',
+      message: 'FL2V Shot 1 does not explicitly anchor the opening picture/frame.',
+    });
+  }
+
+  const dialogueBlocks = Array.from(description.matchAll(/<d>([\s\S]*?)<\/d>/giu));
+  const expectedDialogue = String(context.dialogue || '').trim();
+  if (expectedDialogue && dialogueBlocks.length === 0) {
+    issues.push({
+      code: 'h3-missing-dialogue-tag',
+      severity: 'error',
+      field: 'detailed_description',
+      message: 'Spoken text exists but no official <d>[Language] ...</d> dialogue block was emitted.',
+    });
+  }
+  dialogueBlocks.forEach((match, index) => {
+    if (!/^\s*\[[^\]]+\]\s*\S/iu.test(match[1])) {
+      issues.push({
+        code: 'h3-dialogue-language-label',
+        severity: 'error',
+        field: 'detailed_description',
+        message: `Dialogue block ${index + 1} is missing its [Language] label.`,
+      });
+    }
+    const preceding = description.slice(Math.max(0, (match.index || 0) - 320), match.index || 0);
+    if (context.audioMode !== 'narration' && !/\(S\d+\)/u.test(preceding)) {
+      issues.push({
+        code: 'h3-dialogue-speaker-id',
+        severity: 'error',
+        field: 'detailed_description',
+        message: `Dialogue block ${index + 1} has no nearby speaker ID such as (S1).`,
+      });
+    }
+  });
+  if (context.audioMode === 'narration' && dialogueBlocks.length > 0 && !/off[- ]screen|voice[- ]over|narrator/iu.test(description)) {
+    issues.push({
+      code: 'h3-narration-offscreen-evidence',
+      severity: 'error',
+      field: 'detailed_description',
+      message: 'Narration is not explicitly identified as off-screen/voice-over.',
+    });
+  }
+  if (context.audioMode === 'narration' && dialogueBlocks.length > 0 && !/lips? remain closed|mouth remains closed|闭口|嘴唇.*不动/iu.test(description)) {
+    issues.push({
+      code: 'h3-narration-closed-mouth',
+      severity: 'warning',
+      field: 'detailed_description',
+      message: 'Voice-over is missing visible closed-mouth evidence for on-screen characters.',
+    });
+  }
+  if (/production note|locked action beat|retention analysis|internal metadata/iu.test(description)) {
+    issues.push({
+      code: 'h3-internal-jargon-leak',
+      severity: 'warning',
+      field: 'detailed_description',
+      message: 'Internal production-wrapper terminology leaked into the model-facing description.',
+      suggestion: 'Express the visible instruction directly without metadata labels.',
+    });
+  }
   const promptPhases = parsePromptPhases(description);
   const planPhases = context.executionPlan?.actionPhases || [];
   const phases = promptPhases.length ? promptPhases : planPhases.map((phase) => ({
@@ -403,6 +541,30 @@ export const validateAndRepairH3Prompt = (
       message: `${context.referenceImageCount} reference images are active; verify that every image is important to the visible beat.`,
     });
   }
+  if ((context.referenceVideoCount || 0) > 3) {
+    issues.push({
+      code: 'h3-too-many-reference-videos',
+      severity: 'error',
+      message: `Ref2VA received ${context.referenceVideoCount} reference videos; maximum is 3.`,
+    });
+  }
+  if ((context.referenceAudioCount || 0) > 3) {
+    issues.push({
+      code: 'h3-too-many-reference-audios',
+      severity: 'error',
+      message: `Ref2VA received ${context.referenceAudioCount} reference audios; maximum is 3.`,
+    });
+  }
+  const totalReferenceCount = (context.referenceImageCount || 0)
+    + (context.referenceVideoCount || 0)
+    + (context.referenceAudioCount || 0);
+  if (totalReferenceCount > 12) {
+    issues.push({
+      code: 'h3-too-many-total-references',
+      severity: 'error',
+      message: `Ref2VA received ${totalReferenceCount} total reference inputs; maximum is 12.`,
+    });
+  }
 
   const audioIntentText = [
     context.audioIntent || '',
@@ -412,6 +574,15 @@ export const validateAndRepairH3Prompt = (
     ...phases.map((phase) => phase.sound),
   ].join(' ');
   const musicSection = getSection(sections, 'non_diegetic_music');
+  const soundscapeSection = getSection(sections, 'overall_soundscape');
+  if (dialogueBlocks.length > 0 && /<d>[\s\S]*?<\/d>/iu.test(`${soundscapeSection?.content || ''}\n${musicSection?.content || ''}`)) {
+    issues.push({
+      code: 'h3-dialogue-in-audio-policy',
+      severity: 'error',
+      field: 'overall_soundscape',
+      message: 'Dialogue tags must appear only in the shot description, not in soundscape or music fields.',
+    });
+  }
   if (musicSection && noMusicPattern.test(audioIntentText) && !musicIsEmptyPattern.test(musicSection.content.trim())) {
     prompt = replaceSectionContent(prompt, musicSection, 'N/A');
     autoFixes.push('forced-non-diegetic-music-na');

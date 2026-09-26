@@ -292,7 +292,9 @@ const evaluateContinuity = (shot: Shot): QualityCheck => {
   if (hasCharacters && !startFrame?.imageUrl && !isR2V) charPenalty = -20;
   if (supportsEndFrame && hasCharacters && !endFrame?.imageUrl) charEndPenalty = -10;
 
-  const score = baseScore + startBonus + endBonus + modelCompensation + charPenalty + charEndPenalty;
+  const ledgerIssues = shot.agent?.continuityLedger?.issues || [];
+  const ledgerPenalty = -Math.min(35, ledgerIssues.length * 15);
+  const score = Math.max(0, baseScore + startBonus + endBonus + modelCompensation + charPenalty + charEndPenalty + ledgerPenalty);
   const details = [
     '规则：基础40分 + 首帧锚点25分 + 尾帧锚点25分（模型不支持尾帧时补偿20分）+ 角色缺锚点惩罚',
     `模型：${shot.videoModel || '未设置'}，${supportsEndFrame ? '支持尾帧插值' : '不支持尾帧插值'}`,
@@ -303,6 +305,9 @@ const evaluateContinuity = (shot: Shot): QualityCheck => {
     hasCharacters
       ? `角色镜头惩罚：${!startFrame?.imageUrl ? '缺少首帧锚点（-20）' : '首帧锚点完整（0）'}${supportsEndFrame && !endFrame?.imageUrl ? '；缺少尾帧锚点（-10）' : ''}`
       : '非角色镜头：不触发角色锚点惩罚',
+    ledgerIssues.length
+      ? `结构化连续性台账：${ledgerIssues.join('；')}（${ledgerPenalty}）`
+      : '结构化连续性台账：未发现道具瞬移、无依据换装或屏幕方向反转。',
     `总分：${Math.round(score)}/100`,
   ].join('\n');
 

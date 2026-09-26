@@ -236,6 +236,8 @@ const ModelCard: React.FC<ModelCardProps> = ({
             ? 'OpenAI Images'
             : params.apiFormat === 'comfyui'
               ? 'ComfyUI Workflow'
+              : params.apiFormat === 'cursor-sdk' || params.apiFormat === 'cursor-acp'
+                ? 'Cursor ACP Agent'
               : 'Gemini GenerateContent'
         }
       </div>

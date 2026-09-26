@@ -75,6 +75,7 @@ API 文档：[http://localhost:8000/docs](http://localhost:8000/docs)
 | `REDIS_URL`                                  | Celery 与 ComfyUI GPU 锁                                             |
 | `VLLM_*` / `INDEXTTS_*` / `COMFYUI_BASE_URL` | 本地模型配置，写入 `user_settings.model_registry`                           |
 | `APIYI_BASE_URL` / `APIYI_API_KEY`           | API易（gpt-image-2 / 2.5），写入 `apiyi` provider                           |
+| `CURSOR_API_KEY` / `CURSOR_ACP_*`           | Cursor ACP 原生生图（模型卡选择「Cursor ACP Agent」；需安装 `agent` CLI） |
 | `DEFAULT_*_MODEL_ID`                         | 默认激活的 chat/image/video/audio 模型                                    |
 
 
@@ -110,5 +111,3 @@ API 文档：[http://localhost:8000/docs](http://localhost:8000/docs)
 | `GET /v1/jobs/{id}/stream`    | SSE 进度                            |
 | `GET /v1/media/raw/{key}`     | 本地媒体（HMAC 签名 URL；生产请走 nginx 直出）   |
 | `GET /v1/media/verify`        | 校验媒体 HMAC 签名，不读文件                 |
-
-

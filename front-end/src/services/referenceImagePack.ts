@@ -199,14 +199,15 @@ export const composeReferencePanorama = async (
 };
 
 const annotationForEntry = (entry: ReferenceImageEntry): string => {
+  const policySuffix = entry.policyReason ? ` 选择原因：${entry.policyReason}` : '';
   const labels = (entry.includedLabels || []).filter(Boolean).join('、') || entry.label;
   if (entry.type === 'scene') {
-    return `场景参考图：${entry.label}。锁定环境、空间关系、光线和氛围。`;
+    return `场景参考图：${entry.label}。只锁定环境、空间关系、光线和氛围；场景图中的武器、主道具和英雄物件不是道具造型来源，除非当前镜头明确引用对应道具参考图。${policySuffix}`;
   }
   if (entry.type === 'character') {
     return entry.isComposite
       ? `角色全景参考图：从左到右依次为 ${labels}。必须分别保持每个角色的脸型、发型、体态与服装，禁止混脸或混装。`
-      : `角色参考图：${entry.label}。锁定人物身份、脸型、发型、体态与服装。`;
+      : `角色参考图：${entry.label}。锁定人物身份、脸型、发型、体态与服装。${policySuffix}`;
   }
   if (entry.type === 'turnaround') {
     return entry.isComposite
@@ -218,16 +219,17 @@ const annotationForEntry = (entry: ReferenceImageEntry): string => {
   }
   return entry.isComposite
     ? `道具全景参考图：从左到右依次为 ${labels}。分别保持各道具的造型、材质、颜色和关键细节。`
-    : `道具参考图：${entry.label}。锁定造型、材质、颜色和关键细节。`;
+      : `道具参考图：${entry.label}。锁定造型、材质、颜色和关键细节。${policySuffix}`;
 };
 
 const annotationForEntryEn = (entry: ReferenceImageEntry): string => {
+  const policySuffix = entry.policyReason ? ` Selection reason: ${entry.policyReason}` : '';
   const labels = (entry.includedLabels || []).filter(Boolean).join(', ') || entry.label;
-  if (entry.type === 'scene') return `Scene reference: ${entry.label}. Lock environment, spatial layout, lighting, and atmosphere.`;
+  if (entry.type === 'scene') return `Scene reference: ${entry.label}. Use it only for environment, spatial layout, lighting, and atmosphere; weapons, hero props, and prominent objects in the scene image are not prop design sources unless the shot explicitly references the matching prop image.${policySuffix}`;
   if (entry.type === 'character') {
     return entry.isComposite
       ? `Character panorama, left to right: ${labels}. Preserve each character's face, hair, body, and wardrobe without mixing identities or outfits.`
-      : `Character reference: ${entry.label}. Lock identity, face, hair, body, and wardrobe.`;
+      : `Character reference: ${entry.label}. Lock identity, face, hair, body, and wardrobe.${policySuffix}`;
   }
   if (entry.type === 'turnaround') {
     return entry.isComposite
@@ -239,7 +241,7 @@ const annotationForEntryEn = (entry: ReferenceImageEntry): string => {
   }
   return entry.isComposite
     ? `Prop panorama, left to right: ${labels}. Preserve each object's form, material, color, and defining details.`
-    : `Prop reference: ${entry.label}. Lock form, material, color, and defining details.`;
+    : `Prop reference: ${entry.label}. Lock form, material, color, and defining details.${policySuffix}`;
 };
 
 const replaceKindWithComposite = (
@@ -283,7 +285,8 @@ export const buildReferenceImagePack = async (
   const compositeGroups: ReferenceCompositeSummary[] = [];
 
   if (!disableCompositing) {
-    for (const type of ['character', 'prop', 'turnaround'] as const) {
+    // 只有道具允许在预览整理时拼接；人物、场景和角色多视图始终保持单图。
+    for (const type of ['prop'] as const) {
       const sameType = workingEntries.filter((entry) => entry.type === type);
       const requestedNow = workingEntries.length + (continuityIsExtra ? 1 : 0) + reservedReferenceSlots;
       if (sameType.length <= 1 || (requestedNow <= maxReferenceImages && !alwaysComposite.has(type))) continue;
@@ -300,7 +303,16 @@ export const buildReferenceImagePack = async (
   const withoutContinuity = continuityReferenceImage
     ? workingEntries.filter((entry) => entry.image !== continuityReferenceImage)
     : workingEntries;
-  const selectedEntries = withoutContinuity.slice(0, usableSlots);
+  // Required references are semantic constraints, not ordinary extras. Preserve
+  // their original workflow order (scene-first for Qwen) while selecting them
+  // before supportive references when the adaptive budget is smaller than the
+  // candidate list.
+  const requiredEntries = withoutContinuity.filter((entry) => entry.policy === 'required');
+  const supportiveEntries = withoutContinuity.filter((entry) => entry.policy !== 'required');
+  const prioritizedEntries = [...requiredEntries, ...supportiveEntries];
+  const selectedEntries = prioritizedEntries
+    .slice(0, usableSlots)
+    .sort((left, right) => withoutContinuity.indexOf(left) - withoutContinuity.indexOf(right));
   const selectedSet = new Set(selectedEntries.map((entry) => entry.image));
   const droppedEntries = withoutContinuity.filter((entry) => !selectedSet.has(entry.image));
   const effectiveReferenceCount = selectedEntries.length + (continuityReferenceImage ? 1 : 0) + reservedReferenceSlots;

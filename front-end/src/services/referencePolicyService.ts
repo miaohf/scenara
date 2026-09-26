@@ -60,7 +60,12 @@ export const resolveShotReferencePolicy = (
     const mentioned = normalize(entry.label) && actionText.includes(normalize(entry.label));
     const usage = entry.assetId ? shot.propUsages?.[entry.assetId] : undefined;
     const activeProp = entry.type === 'prop' && (
-      mentioned || !!usage?.action || ['handheld', 'used', 'placed', 'mounted'].includes(String(usage?.mode || ''))
+      // shot.props is the structured visibility declaration. Do not downgrade a
+      // listed prop merely because the natural-language actionSummary omitted it.
+      (entry.assetId ? (shot.props || []).some((propId) => String(propId) === String(entry.assetId)) : false)
+      || mentioned
+      || !!usage?.action
+      || ['handheld', 'used', 'placed', 'mounted'].includes(String(usage?.mode || ''))
     );
     let policy: ShotReferencePolicyLevel = matching?.policy
       || (entry.type === 'character' && index === 0 ? 'required'
@@ -84,6 +89,7 @@ export const resolveShotReferencePolicy = (
           : 'Kept as text because a dedicated image would compete for model attention.'
     );
     return {
+      inputIndex: index,
       entry: { ...entry, policy, policyReason: reason, priorityScore: score },
       decision: {
         assetType: entry.type === 'turnaround' ? 'character' as const : entry.type,
@@ -115,6 +121,9 @@ export const resolveShotReferencePolicy = (
   return {
     entries: evaluated
       .filter((item) => item.decision.policy === 'required' || item.decision.policy === 'supportive')
+      // Ranking decides what fits the semantic budget. It must not overwrite the
+      // caller's workflow order (for example, a Qwen/keyframe scene canvas at Image 1).
+      .sort((left, right) => left.inputIndex - right.inputIndex)
       .map((item) => item.entry),
     decisions: evaluated.map((item) => item.decision),
     textOnlyEntries: evaluated.filter((item) => item.decision.policy === 'textOnly').map((item) => item.entry),

@@ -184,6 +184,16 @@ export interface CharacterImageHistoryEntry {
   prompt?: string;
 }
 
+export type AssetImageHistorySource = 'generated' | 'uploaded';
+
+export interface AssetImageHistoryEntry {
+  id: string;
+  imageUrl: string;
+  createdAt: number;
+  source: AssetImageHistorySource;
+  prompt?: string;
+}
+
 export interface Character {
   id: string;
   name: string;
@@ -195,6 +205,8 @@ export interface Character {
   species?: string;
   /** 剧本中明确写出的服装/穿着描述，作为角色造型的唯一文字来源。 */
   wardrobe?: string;
+  /** 角色在出场镜头中默认随身/随行的独立装备；服装类物品不应放入这里。 */
+  defaultPropIds?: string[];
   visualPrompt?: string;
   promptVersions?: PromptVersion[]; // Prompt edit history with rollback support
   negativePrompt?: string;
@@ -207,7 +219,13 @@ export interface Character {
   turnaround?: CharacterTurnaroundData;
   threeView?: CharacterThreeViewData;
   activeImageView?: CharacterImageView;
+  /** 当前定妆图生成任务的临时标识；生成完成或失败后清除，避免旧任务覆盖当前预览。 */
+  referenceGenerationId?: string;
+  /** 同一次抽卡里尚未完成的生成任务。只接受这些任务写回，避免旧图回流。 */
+  referenceGenerationIds?: string[];
   imageHistory?: CharacterImageHistoryEntry[];
+  /** 用户删过的图。旧任务和服务器合并不能再把这些图写回历史。 */
+  removedImageKeys?: string[];
   variations: CharacterVariation[];
   status?: 'pending' | 'generating' | 'completed' | 'failed';
   libraryId?: string;
@@ -230,6 +248,12 @@ export interface Scene {
   shapeReferenceImage?: string; // Optional reference image used only for shape/silhouette guidance during generation
   referenceImage?: string; // 场景参考图，存储为base64格式（data:image/png;base64,...）
   referenceImageUpdatedAt?: number;
+  /** 当前场景图生成任务的临时标识；避免旧任务把已删除的历史图写回来。 */
+  referenceGenerationId?: string;
+  referenceGenerationIds?: string[];
+  imageHistory?: AssetImageHistoryEntry[];
+  /** 用户删过的图。旧任务和服务器合并不能再把这些图写回历史。 */
+  removedImageKeys?: string[];
   status?: 'pending' | 'generating' | 'completed' | 'failed'; // 生成状态，用于loading状态持久化
   libraryId?: string;
   libraryVersion?: number;
@@ -260,6 +284,55 @@ export interface ShotPropUsage {
 }
 
 /**
+ * 关键帧专用的可见状态。镜头级 executionPlan 描述整个动作过程，不能直接当成
+ * 首帧或尾帧的静态画面事实；本字段只记录某一帧可被看见的状态。
+ */
+export interface ShotFrameDirection {
+  /** 这一帧让观众立即读到的剧情状态。 */
+  storyState?: string;
+  /** 人物的画面站位、朝向、视线与静止/动作姿态。 */
+  blocking?: string;
+  /** 可观察的表情、情绪和身体张力，不描述整段情绪变化。 */
+  performance?: string;
+  /** 本帧道具的拥有者、位置和状态；可覆盖镜头级 propUsages。 */
+  propState?: string;
+  /** 结构化人物调度；优先于自由文本 blocking。 */
+  characterBlocking?: ShotCharacterBlocking[];
+  /** 结构化本帧道具状态；key 为道具 ID。 */
+  propStates?: Record<string, ShotPropFrameState>;
+}
+
+export interface ShotCharacterBlocking {
+  characterId: string;
+  count?: number;
+  position?: string;
+  depth?: 'foreground' | 'midground' | 'background' | string;
+  facing?: string;
+  gaze?: string;
+  action?: string;
+  expression?: string;
+}
+
+export interface ShotPropFrameState {
+  holderCharacterId?: string;
+  hand?: 'left' | 'right' | 'both' | 'either';
+  position?: string;
+  state?: string;
+  visible?: boolean;
+}
+
+export interface ShotConstraintPolicy {
+  /** 必须满足并应在生成前检查的事实。 */
+  required?: string[];
+  /** 建议满足但失败时不阻断生成的事实。 */
+  preferred?: string[];
+  /** 可由模型自由处理的次要细节。 */
+  flexible?: string[];
+  /** 本镜头禁止自动添加的道具名称或 ID。 */
+  forbiddenProps?: string[];
+}
+
+/**
  * 道具/物品 - 用于保持多分镜间物品视觉一致性
  * 如星图、武器、地图、信件等需要在多个镜头中重复出现的物品
  */
@@ -285,6 +358,12 @@ export interface Prop {
   shapeReferenceImage?: string; // Optional reference image used only for shape/silhouette guidance during generation
   referenceImage?: string; // 道具参考图，存储为base64格式（data:image/png;base64,...）
   referenceImageUpdatedAt?: number;
+  /** 当前道具图生成任务的临时标识；避免旧任务把已删除的历史图写回来。 */
+  referenceGenerationId?: string;
+  referenceGenerationIds?: string[];
+  imageHistory?: AssetImageHistoryEntry[];
+  /** 用户删过的图。旧任务和服务器合并不能再把这些图写回历史。 */
+  removedImageKeys?: string[];
   status?: 'pending' | 'generating' | 'completed' | 'failed'; // 生成状态，用于loading状态持久化
   libraryId?: string;
   libraryVersion?: number;
@@ -682,6 +761,12 @@ export interface Shot {
   props?: string[]; // 道具ID数组，引用 ScriptData.props 中的道具
   /** 镜头级道具使用方式覆盖；未设置时使用道具默认值或保守推断。 */
   propUsages?: { [propId: string]: ShotPropUsage };
+  /** 首尾帧的静态可见状态；缺失时兼容旧项目并回退到 visualPrompt。 */
+  frameDirections?: Partial<Record<'start' | 'end', ShotFrameDirection>>;
+  /** 镜头提示词约束预算；旧数据缺失时由复杂度策略自动推断。 */
+  constraintPolicy?: ShotConstraintPolicy;
+  /** 参考图/提示词复杂度档位；缺失时由镜头内容自动推断。 */
+  visualComplexity?: 'simple' | 'standard' | 'complex';
   keyframes: Keyframe[];
   interval?: VideoInterval;
   qualityAssessment?: ShotQualityAssessment;
@@ -746,6 +831,24 @@ export interface ProductionBible {
   updatedAt?: number;
 }
 
+/** 跨集连续性只保存已确认的交接事实；不会从自然语言臆测角色知识或伏笔。 */
+export interface SeriesContinuityThread {
+  id: string;
+  label: string;
+  status: 'open' | 'resolved';
+  note?: string;
+  sourceEpisodeId?: string;
+}
+
+export interface SeriesContinuityContext {
+  sourceEpisodeId?: string;
+  sourceEpisodeNumber?: number;
+  incomingState?: ShotContinuityState;
+  outgoingState?: ShotContinuityState;
+  openThreads: SeriesContinuityThread[];
+  updatedAt: number;
+}
+
 export interface ScriptData {
   title: string;
   genre: string;
@@ -766,6 +869,8 @@ export interface ScriptData {
   storyOutlineReview?: StoryOutlineReview; // 故事层软门禁最近一次结果
   /** 按镜头顺序保存的结构化连续性状态账。 */
   continuityLedger?: ShotContinuityLedgerEntry[];
+  /** 跨集交接状态：上一集结束状态作为本集输入，本集完成后写出结束状态。 */
+  seriesContinuity?: SeriesContinuityContext;
   characters: Character[];
   scenes: Scene[];
   props: Prop[]; // 道具列表，用于保持多分镜间物品视觉一致性
@@ -777,6 +882,8 @@ export interface ScriptData {
     developmentKey?: string;
     // Fingerprint of structure + style/model/language (visual enrichment inputs).
     visualsKey?: string;
+    // Fingerprint of structure/development inputs used to create the shot framework before visual prompts exist.
+    frameworkKey?: string;
     // Fingerprint of visualized script + duration/model (shot generation inputs).
     shotsKey?: string;
     generatedAt?: number;
@@ -799,6 +906,29 @@ export interface RenderLog {
   duration?: number; // Time taken in milliseconds
 }
 
+/** 用户可见的 Agent 执行日志；只保存阶段、产出摘要和校验结果，不保存模型隐藏推理。 */
+export type AgentTraceEntryStatus = 'info' | 'running' | 'success' | 'warning' | 'error';
+export type AgentTraceRunStatus = 'running' | 'completed' | 'warning' | 'error' | 'cancelled' | 'waiting';
+
+export interface AgentTraceEntry {
+  id: string;
+  phase: string;
+  message: string;
+  detail?: string;
+  status: AgentTraceEntryStatus;
+  timestamp: number;
+}
+
+export interface AgentTraceSession {
+  id: string;
+  title: string;
+  subtitle?: string;
+  status: AgentTraceRunStatus;
+  startedAt: number;
+  completedAt?: number;
+  entries: AgentTraceEntry[];
+}
+
 export interface SeriesProject {
   id: string;
   title: string;
@@ -809,9 +939,27 @@ export interface SeriesProject {
   visualStyle: string;
   language: string;
   artDirection?: ArtDirection;
+  /** 项目级自定义/覆盖视觉风格；内置预设仍由代码常量提供。 */
+  visualStyleProfiles?: VisualStyleProfile[];
   characterLibrary: Character[];
   sceneLibrary: Scene[];
   propLibrary: Prop[];
+}
+
+export interface VisualStyleProfile {
+  id: string;
+  /** 内置预设 key；自定义风格为空。 */
+  styleKey?: string;
+  label: string;
+  description?: string;
+  positivePrompt: string;
+  negativePrompt: string;
+  previewImage?: string;
+  source: 'preset-override' | 'custom' | 'inferred';
+  deleted?: boolean;
+  deletedAt?: number;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface Series {
@@ -881,6 +1029,8 @@ export interface Episode {
   propRefs: EpisodePropRef[];
   promptTemplateOverrides?: PromptTemplateOverrides;
   scriptGenerationCheckpoint?: ScriptGenerationCheckpoint | null;
+  /** 最新一次剧本/分镜 Agent 运行的可回看日志。 */
+  agentTraceSession?: AgentTraceSession | null;
 }
 
 export type ProjectState = Episode;

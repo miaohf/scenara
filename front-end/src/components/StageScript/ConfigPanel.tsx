@@ -1,11 +1,14 @@
-import React, { useRef } from 'react';
-import { BookOpen, Wand2, BrainCircuit, AlertCircle, ChevronRight, ImagePlus } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { BookOpen, Wand2, BrainCircuit, AlertCircle, ChevronRight } from 'lucide-react';
 import OptionSelector from './OptionSelector';
 import { DURATION_OPTIONS, LANGUAGE_OPTIONS, VISUAL_STYLE_OPTIONS, STYLES } from './constants';
+import VisualStyleProfileEditor from './VisualStyleProfileEditor';
+import type { VisualStyleProfile } from '../../types';
 import ModelSelector from '../ModelSelector';
 import { getChatModelApiName } from '../../services/modelRegistry';
 import { parseDurationToSeconds } from '../../services/durationParser';
 import BilingualLabel from '../BilingualLabel';
+import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface Props {
   title: string;
@@ -15,9 +18,7 @@ interface Props {
   visualStyle: string;
   customDurationInput: string;
   customModelInput: string;
-  customStyleInput: string;
   isProcessing: boolean;
-  isInferringVisualStyle?: boolean;
   error: string | null;
   onShowModelConfig?: () => void;
   onTitleChange: (value: string) => void;
@@ -28,11 +29,22 @@ interface Props {
   onVisualStylePreview?: (value: string) => void;
   onCustomDurationChange: (value: string) => void;
   onCustomModelChange: (value: string) => void;
-  onCustomStyleChange: (value: string) => void;
-  onInferVisualStyleByImage?: (file: File) => void;
+  visualStyleProfiles?: VisualStyleProfile[];
+  generatingStylePreviewKeys?: string[];
+  onSaveVisualStyleProfile?: (profile: VisualStyleProfile) => void;
+  onGenerateStylePreview?: (profile: VisualStyleProfile) => void;
+  onDeleteVisualStyle?: (profile: VisualStyleProfile) => void;
+  onAddVisualStyle?: () => void;
+  onInferVisualStyleProfile?: (file: File) => Promise<{ stylePrompt: string; negativePrompt?: string; styleLabel?: string; previewImage: string }>;
+  styleCreateRequest?: number;
+  onRegenerateStylePreview?: (styleKey: string) => void;
+  onApplyVisualStylePreview?: (styleKey: string) => void;
   enableQualityCheck: boolean;
   onToggleQualityCheck: (value: boolean) => void;
   onAnalyze: () => void;
+  onGenerateFramework?: () => void;
+  onGenerateVisuals?: () => void;
+  canGenerateVisuals?: boolean;
   analyzeButtonLabel?: string;
   canCancelAnalyze?: boolean;
   onCancelAnalyze?: () => void;
@@ -44,9 +56,9 @@ const formatDuration = (totalSeconds: number): string => {
   const seconds = totalSeconds % 60;
   const parts: string[] = [];
 
-  if (hours > 0) parts.push(`${hours} 小时`);
-  if (minutes > 0) parts.push(`${minutes} 分钟`);
-  if (seconds > 0 || parts.length === 0) parts.push(`${seconds} 秒`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (seconds > 0 || parts.length === 0) parts.push(`${seconds}s`);
 
   return parts.join(' ');
 };
@@ -59,9 +71,7 @@ const ConfigPanel: React.FC<Props> = ({
   visualStyle,
   customDurationInput,
   customModelInput,
-  customStyleInput,
   isProcessing,
-  isInferringVisualStyle = false,
   error,
   onShowModelConfig,
   onTitleChange,
@@ -72,33 +82,43 @@ const ConfigPanel: React.FC<Props> = ({
   onVisualStylePreview,
   onCustomDurationChange,
   onCustomModelChange,
-  onCustomStyleChange,
-  onInferVisualStyleByImage,
+  visualStyleProfiles = [],
+  generatingStylePreviewKeys = [],
+  onSaveVisualStyleProfile,
+  onGenerateStylePreview,
+  onDeleteVisualStyle,
+  onAddVisualStyle,
+  onInferVisualStyleProfile,
+  styleCreateRequest = 0,
+  onRegenerateStylePreview,
+  onApplyVisualStylePreview,
   enableQualityCheck,
   onToggleQualityCheck,
   onAnalyze,
+  onGenerateFramework,
+  onGenerateVisuals,
+  canGenerateVisuals = false,
   analyzeButtonLabel,
   canCancelAnalyze,
   onCancelAnalyze
 }) => {
+  const { text } = useInterfaceLanguage();
   const rawDurationValue = duration === 'custom' ? customDurationInput : duration;
   const parsedDurationSeconds = parseDurationToSeconds(rawDurationValue);
   const hasDurationInput = rawDurationValue.trim().length > 0;
-  const styleImageInputRef = useRef<HTMLInputElement | null>(null);
-  const canInferStyle = !!onInferVisualStyleByImage && !isProcessing && !isInferringVisualStyle;
-
-  const handleTriggerStyleUpload = () => {
-    styleImageInputRef.current?.click();
-  };
-
-  const handleStyleImageChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file && onInferVisualStyleByImage) {
-      onInferVisualStyleByImage(file);
-    }
-    // allow selecting the same file again
-    event.target.value = '';
-  };
+  const visualStyleOptions = useMemo(
+    () => {
+      const presets = VISUAL_STYLE_OPTIONS.filter((option) => !visualStyleProfiles.some((profile) => profile.styleKey === option.value && profile.deleted)).map((option) => {
+        const override = visualStyleProfiles.find((profile) => profile.styleKey === option.value && !profile.deleted);
+        return { ...option, previewImage: override?.previewImage || option.previewImage };
+      });
+      const customProfiles = visualStyleProfiles
+        .filter((profile) => profile.styleKey?.startsWith('custom:') && !profile.deleted)
+        .map((profile) => ({ label: `✨ ${profile.label}`, value: profile.styleKey as string, desc: '共享自定义视觉风格', previewImage: profile.previewImage }));
+      return [...presets, ...customProfiles];
+    },
+    [visualStyleProfiles]
+  );
 
   return (
     <div className="w-96 border-r border-[var(--border-primary)] flex flex-col bg-[var(--bg-primary)]">
@@ -111,18 +131,18 @@ const ConfigPanel: React.FC<Props> = ({
 
       <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
         <div className="space-y-2">
-          <label className={STYLES.label}>项目标题</label>
+          <label className={STYLES.label}>{text('项目标题', 'Project Title')}</label>
           <input
             type="text"
             value={title}
             onChange={(e) => onTitleChange(e.target.value)}
             className={STYLES.input}
-            placeholder="输入项目名称..."
+            placeholder={text('输入项目名称...', 'Enter project title...')}
           />
         </div>
 
         <div className="space-y-2">
-          <label className={STYLES.label}>输出语言</label>
+          <label className={STYLES.label}>{text('输出语言', 'Output Language')}</label>
           <div className="relative">
             <select
               value={language}
@@ -140,28 +160,28 @@ const ConfigPanel: React.FC<Props> = ({
         </div>
 
         <OptionSelector
-          label="目标时长"
+          label={text('目标时长', 'Target Duration')}
           options={DURATION_OPTIONS}
           value={duration}
           onChange={onDurationChange}
           customInput={customDurationInput}
           onCustomInputChange={onCustomDurationChange}
-          customPlaceholder="输入时长（如 90s、3m）"
+          customPlaceholder={text('输入时长（如 90s、3m）', 'Enter duration (e.g. 90s, 3m)')}
           gridCols={2}
         />
 
         <div className="mt-2 text-[10px] leading-relaxed">
           {parsedDurationSeconds !== null ? (
             <p className="text-[var(--text-tertiary)]">
-              当前将按 <span className="font-mono text-[var(--text-secondary)]">{parsedDurationSeconds}s</span>
-              （{formatDuration(parsedDurationSeconds)}）规划分镜。
+              {text('当前将按', 'Planning shots for')} <span className="font-mono text-[var(--text-secondary)]">{parsedDurationSeconds}s</span>
+              （{formatDuration(parsedDurationSeconds)}）{text('规划分镜。', ' total.')}
             </p>
           ) : hasDurationInput ? (
             <p className="text-[var(--error)]">
-              时长格式无效。支持示例：90s、3m、3min、2m30s、2:30。
+              {text('时长格式无效。支持示例：90s、3m、3min、2m30s、2:30。', 'Invalid duration. Examples: 90s, 3m, 3min, 2m30s, 2:30.')}
             </p>
           ) : (
-            <p className="text-[var(--text-muted)]">支持格式：90s、3m、3min、2m30s、2:30。</p>
+            <p className="text-[var(--text-muted)]">{text('支持格式：90s、3m、3min、2m30s、2:30。', 'Supported formats: 90s, 3m, 3min, 2m30s, 2:30.')}</p>
           )}
         </div>
 
@@ -171,65 +191,56 @@ const ConfigPanel: React.FC<Props> = ({
             value={model}
             onChange={onModelChange}
             disabled={isProcessing}
-            label="分镜描述模型"
+            label={text('分镜描述模型', 'Storyboard Model')}
           />
           <p className="text-[9px] text-[var(--text-muted)]">
-            与「模型配置 → CHAT → 当前使用」同步，剧本分镜与九宫格镜头描述共用此模型。当前 API：
+            {text('与「模型配置 → CHAT → 当前使用」同步，剧本分镜与九宫格镜头描述共用此模型。当前 API：', 'Synced with Model Configuration → CHAT → Active model. Storyboards and shot grids share this model. Current API:')}
             <span className="font-mono text-[var(--text-secondary)] ml-1">{getChatModelApiName(model) || '未配置'}</span>
-            。可在
+            {text('。可在', '. Open')}
             <button
               type="button"
               onClick={onShowModelConfig}
               className="mx-1 text-[var(--accent-text)] hover:text-[var(--accent-text-hover)] underline underline-offset-2 transition-colors"
             >
-              模型配置
+              {text('模型配置', 'Model Configuration')}
             </button>
-            中切换或添加模型。
+            {text('中切换或添加模型。', ' to switch or add models.')}
           </p>
         </div>
 
         <OptionSelector
-          label="视觉风格"
+          label={text('视觉风格', 'Visual Style')}
           icon={<Wand2 className="w-3 h-3" />}
-          options={VISUAL_STYLE_OPTIONS}
+          options={visualStyleOptions}
           value={visualStyle}
           onChange={onVisualStyleChange}
           onPreviewChange={onVisualStylePreview}
           previewOnly
-          customInput={customStyleInput}
-          onCustomInputChange={onCustomStyleChange}
-          customPlaceholder="输入风格（如 水彩、像素、写实）"
           gridCols={2}
+          labelAction={onSaveVisualStyleProfile ? (
+            <button type="button" onClick={() => onAddVisualStyle?.()} className="rounded border border-[var(--border-secondary)] px-2 py-1 text-[10px] text-[var(--text-secondary)] hover:border-[var(--accent-border)] hover:text-[var(--text-primary)]">＋ {text('新增', 'Add')}</button>
+          ) : undefined}
+          onRegeneratePreview={onRegenerateStylePreview}
+          onApplyPreview={onApplyVisualStylePreview}
+          generatingPreviewValues={generatingStylePreviewKeys}
+          managementSlot={onSaveVisualStyleProfile && onGenerateStylePreview ? (previewStyleKey) => (
+            <VisualStyleProfileEditor
+              styleKey={previewStyleKey}
+              customPrompt=""
+              profiles={visualStyleProfiles}
+              isGenerating={generatingStylePreviewKeys.includes(previewStyleKey)}
+              onSave={onSaveVisualStyleProfile}
+              onGeneratePreview={onGenerateStylePreview}
+              onDelete={onDeleteVisualStyle}
+              onInferFromImage={onInferVisualStyleProfile}
+              createRequest={styleCreateRequest}
+              compact
+            />
+          ) : undefined}
         />
 
-        {onInferVisualStyleByImage && (
-          <div className="space-y-2">
-            <button
-              type="button"
-              onClick={handleTriggerStyleUpload}
-              disabled={!canInferStyle}
-              className={`w-full rounded-md border px-3 py-2 text-xs font-semibold transition-colors flex items-center justify-center gap-2 ${
-                canInferStyle
-                  ? 'border-[var(--border-secondary)] text-[var(--text-secondary)] hover:border-[var(--accent-border)] hover:text-[var(--text-primary)]'
-                  : STYLES.button.disabled
-              }`}
-            >
-              <ImagePlus className={`w-3.5 h-3.5 ${isInferringVisualStyle ? 'animate-pulse' : ''}`} />
-              {isInferringVisualStyle ? '正在反推风格...' : '上传图片反推风格'}
-            </button>
-            <input
-              ref={styleImageInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={handleStyleImageChange}
-            />
-            <p className="text-[10px] text-[var(--text-muted)]">上传你喜欢的风格图片，自动反推风格提示词</p>
-          </div>
-        )}
-
         <div className="space-y-2">
-          <label className={STYLES.label}>质量控制</label>
+          <label className={STYLES.label}>{text('质量控制', 'Quality Control')}</label>
           <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-[var(--border-primary)] bg-[var(--bg-secondary)]/40 px-3 py-2">
             <input
               type="checkbox"
@@ -239,16 +250,36 @@ const ConfigPanel: React.FC<Props> = ({
               className="mt-0.5 h-4 w-4 rounded border-[var(--border-primary)] bg-[var(--bg-primary)] text-[var(--accent-text)]"
             />
             <span className="text-xs text-[var(--text-secondary)]">
-              启用分镜质量校验与自动修复（推荐）
+              {text('启用分镜质量校验与自动修复（推荐）', 'Enable storyboard quality checks and auto-repair (recommended)')}
             </span>
           </label>
           <p className="text-[10px] text-[var(--text-muted)]">
-            开启后按目标态执行：故事层门禁 → 结构审片（可自动删/并叠戏）→ 字段审片（改文案，不增删镜）。
+            {text('开启后按目标态执行：故事层门禁 → 结构审片（可自动删/并叠戏）→ 字段审片（改文案，不增删镜）。', 'Runs target-state checks: story gate → structure review (may remove/merge beats) → field review (rewrites copy without adding or removing shots).')}
           </p>
         </div>
       </div>
 
       <div className="p-6 border-t border-[var(--border-primary)] bg-[var(--bg-primary)]">
+        <div className="mb-2 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={onGenerateFramework}
+            disabled={isProcessing}
+            className={`rounded-lg border px-2 py-2 text-[11px] font-semibold transition-colors ${isProcessing ? STYLES.button.disabled : STYLES.button.secondary}`}
+            title={text('只生成镜头、动作、角色和道具关系；提示词和资产图稍后处理。', 'Generate the shot structure first; create prompts and asset images later.')}
+          >
+            {text('生成分镜框架', 'Generate Framework')}
+          </button>
+          <button
+            type="button"
+            onClick={onGenerateVisuals}
+            disabled={isProcessing || !canGenerateVisuals}
+            className={`rounded-lg border px-2 py-2 text-[11px] font-semibold transition-colors ${isProcessing || !canGenerateVisuals ? STYLES.button.disabled : STYLES.button.secondary}`}
+            title={text('只补全缺失的角色、场景和道具提示词，不覆盖手动修改。', 'Fill only missing asset prompts without overwriting manual edits.')}
+          >
+            {text('补全资产提示词', 'Fill Asset Prompts')}
+          </button>
+        </div>
         <button
           onClick={onAnalyze}
           disabled={isProcessing}
@@ -261,12 +292,12 @@ const ConfigPanel: React.FC<Props> = ({
           {isProcessing ? (
             <>
               <BrainCircuit className="w-4 h-4 animate-spin" />
-              智能分析中...
+              {text('智能分析中...', 'Analyzing…')}
             </>
           ) : (
             <>
               <Wand2 className="w-4 h-4" />
-              {analyzeButtonLabel || '生成分镜脚本'}
+              {analyzeButtonLabel || text('生成分镜脚本', 'Generate Storyboard')}
             </>
           )}
         </button>
@@ -277,7 +308,7 @@ const ConfigPanel: React.FC<Props> = ({
             onClick={onCancelAnalyze}
             className={`mt-2 w-full rounded-lg border px-3 py-2 text-xs font-semibold tracking-wide transition-colors ${STYLES.button.secondary}`}
           >
-            取消生成
+            {text('取消生成', 'Cancel Generation')}
           </button>
         )}
 

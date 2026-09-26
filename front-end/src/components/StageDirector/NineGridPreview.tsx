@@ -11,6 +11,7 @@ interface NineGridPreviewProps {
   onUseWholeImage: () => void;  // 整张九宫格图直接用作首帧
   onRegenerate: () => void;
   onRegenerateImage: () => void; // 仅重新生成图片（保留已有的面板文案描述）
+  onPreviewImage?: () => void; // 在统一媒体预览中查看当前九宫格图
   onViewImagePrompt?: () => void; // 查看即将/已用于生图的完整提示词与参考图
   onConfirmPanels: (panels: NineGridPanel[]) => void; // 用户确认面板后生成图片
   onUpdatePanel: (index: number, panel: Partial<NineGridPanel>) => void; // 编辑单个面板
@@ -80,6 +81,7 @@ const NineGridPreview: React.FC<NineGridPreviewProps> = ({
   onUseWholeImage,
   onRegenerate,
   onRegenerateImage,
+  onPreviewImage,
   onViewImagePrompt,
   onConfirmPanels,
   onUpdatePanel,
@@ -262,6 +264,18 @@ const NineGridPreview: React.FC<NineGridPreviewProps> = ({
                 <Edit2 className="w-3 h-3" />
                 查看生图提示词
               </button>
+            )}
+            {isCompleted && (
+              onPreviewImage && (
+                <button
+                  onClick={onPreviewImage}
+                  className="px-3 py-1.5 bg-[var(--bg-hover)] hover:bg-[var(--border-secondary)] text-[var(--text-secondary)] rounded-lg text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center gap-1.5"
+                  title="在媒体预览中查看首帧、尾帧和 4/6/9 格图"
+                >
+                  <ImageIcon className="w-3 h-3" />
+                  查看媒体预览
+                </button>
+              )
             )}
             {isCompleted && (
               <button

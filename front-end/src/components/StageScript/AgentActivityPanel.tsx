@@ -9,35 +9,18 @@ import {
   Clock3,
   Info,
   Trash2,
+  X,
   XCircle,
 } from 'lucide-react';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
+import type { AgentTraceEntryStatus, AgentTraceRunStatus, AgentTraceSession } from '../../types';
 
-export type AgentTraceEntryStatus = 'info' | 'running' | 'success' | 'warning' | 'error';
-export type AgentTraceRunStatus = 'running' | 'completed' | 'warning' | 'error' | 'cancelled' | 'waiting';
-
-export interface AgentTraceEntry {
-  id: string;
-  phase: string;
-  message: string;
-  detail?: string;
-  status: AgentTraceEntryStatus;
-  timestamp: number;
-}
-
-export interface AgentTraceSession {
-  id: string;
-  title: string;
-  subtitle?: string;
-  status: AgentTraceRunStatus;
-  startedAt: number;
-  completedAt?: number;
-  entries: AgentTraceEntry[];
-}
+export type { AgentTraceEntryStatus, AgentTraceRunStatus, AgentTraceSession } from '../../types';
 
 interface Props {
   session: AgentTraceSession | null;
   onClear: () => void;
+  onClose: () => void;
 }
 
 const formatTime = (timestamp: number, language: 'zh' | 'en'): string => new Intl.DateTimeFormat(language === 'zh' ? 'zh-CN' : 'en-US', {
@@ -74,10 +57,11 @@ const EntryIcon: React.FC<{ status: AgentTraceEntryStatus }> = ({ status }) => {
   return <Circle className="h-3.5 w-3.5 text-zinc-400" />;
 };
 
-const AgentActivityPanel: React.FC<Props> = ({ session, onClear }) => {
+const AgentActivityPanel: React.FC<Props> = ({ session, onClear, onClose }) => {
   const { language, text } = useInterfaceLanguage();
   const [collapsed, setCollapsed] = useState(false);
   const [elapsedMilliseconds, setElapsedMilliseconds] = useState(0);
+  const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -94,6 +78,16 @@ const AgentActivityPanel: React.FC<Props> = ({ session, onClear }) => {
     const viewport = scrollRef.current;
     if (viewport) viewport.scrollTop = viewport.scrollHeight;
   }, [collapsed, session?.entries.length]);
+
+  useEffect(() => {
+    setExpandedEntries((previous) => {
+      const next = new Set(previous);
+      session?.entries.forEach((entry) => {
+        if (entry.status === 'running') next.add(entry.id);
+      });
+      return next;
+    });
+  }, [session?.entries]);
 
   if (!session) return null;
 
@@ -139,6 +133,14 @@ const AgentActivityPanel: React.FC<Props> = ({ session, onClear }) => {
         </button>
         <button
           type="button"
+          onClick={onClose}
+          className="rounded p-1 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+          title={text('关闭，可随时重新打开', 'Close; reopen anytime')}
+        >
+          <X className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
           onClick={onClear}
           disabled={session.status === 'running'}
           className="rounded p-1 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-30"
@@ -159,7 +161,10 @@ const AgentActivityPanel: React.FC<Props> = ({ session, onClear }) => {
               <div className="py-6 text-center text-xs text-[var(--text-muted)]">
                 {text('正在准备 Agent 工作流…', 'Preparing agent workflow…')}
               </div>
-            ) : session.entries.map((entry, index) => (
+            ) : session.entries.map((entry, index) => {
+              const hasDetail = Boolean(entry.detail);
+              const isExpanded = expandedEntries.has(entry.id);
+              return (
               <div key={entry.id} className="relative flex gap-2.5 py-2.5">
                 {index < session.entries.length - 1 && (
                   <div className="absolute left-[7px] top-7 h-[calc(100%-10px)] w-px bg-[var(--border-subtle)]" />
@@ -168,7 +173,18 @@ const AgentActivityPanel: React.FC<Props> = ({ session, onClear }) => {
                   <EntryIcon status={entry.status} />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-start justify-between gap-3">
+                  <button
+                    type="button"
+                    disabled={!hasDetail}
+                    onClick={() => setExpandedEntries((previous) => {
+                      const next = new Set(previous);
+                      if (next.has(entry.id)) next.delete(entry.id);
+                      else next.add(entry.id);
+                      return next;
+                    })}
+                    className="flex w-full items-start justify-between gap-3 text-left disabled:cursor-default"
+                    title={hasDetail ? text('查看或收起详细日志', 'Show or hide details') : undefined}
+                  >
                     <div className="min-w-0">
                       <span className="mr-2 text-xs font-semibold uppercase tracking-wide text-violet-300/90">
                         {entry.phase}
@@ -180,15 +196,15 @@ const AgentActivityPanel: React.FC<Props> = ({ session, onClear }) => {
                     <time className="shrink-0 text-[10px] tabular-nums text-[var(--text-muted)]">
                       {formatTime(entry.timestamp, language)}
                     </time>
-                  </div>
-                  {entry.detail && (
+                  </button>
+                  {hasDetail && isExpanded && (
                     <p className="mt-1 whitespace-pre-wrap break-words rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-1.5 text-xs leading-snug text-[var(--text-tertiary)]">
                       {entry.detail}
                     </p>
                   )}
                 </div>
               </div>
-            ))}
+            )})}
           </div>
           <footer className="border-t border-[var(--border-subtle)] px-3.5 py-2 text-[10px] leading-relaxed text-[var(--text-muted)]">
             {text('仅展示执行阶段、产出摘要与校验结果，不展示模型隐藏推理。', 'Shows phases, summaries, and checks; hidden model reasoning is not displayed.')}

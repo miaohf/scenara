@@ -27,6 +27,12 @@ import {
   checkSceneSync,
   checkPropSync,
 } from "@/services/characterSyncService";
+import type { VisualStyleProfile } from "@/types";
+import {
+  hydrateGlobalVisualStyleProfiles,
+  loadGlobalVisualStyleProfiles,
+  saveGlobalVisualStyleProfiles,
+} from "@/services/globalVisualStyleProfileService";
 
 /** 渲染日志只用于界面回看，超出后丢弃最旧的，避免 payload 无限增长 */
 const MAX_RENDER_LOGS = 200;
@@ -66,6 +72,7 @@ export default function EpisodeWorkspace() {
   const { showAlert } = useAlert();
   const { text } = useInterfaceLanguage();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [globalVisualStyleProfiles, setGlobalVisualStyleProfiles] = useState<VisualStyleProfile[]>([]);
   const {
     project,
     currentEpisode,
@@ -89,6 +96,19 @@ export default function EpisodeWorkspace() {
   // 自动保存的防抖计时器在组件卸载时会被取消；保留最新快照用于卸载兜底写入。
   const currentEpisodeRef = useRef<Episode | null>(null);
   currentEpisodeRef.current = currentEpisode;
+
+  useEffect(() => {
+    setGlobalVisualStyleProfiles(loadGlobalVisualStyleProfiles());
+    void hydrateGlobalVisualStyleProfiles().then(setGlobalVisualStyleProfiles);
+  }, []);
+
+  const handleUpdateGlobalVisualStyleProfiles = (profiles: VisualStyleProfile[]) => {
+    setGlobalVisualStyleProfiles(profiles);
+    void saveGlobalVisualStyleProfiles(profiles).catch((error: unknown) => {
+      console.error("Failed to save shared visual style profiles:", error);
+      showAlert("共享视觉风格库保存失败，请稍后重试。", { type: "error" });
+    });
+  };
 
   // 生成任务据此带上 episode_id，落库后可按剧集检索
   useEffect(() => {
@@ -317,6 +337,9 @@ export default function EpisodeWorkspace() {
           <StageScript
             project={currentEpisode}
             updateProject={handleUpdateProject}
+            visualStyleProfiles={globalVisualStyleProfiles}
+            legacyVisualStyleProfiles={project?.visualStyleProfiles || []}
+            onUpdateVisualStyleProfiles={handleUpdateGlobalVisualStyleProfiles}
             onShowModelConfig={() => setShowModelConfig(true)}
             onGeneratingChange={setIsScriptBusy}
           />

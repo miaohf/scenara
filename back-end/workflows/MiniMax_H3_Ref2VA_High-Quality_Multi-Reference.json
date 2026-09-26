@@ -375,7 +375,7 @@
   "112": {
     "inputs": {
       "aspect_ratio": "16:9 (Widescreen)",
-      "megapixels": 0.5,
+      "megapixels": 0.7,
       "multiple": 32
     },
     "class_type": "ResolutionSelector",

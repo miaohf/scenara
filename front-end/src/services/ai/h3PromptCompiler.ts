@@ -1,9 +1,19 @@
 import type { AspectRatio, ScriptData, Shot } from '../../types';
 import type { ReferenceImageEntry } from '../referenceImagePack';
+import { formatContinuityLedgerForPrompt } from '../continuityLedgerService';
 import { isWearableProp } from './promptConstants';
+import { chatCompletion, getActiveChatModelName } from './apiCore';
+import { validateAndRepairH3Prompt, type H3PromptWorkflowKind } from './h3PromptValidator';
 
 const MAX_H3_PROMPT_CHARS = 4700;
 const CJK_RE = /[\u3400-\u9fff]/;
+
+const stripDialogueBlocks = (value: string): string =>
+  String(value || '').replace(/<d>[\s\S]*?<\/d>/giu, '');
+
+/** H3 skill prose must be English; only literal dialogue may retain its source language. */
+export const hasH3NonDialogueCjk = (value?: string): boolean =>
+  CJK_RE.test(stripDialogueBlocks(String(value || '')));
 
 const clean = (value: unknown, maxLength = 900): string => {
   const text = String(value ?? '')
@@ -20,8 +30,9 @@ const fitPrompt = (value: string): string => {
 };
 
 /**
- * Skill body must read as English. Keep CJK only as quoted locked production facts
- * (dialogue/lyrics stay fully original via <d> tags elsewhere).
+ * Preserve production facts during deterministic compilation. The mandatory
+ * H3 polish pass translates any non-dialogue CJK into English before submit.
+ * Dialogue/lyrics stay fully original via <d> tags elsewhere.
  */
 const toSkillEnglish = (
   value: string,
@@ -127,6 +138,87 @@ export interface MiniMaxH3NativeAudioOptions {
   text?: string;
   speakerName?: string;
 }
+
+export interface H3SkillGenerationOptions {
+  prompt: string;
+  durationSeconds: number;
+  expectedWorkflow: H3PromptWorkflowKind;
+  dialogue?: string;
+  audioMode?: 'dialogue' | 'narration';
+  model?: string;
+}
+
+export interface H3SkillGenerationResult {
+  prompt: string;
+  generated: boolean;
+  reason: 'generated' | 'invalid-output' | 'request-failed';
+}
+
+/**
+ * H3 Prompt Agent. The deterministic compiler provides a lossless production
+ * brief; the agent generates the final English official H3 skill prompt from it.
+ * Validation verifies the generated result and never acts as the primary writer.
+ */
+export const generateMiniMaxH3SkillPrompt = async (
+  options: H3SkillGenerationOptions,
+): Promise<H3SkillGenerationResult> => {
+  const source = String(options.prompt || '').trim();
+  if (!source) return { prompt: source, generated: false, reason: 'invalid-output' };
+
+  const sectionOrder = options.expectedWorkflow === 'ref2va'
+    ? 'subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music'
+    : 'integrated_multimodal_description, overall_soundscape, non_diegetic_music';
+  const instruction = `You are the H3 Prompt Agent for a cinematic video production. Generate the final MiniMax H3 video prompt from the production brief below.
+
+Hard requirements:
+1. Output ONLY the final prompt. No markdown fences, explanation, comments, policy blocks, or extra headings.
+2. Use each required section exactly once and in this exact order: ${sectionOrder}.
+3. All non-dialogue prose must be English. Translate every Chinese production fact accurately; do not leave Chinese names, action notes, camera notes, scene notes, or sound notes outside dialogue tags.
+4. Preserve dialogue text exactly and keep it only inside official tags of the form <d>[Chinese] original dialogue</d>. Do not translate dialogue.
+5. Preserve all supplied story facts, timing, reference anchors, camera direction, character/prop continuity, end-frame constraints, and audio intent. Do not invent new events, characters, dialogue, camera moves, or music.
+6. Keep one continuous executable shot. Preserve "N/A" for non_diegetic_music when the source requires no music.
+7. Do not emit duplicate overall_soundscape or non_diegetic_music sections.
+
+Production brief:
+${source}`;
+
+  try {
+    let feedback = '';
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const request = feedback
+        ? `${instruction}\n\nThe previous draft failed acceptance:\n${feedback}\nRegenerate the complete prompt. Do not explain the changes.`
+        : instruction;
+      const candidate = String(await chatCompletion(
+        request,
+        options.model || getActiveChatModelName(),
+        0.1,
+        4096,
+        undefined,
+        90000,
+      ) || '').trim();
+      const validation = validateAndRepairH3Prompt(candidate, {
+        durationSeconds: options.durationSeconds,
+        expectedWorkflow: options.expectedWorkflow,
+        dialogue: options.dialogue,
+        audioMode: options.audioMode,
+      });
+      const accepted = Boolean(candidate)
+        && validation.canProceed
+        && validation.autoFixes.length === 0
+        && !hasH3NonDialogueCjk(candidate);
+      if (accepted) {
+        // Return the Agent's raw output. Validation is an acceptance gate, not
+        // a post-generation rewriter for the final H3 prompt.
+        return { prompt: candidate, generated: true, reason: 'generated' };
+      }
+      feedback = validation.issues.map((issue) => `- ${issue.message}`).join('\n')
+        || 'Output was empty or contained non-dialogue Chinese.';
+    }
+    return { prompt: source, generated: false, reason: 'invalid-output' };
+  } catch {
+    return { prompt: source, generated: false, reason: 'request-failed' };
+  }
+};
 
 export interface MiniMaxH3Ref2VAPromptOptions {
   durationSeconds: number;
@@ -409,12 +501,15 @@ export const buildMiniMaxH3Ref2VAPrompt = (
       const atmosphereRaw = clean([scene?.time, scene?.atmosphere].filter(Boolean).join('; '), 220);
       const atmosphere = atmosphereRaw ? toSkillEnglish(atmosphereRaw, 'atmosphere') : '';
       const distinctAnnotation = isDistinctFact(rawAnnotation, [atmosphereRaw]) ? annotation : '';
+      const topology = scene?.spatialTopology
+        ? ` Spatial topology: ${toSkillEnglish(JSON.stringify(scene.spatialTopology), 'note')}.`
+        : '';
       subjects.push({
         label: subjectLabel,
         role: 'scene',
         pictureIndex: pictureNo,
         name: location,
-        definition: `${subjectLabel} is the environment from ${pictureLabel} (${location}${atmosphere ? `; ${atmosphere}` : ''}), preserving layout, lighting direction, and material palette.${distinctAnnotation ? ` Reference detail: ${distinctAnnotation}.` : ''}`,
+        definition: `${subjectLabel} is the environment from ${pictureLabel} (${location}${atmosphere ? `; ${atmosphere}` : ''}), preserving layout, lighting direction, and material palette.${topology}${distinctAnnotation ? ` Reference detail: ${distinctAnnotation}.` : ''}`,
         retention: `${subjectLabel} (appears in [Shot 1]): fully_preserved - scene layout, lighting, and materials from ${pictureLabel} remain stable.`,
       });
       return;
@@ -527,6 +622,10 @@ export const buildMiniMaxH3Ref2VAPrompt = (
   const action = toSkillEnglish(clean(shot.actionSummary, 700), 'action');
   const entryState = toSkillEnglish(clean(agent?.continuity?.entryState, 280), 'state');
   const exitState = toSkillEnglish(clean(agent?.continuity?.exitState, 280), 'state');
+  const structuredContinuity = toSkillEnglish(
+    clean(formatContinuityLedgerForPrompt(agent?.continuityLedger), 520),
+    'state',
+  );
   const mustPreserve = (agent?.continuity?.mustPreserve || [])
     .map((item) => toSkillEnglish(clean(item, 120), 'note'))
     .filter(Boolean)
@@ -610,7 +709,7 @@ export const buildMiniMaxH3Ref2VAPrompt = (
 
   const detailedDescription = `${styleOpening(visualStyle)} Total duration is exactly ${duration} seconds. No subtitles, captions, logos, watermarks, or on-screen text.
 
-[Shot 1] ${framingSize} opens on the referenced stage. ${entryState ? `Entry state: ${entryState}. ` : ''}${characterMentions ? `${characterMentions} remain identity-locked. ` : ''}${propMentions ? `${propMentions} stay materially consistent. ` : ''}${primaryScene ? `${primaryScene.label} anchors the environment. ` : ''}
+[Shot 1] ${framingSize} opens on the referenced stage. ${entryState ? `Entry state: ${entryState}. ` : ''}${structuredContinuity ? `Continuity ledger: ${structuredContinuity}. ` : ''}${characterMentions ? `${characterMentions} remain identity-locked. ` : ''}${propMentions ? `${propMentions} stay materially consistent. ` : ''}${primaryScene ? `${primaryScene.label} anchors the environment. ` : ''}
 Action timeline:
 ${beatNarration}
 ${shotCameraClause}${exitState ? ` The shot lands on: ${exitState}.` : ''}${endStateClause && endStateClause !== exitState ? ` Planned end state: ${toSkillEnglish(endStateClause, 'state')}.` : ''}${mustPreserve.length ? ` Must preserve: ${mustPreserve.join('; ')}.` : ''} ${feasibility}${speechClause}${dialogueTimingClause} Keep one coherent full-screen shot with no montage cuts, split-screen, collage, contact sheet, or grid panels visible.`;

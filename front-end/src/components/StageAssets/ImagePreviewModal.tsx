@@ -1,14 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Trash2, X } from 'lucide-react';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface ImagePreviewModalProps {
   imageUrl: string | null;
   imageUrls?: string[];
   onClose: () => void;
+  onDeleteImage?: (imageUrl: string) => void;
+  onApplyImage?: (imageUrl: string) => void;
 }
 
-const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ imageUrl, imageUrls, onClose }) => {
+const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ imageUrl, imageUrls, onClose, onDeleteImage, onApplyImage }) => {
   const { text } = useInterfaceLanguage();
   const images = useMemo(() => {
     const candidates = imageUrls && imageUrls.length > 0 ? imageUrls : imageUrl ? [imageUrl] : [];
@@ -20,6 +22,24 @@ const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ imageUrl, imageUr
     setCurrentIndex(Math.max(0, images.indexOf(imageUrl || '')));
   }, [imageUrl, images]);
 
+  useEffect(() => {
+    if (!imageUrl) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+      if (images.length < 2) return;
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        setCurrentIndex((index) => (index - 1 + images.length) % images.length);
+      }
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        setCurrentIndex((index) => (index + 1) % images.length);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [imageUrl, images, onClose]);
+
   if (!imageUrl) return null;
   const currentImage = images[currentIndex] || imageUrl;
   const hasMultipleImages = images.length > 1;
@@ -29,12 +49,36 @@ const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ imageUrl, imageUr
       className="absolute inset-0 z-50 bg-[var(--bg-base)]/95 flex items-center justify-center backdrop-blur-sm animate-in fade-in duration-200"
       onClick={onClose}
     >
-      <button 
-        onClick={onClose}
-        className="absolute top-6 right-6 p-3 hover:bg-[var(--text-primary)]/10 rounded-full transition-colors group z-10"
-      >
-        <X className="w-6 h-6 text-[var(--text-primary)] group-hover:rotate-90 transition-transform" />
-      </button>
+      <div className="absolute top-6 right-6 z-10 flex items-center gap-2">
+        {onApplyImage && (
+          <button
+            type="button"
+            onClick={(event) => { event.stopPropagation(); onApplyImage(currentImage); }}
+            className="flex items-center gap-1.5 rounded-full border border-[var(--accent-border)] bg-[var(--accent-bg)]/90 px-3 py-2 text-xs text-[var(--accent-text)] transition-colors hover:bg-[var(--accent-hover-bg)]"
+            title={text('使用当前图片', 'Use current image')}
+          >
+            <Check className="h-4 w-4" />
+            {text('使用', 'Use')}
+          </button>
+        )}
+        {onDeleteImage && (
+          <button
+            type="button"
+            onClick={(event) => { event.stopPropagation(); onDeleteImage(currentImage); }}
+            className="flex items-center gap-1.5 rounded-full border border-[var(--error-border)] bg-[var(--error-bg)]/80 px-3 py-2 text-xs text-[var(--error-text)] transition-colors hover:bg-[var(--error-bg)]"
+            title={text('删除当前历史图片', 'Delete current history image')}
+          >
+            <Trash2 className="h-4 w-4" />
+            {text('删除', 'Delete')}
+          </button>
+        )}
+        <button
+          onClick={onClose}
+          className="rounded-full p-3 transition-colors hover:bg-[var(--text-primary)]/10 group"
+        >
+          <X className="h-6 w-6 text-[var(--text-primary)] transition-transform group-hover:rotate-90" />
+        </button>
+      </div>
       <div className="flex items-center justify-center p-8 w-full h-full">
         <img 
           src={currentImage}
@@ -57,7 +101,7 @@ const ImagePreviewModal: React.FC<ImagePreviewModalProps> = ({ imageUrl, imageUr
         </>
       )}
       <div className="absolute bottom-6 left-1/2 transform -translate-x-1/2 px-4 py-2 bg-[var(--bg-base)]/60 backdrop-blur rounded-lg border border-[var(--overlay-border)]">
-        <p className="text-xs text-[var(--text-secondary)] font-mono">{text('点击空白处关闭', 'Click outside to close')}</p>
+            <p className="text-xs text-[var(--text-secondary)] font-mono">{text('← / → 切换，点击空白处关闭', '← / → to navigate, click outside to close')}</p>
       </div>
     </div>
   );

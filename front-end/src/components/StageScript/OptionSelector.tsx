@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { X } from 'lucide-react';
+import { Check, X } from 'lucide-react';
 import { STYLES } from './constants';
 
 interface Option {
@@ -24,6 +24,11 @@ interface Props {
   /** 点击只切换参考图预览，不改已生效的选项；真正生效由外部提交动作完成 */
   previewOnly?: boolean;
   onPreviewChange?: (value: string) => void;
+  managementSlot?: React.ReactNode | ((value: string) => React.ReactNode);
+  labelAction?: React.ReactNode;
+  onRegeneratePreview?: (value: string) => void;
+  onApplyPreview?: (value: string) => void;
+  generatingPreviewValues?: string[];
 }
 
 const OptionSelector: React.FC<Props> = ({
@@ -39,7 +44,9 @@ const OptionSelector: React.FC<Props> = ({
   helpText,
   helpLink,
   previewOnly = false,
-  onPreviewChange
+  onPreviewChange,
+  managementSlot,
+  labelAction,
 }) => {
   const [previewValue, setPreviewValue] = useState<string | null>(value);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -74,10 +81,13 @@ const OptionSelector: React.FC<Props> = ({
 
   return (
     <div className="space-y-2">
-      <label className={`${STYLES.label} flex items-center gap-2`}>
-        {icon}
-        {label}
-      </label>
+      <div className="flex items-center justify-between gap-2">
+        <label className={`${STYLES.label} flex items-center gap-2`}>
+          {icon}
+          {label}
+        </label>
+        {labelAction}
+      </div>
       <div className={`grid grid-cols-${gridCols} gap-2`}>
         {options.map((opt) => (
           <button
@@ -86,28 +96,22 @@ const OptionSelector: React.FC<Props> = ({
             title={opt.desc}
             className={`px-${gridCols === 1 ? '3' : '2'} py-2.5 text-[11px] font-medium rounded-md transition-all text-${gridCols === 1 ? 'left' : 'center'} border ${
               value === opt.value
-                ? STYLES.button.selected
+                ? `${STYLES.button.selected} ring-1 ring-[var(--accent-border)]`
                 : previewOnly && previewValue === opt.value
-                  ? `${STYLES.button.secondary} border border-dashed border-[var(--accent-border)] text-[var(--text-secondary)]`
+                  ? `${STYLES.button.secondary} border-[var(--accent-border)] bg-[var(--accent-bg)] text-[var(--text-primary)] ring-1 ring-[var(--accent-border)]`
                 : `${STYLES.button.secondary} border`
             }`}
           >
-            <span className="block">{opt.label}</span>
-            {previewOnly && value === opt.value ? (
-              <span className="mt-0.5 block text-[9px] font-normal opacity-80">当前</span>
-            ) : previewOnly && previewValue === opt.value ? (
-              <span className="mt-0.5 block text-[9px] font-normal opacity-80">预览</span>
-            ) : null}
+            <span className="block">{opt.label}{value === opt.value && <Check className="ml-1 inline h-3 w-3 align-middle" aria-label="已应用" />}</span>
           </button>
         ))}
       </div>
-      {hasAnyPreview && (
+      {(hasAnyPreview || managementSlot) && (
         <div className="min-h-[156px] overflow-hidden rounded-lg border border-[var(--border-primary)] bg-[var(--bg-surface)]">
           {showPreviewImage && activePreviewOption?.previewImage ? (
-            <button
-              type="button"
+            <div
               onClick={() => setIsPreviewOpen(true)}
-              className="group relative block w-full"
+              className="group relative block w-full cursor-zoom-in"
               aria-label={`放大查看 ${activePreviewOption.label} 参考图`}
             >
               <img
@@ -117,24 +121,19 @@ const OptionSelector: React.FC<Props> = ({
                 loading="lazy"
                 onError={() => setPreviewFailed(true)}
               />
-              <div className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/12" />
-              <div className="pointer-events-none absolute right-2 top-2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
-                点击放大
-              </div>
-            </button>
+              <div className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/35" />
+              {managementSlot && (
+                <div className="absolute bottom-2 right-2 z-10" onClick={(event) => event.stopPropagation()}>
+                  {typeof managementSlot === 'function' ? managementSlot(previewValue || value) : managementSlot}
+                </div>
+              )}
+            </div>
           ) : (
             <div className="flex h-[156px] items-center justify-center px-3 text-center text-[10px] text-[var(--text-muted)]">
               点击风格按钮可查看参考图
             </div>
           )}
         </div>
-      )}
-      {previewOnly && (
-        <p className="text-[10px] leading-relaxed text-[var(--text-muted)]">
-          {isPreviewingOther
-            ? '切换风格仅预览参考图，点「生成分镜脚本」后才会写入分镜。'
-            : '点击其他风格可预览参考图；生成分镜脚本时才会写入。'}
-        </p>
       )}
 
       {isPreviewOpen && activePreviewOption?.previewImage && (

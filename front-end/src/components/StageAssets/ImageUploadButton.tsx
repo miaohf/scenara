@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Upload, Sparkles, Loader2 } from 'lucide-react';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
@@ -24,6 +24,7 @@ const ImageUploadButton: React.FC<ImageUploadButtonProps> = ({
   variant = 'separate',
 }) => {
   const { text } = useInterfaceLanguage();
+  const [regenCooldown, setRegenCooldown] = useState(false);
   const resolvedUploadLabel = uploadLabel || text('上传', 'Upload');
   const resolvedGenerateLabel = generateLabel || text('生成', 'Generate');
   const sizeClasses = {
@@ -40,6 +41,13 @@ const ImageUploadButton: React.FC<ImageUploadButtonProps> = ({
       onUpload(file);
       e.target.value = '';
     }
+  };
+
+  const handleRegenerateClick = () => {
+    if (regenCooldown || !onGenerate) return;
+    setRegenCooldown(true);
+    window.setTimeout(() => setRegenCooldown(false), 1000);
+    onGenerate();
   };
 
   if (variant === 'inline') {
@@ -78,12 +86,12 @@ const ImageUploadButton: React.FC<ImageUploadButtonProps> = ({
     <div className="flex gap-2">
       {onGenerate && hasImage && (
         <button
-          onClick={onGenerate}
-          disabled={isGenerating}
-          className={`flex-1 py-1.5 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 border border-[var(--border-primary)] transition-colors`}
-          title={text('重新出图：换姿态和构图，不改已保存的提示词', 'Regenerate with a new pose and composition while preserving the saved prompt')}
+          onClick={handleRegenerateClick}
+          disabled={regenCooldown}
+          className={`flex-1 py-1.5 bg-[var(--bg-elevated)] hover:bg-[var(--bg-hover)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] rounded text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 border border-[var(--border-primary)] transition-colors disabled:opacity-30 disabled:cursor-not-allowed`}
+          title={text('重新出图：换姿态和构图，不改已保存的提示词。1 秒后可再次点击，连续抽卡。', 'Regenerate with a new pose and composition while preserving the saved prompt. You can click again after 1 second.')}
         >
-          {isGenerating ? (
+          {regenCooldown ? (
             <>
               <Loader2 className="w-3 h-3 animate-spin" />
               {text('生成中...', 'Generating...')}

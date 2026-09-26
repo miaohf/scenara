@@ -407,6 +407,15 @@ async def generate_image_openai_compatible(
 ) -> str:
     model = _pick_model(registry, model_id, "image")
     provider = _provider_for_model(registry, model)
+    if (model.get("params") or {}).get("apiFormat") in {"cursor-sdk", "cursor-acp"}:
+        from app.services.ai.cursor_acp import generate_image_cursor_acp
+
+        return await generate_image_cursor_acp(
+            prompt=f"{prompt}\nCanvas aspect ratio: {aspect_ratio}.",
+            reference_images=reference_images,
+            reference_annotations=reference_annotations,
+            api_key=str(model.get("apiKey") or provider.get("apiKey") or "") or None,
+        )
     api_key = _api_key_for_model(registry, model, provider)
 
     # gpt-image 支持自定义 WIDTHxHEIGHT（须整除 16）。按模型 outputResolution

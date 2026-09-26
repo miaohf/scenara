@@ -11,6 +11,8 @@
     "setup": "npm install && cp -n .env.example .env.local",
     "check:utf8": "node scripts/check-utf8.mjs",
     "check:h3-prompt": "node --experimental-strip-types scripts/check-h3-prompt-validator.mjs",
+    "check:qwen-image-prompt": "node --experimental-strip-types scripts/check-qwen-image-prompt-compiler.mjs",
+    "check:production-intelligence": "node --experimental-strip-types scripts/check-production-intelligence.mjs",
     "media-proxy": "node server/mediaProxyServer.mjs",
     "comfyui-proxy": "node server/comfyuiProxyServer.mjs"
   },

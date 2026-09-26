@@ -3,6 +3,8 @@
  * 定义模型注册、配置、适配器相关的所有类型
  */
 
+import type { VisualStyleProfile } from '../types';
+
 // ============================================
 // 基础类型
 // ============================================
@@ -25,7 +27,7 @@ export type ImageResolution = '1K' | '2K' | '4K' | '1344x768';
  * openai: OpenAI Images API 风格
  * comfyui: ComfyUI workflow API 风格
  */
-export type ImageApiFormat = 'gemini' | 'openai' | 'comfyui';
+export type ImageApiFormat = 'gemini' | 'openai' | 'comfyui' | 'cursor-sdk' | 'cursor-acp';
 
 /**
  * 视频时长类型（仅异步视频模式支持）
@@ -226,6 +228,8 @@ export interface ModelRegistryState {
   globalApiKey?: string;
   /** 全局配置中用于 API Key 验证的模型名，与 activeModels.chat 无关 */
   globalVerifyChatModelName?: string;
+  /** 账号级共享视觉风格库；项目只保存当前选中的风格 key。 */
+  visualStyleProfiles?: VisualStyleProfile[];
 }
 
 // ============================================
@@ -489,7 +493,7 @@ export const DEFAULT_AUDIO_PARAMS: AudioModelParams = {
 /**
  * 本地推理提供商（无需 API Key）
  */
-export const LOCAL_PROVIDER_IDS = ['comfyui-local', 'indextts-local'] as const;
+export const LOCAL_PROVIDER_IDS = ['comfyui-local', 'indextts-local', 'cursor-sdk', 'cursor-acp'] as const;
 
 export type LocalProviderId = (typeof LOCAL_PROVIDER_IDS)[number];
 
