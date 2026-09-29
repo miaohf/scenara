@@ -20,6 +20,7 @@ import { STYLES } from './constants';
 import { countSceneHeadings, findTextMatches, parseScriptOutline } from './utils';
 import { renderHighlightedScript, renderMarkdownPreview } from './scriptHighlight';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
+import type { StoryFormId } from '../../services/ai/storyForm';
 
 interface Props {
   script: string;
@@ -33,6 +34,10 @@ interface Props {
   selectedText: string;
   rewriteInstruction: string;
   onRewriteInstructionChange: (value: string) => void;
+  storyForm: StoryFormId;
+  onStoryFormChange: (value: StoryFormId) => void;
+  customStoryForm: string;
+  onCustomStoryFormChange: (value: string) => void;
   onRewriteSelection: () => void;
   onUndoRewrite: () => void;
   canUndoRewrite: boolean;
@@ -55,6 +60,10 @@ const ScriptEditor: React.FC<Props> = ({
   selectedText,
   rewriteInstruction,
   onRewriteInstructionChange,
+  storyForm,
+  onStoryFormChange,
+  customStoryForm,
+  onCustomStoryFormChange,
   onRewriteSelection,
   onUndoRewrite,
   canUndoRewrite,
@@ -529,7 +538,34 @@ const ScriptEditor: React.FC<Props> = ({
             </button>
           </div>
         )}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-[var(--text-muted)] shrink-0">{text('体裁', 'Form')}</span>
+          <select
+            value={storyForm}
+            onChange={(e) => onStoryFormChange(e.target.value as StoryFormId)}
+            disabled={isBusy}
+            title={
+              storyForm === 'documentary'
+                ? text('续写和改写按纪录片介绍处理。', 'Continue and rewrite as a documentary.')
+                : storyForm === 'other'
+                  ? text('填写体裁后按该体裁处理。未填写时按短片处理。', 'Name a form to use it. An empty name stays on short film.')
+                  : text('续写和改写按短片处理。默认是短片。', 'Continue and rewrite as a short film. The default is a short film.')
+            }
+            className="shrink-0 bg-[var(--bg-surface)] border border-[var(--border-primary)] text-[var(--text-primary)] px-2 py-1.5 text-xs rounded-md focus:border-[var(--border-secondary)] focus:outline-none disabled:opacity-50"
+          >
+            <option value="dramatic">{text('短片', 'Short film')}</option>
+            <option value="documentary">{text('纪录片', 'Documentary')}</option>
+            <option value="other">{text('其他', 'Other')}</option>
+          </select>
+          {storyForm === 'other' && (
+            <input
+              value={customStoryForm}
+              onChange={(e) => onCustomStoryFormChange(e.target.value)}
+              disabled={isBusy}
+              placeholder={text('如科普、访谈', 'e.g. explainer, interview')}
+              className="w-28 shrink-0 bg-[var(--bg-surface)] border border-[var(--border-primary)] text-[var(--text-primary)] px-2 py-1.5 text-xs rounded-md focus:border-[var(--border-secondary)] focus:outline-none placeholder:text-[var(--text-muted)] disabled:opacity-50"
+            />
+          )}
           <input
             value={rewriteInstruction}
             onChange={(e) => onRewriteInstructionChange(e.target.value)}
@@ -541,10 +577,14 @@ const ScriptEditor: React.FC<Props> = ({
             }}
             placeholder={
               selectedCount > 0
-                ? text('选段改写要求，例如：更紧张、对白更口语化…（Enter 改写选段）', 'Rewrite selection, e.g. make it tenser or make dialogue more conversational… (Enter to rewrite)')
-                : text('给 AI 的要求，例如：增加冲突、续写到乌江边…（可选，续写/改写都会用到）', 'Tell AI what to do, e.g. add conflict or continue to the river… (optional; used for continue/rewrite)')
+                ? (storyForm === 'documentary'
+                  ? text('选段改写要求，例如：旁白更具体、补一个地标…（Enter 改写选段）', 'Rewrite selection, e.g. make the narration more concrete or add a landmark… (Enter to rewrite)')
+                  : text('选段改写要求，例如：更紧张、对白更口语化…（Enter 改写选段）', 'Rewrite selection, e.g. make it tenser or make dialogue more conversational… (Enter to rewrite)'))
+                : (storyForm === 'documentary'
+                  ? text('给 AI 的要求，例如：接着介绍老城区的清晨市集…（可选，续写/改写都会用到）', 'Tell AI what to do, e.g. continue with the old-town morning market… (optional; used for continue/rewrite)')
+                  : text('给 AI 的要求，例如：增加冲突、续写到乌江边…（可选，续写/改写都会用到）', 'Tell AI what to do, e.g. add conflict or continue to the river… (optional; used for continue/rewrite)'))
             }
-            className="flex-1 bg-[var(--bg-surface)] border border-[var(--border-primary)] text-[var(--text-primary)] px-3 py-1.5 text-xs rounded-md focus:border-[var(--border-secondary)] focus:outline-none transition-colors placeholder:text-[var(--text-muted)]"
+            className="min-w-0 flex-1 bg-[var(--bg-surface)] border border-[var(--border-primary)] text-[var(--text-primary)] px-3 py-1.5 text-xs rounded-md focus:border-[var(--border-secondary)] focus:outline-none transition-colors placeholder:text-[var(--text-muted)]"
           />
           {selectedCount > 0 ? (
             <div className="flex items-center gap-2 shrink-0">

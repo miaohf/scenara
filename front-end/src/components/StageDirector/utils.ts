@@ -99,8 +99,20 @@ export const inferQwenShotComplexity = (shot: Shot): QwenShotComplexity => {
 export const qwenEditReferenceBudget = (shot: Shot, workflowName?: string): number => {
   const workflowLimit = qwenEditKeyframeMaxReferences(workflowName);
   const complexity = inferQwenShotComplexity(shot);
-  const requested = complexity === 'simple' ? 3 : complexity === 'complex' ? 8 : 5;
+  const requested = complexity === 'simple' ? 3 : complexity === 'complex' ? workflowLimit : 5;
   return Math.min(workflowLimit, requested);
+};
+
+/** 参考图说明只留外观，去掉“最终劈开/曾被撞乱”这类后文剧情。 */
+const shortenPropAppearanceDetail = (detail: string): string => {
+  const firstSentence = String(detail || '').split(/[。！？]/u)[0] || '';
+  const visual = firstSentence
+    .replace(/(?:，|,)?(?:能够|可以|曾被|最终|并在最终|后来)[^，,。]*/gu, '')
+    .replace(/[，,]\s*$/u, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if (!visual) return '';
+  return visual.length > 42 ? `${visual.slice(0, 42)}…` : visual;
 };
 
 /** Keep the saved keyframe prompt aligned with the exact references submitted for this generation. */
@@ -116,14 +128,30 @@ export const buildReferenceImageRoleGuide = (entries: ReferenceImageEntry[]): st
     if (entry.type === 'scene') {
       return `- ${imageLabel}: 场景参考图 “${entry.label}”。只负责场所、建筑/环境布局、空间透视、光照和氛围；${sourceDetail ? `补充信息：${sourceDetail}。` : ''}场景图中偶然出现的角色、兵器或道具，不得替代对应的角色/道具参考图，也不要把场景图改造成定妆照。`;
     }
-    if (entry.type === 'character' || entry.type === 'turnaround') {
-      const viewHint = entry.type === 'turnaround' || /九宫格|三视图|turnaround|three.view/i.test(entry.detail || '')
-        ? ' It may be a multi-view sheet: select the view matching the requested camera angle, never reproduce the sheet layout or duplicate the subject.'
+    const sheetKind = /三视图/.test(`${entry.detail || ''} ${entry.detailZh || ''}`)
+      ? '三视图定妆照'
+      : /九宫格/.test(`${entry.detail || ''} ${entry.detailZh || ''}`)
+        ? '九宫格定妆照'
         : '';
-      return `- ${imageLabel}: 角色参考图 “${entry.label}”。这张图只属于 ${entry.label}；只锁定该角色的脸部、毛发、身体比例、发型、服装和身份，不得把其脸、服装、颜色或体态转移给其他角色。${sourceDetail ? `参考图类型/补充信息：${sourceDetail}。` : ''}将角色自然放入场景，不复制棚拍背景或原始姿势。${viewHint}`;
+    if (entry.type === 'turnaround' || sheetKind) {
+      const primaryIndex = entries.findIndex((item, itemIndex) => (
+        itemIndex < index
+        && item.type === 'character'
+        && item.label === entry.label
+        && !/三视图|九宫格/.test(`${item.detail || ''} ${item.detailZh || ''}`)
+      ));
+      const sheetName = sheetKind || '多角度定妆照';
+      if (primaryIndex >= 0) {
+        return `- ${imageLabel}: 仍是“${entry.label}”的${sheetName}，身份与服装以 Image ${primaryIndex + 1} 为准。只取与本帧机位相符的一个角度，不要画出拼图版式，也不要多画一个${entry.label}。`;
+      }
+      return `- ${imageLabel}: “${entry.label}”的${sheetName}。只锁定该角色的身份和服装，只取一个角度，不要画出拼图版式或棚拍背景。`;
+    }
+    if (entry.type === 'character') {
+      return `- ${imageLabel}: 角色参考图 “${entry.label}”。这张图只属于 ${entry.label}；只锁定该角色的脸部、毛发、身体比例、发型、服装和身份，不得把其脸、服装、颜色或体态转移给其他角色。${sourceDetail ? `参考图类型/补充信息：${sourceDetail}。` : ''}将角色自然放入场景，不复制棚拍背景或原始姿势。`;
     }
     if (entry.type === 'prop') {
-      return `- ${imageLabel}: 道具参考图 “${entry.label}”。这是本镜头的动作相关道具；只要本帧描述提到它，就必须出现。只锁定它的形状、比例、材质、颜色、纹饰和端部细节；不得替换成其他兵器，不得从场景图或角色图重新发明道具。${sourceDetail ? `道具补充信息：${sourceDetail}。` : ''}是否持握、放置、横卧在地面或处于其他状态，以本帧的道具状态为准。`;
+      const appearance = sourceDetail ? shortenPropAppearanceDetail(sourceDetail) : '';
+      return `- ${imageLabel}: 道具参考图 “${entry.label}”。这是本镜头的动作相关道具；只要本帧描述提到它，就必须出现。只锁定它的形状、比例、材质、颜色、纹饰和端部细节；不得替换成其他兵器，不得从场景图或角色图重新发明道具。${appearance ? `外观：${appearance}。` : ''}是否持握、放置或处于其他状态，以本帧的道具状态为准，不要提前画成后续镜头里的结果。`;
     }
     return `- ${imageLabel}: reference “${entry.label}”. Follow its role as described; do not create a collage, split screen, or duplicate subjects.`;
   });
@@ -392,7 +420,7 @@ export const finalizeMiniMaxH3VideoPrompt = (
   return `${fitVideoPromptLength(basePrompt, budget)}\n\n${directive}`;
 };
 
-/** 单角色镜头的构图锁，防止“越肩镜头”被模型误解成两个相同角色。 */
+/** 单角色镜头的构图锁，防止“越肩镜头”被模型误解成两个相同角色。群演按 count 写明人数。 */
 export const appendCharacterCompositionConstraints = (
   prompt: string,
   shot: Shot,
@@ -405,10 +433,23 @@ export const appendCharacterCompositionConstraints = (
     .map((character) => character.name)
     .filter(Boolean);
   if (names.length === 0) return prompt;
-  const subjectRule = names.length === 1
+  const countByName = new Map<string, number>();
+  for (const frame of Object.values(shot.frameDirections || {})) {
+    for (const item of frame?.characterBlocking || []) {
+      const name = scriptData?.characters.find((character) => String(character.id) === String(item.characterId))?.name;
+      const count = Number(item.count) || 1;
+      if (name && count > 1) countByName.set(name, Math.max(countByName.get(name) || 1, count));
+    }
+  }
+  const subjectRule = names.length === 1 && !countByName.has(names[0])
     ? `- EXACTLY ONE visible human/character: ${names[0]}. Do not create a second copy, clone, duplicate, reflection, portrait, silhouette, or background version of ${names[0]}.
 - If this is an over-the-shoulder or rear view, it is still the same single ${names[0]}; do not add another foreground or background body.`
-    : `- Show exactly these named characters and no duplicate copies: ${names.join(', ')}.`;
+    : names.map((name) => {
+      const count = countByName.get(name);
+      return count && count > 1
+        ? `- Show exactly ${count} separate people of “${name}”. They are a counted group, not one merged person and not an unlimited crowd.`
+        : `- Show exactly one “${name}”. Do not duplicate ${name}.`;
+    }).join('\n');
   return `${prompt.trim()}\n\n[LOCKED CHARACTER COUNT — DO NOT CHANGE]\n${subjectRule}\n- Keep the composition as one coherent shot; no split-screen, collage, mirror duplication, or multi-exposure.`;
 };
 
@@ -564,14 +605,13 @@ export const routeVideoFrameInputs = (
 };
 
 /**
- * 获取镜头的参考图片
- * 每个角色只占用一个主参考槽位：镜头服装变体优先，否则使用角色当前选中的
- * 普通定妆照、九宫格或三视图。多视图不再作为额外图片重复追加。
+ * 获取镜头的参考图片。
+ * 首尾帧使用定妆主图作为第一张；三视图和九宫格只在主图之后补进剩余槽位。
  */
 export const getRefImagesForShot = (
   shot: Shot,
   scriptData: ProjectState['scriptData'],
-  options?: { sceneFirst?: boolean },
+  options?: { sceneFirst?: boolean; characterMainFirst?: boolean },
 ): RefImagesResult => {
   const characterImages: string[] = [];
   const sceneImages: string[] = [];
@@ -579,6 +619,7 @@ export const getRefImagesForShot = (
   const selectedMultiViewImages = new Set<string>();
   const imageRoleByUrl = new Map<string, string>();
   const sceneFirst = options?.sceneFirst === true;
+  const characterMainFirst = options?.characterMainFirst === true;
 
   if (!scriptData) {
     return {
@@ -594,48 +635,75 @@ export const getRefImagesForShot = (
   }
 
   const extraCharacterImages: string[] = [];
+  const multiViewImages: string[] = [];
   const entryByUrl = new Map<string, ReferenceImageEntry>();
+  const rememberImage = (
+    list: string[],
+    image: string,
+    entry: ReferenceImageEntry,
+    role: string,
+  ) => {
+    const normalizedImage = image.trim();
+    if (!normalizedImage || entryByUrl.has(normalizedImage)) return;
+    imageRoleByUrl.set(normalizedImage, role);
+    entryByUrl.set(normalizedImage, { ...entry, image: normalizedImage });
+    list.push(normalizedImage);
+  };
 
-  // Klein：主定妆 = Image 1，避免群像插在场景前改发型。
-  // Qwen Edit：Image 1 会当成构图底图，定妆棚拍必须让路给场景。
   if (shot.characters) {
     shot.characters.forEach(charId => {
       const char = scriptData.characters.find(c => String(c.id) === String(charId));
       if (!char) return;
 
       const varId = shot.characterVariations?.[charId];
-      const variationImage = varId
-        ? char.variations?.find(v => v.id === varId)?.referenceImage
-        : undefined;
-      const selectedCharacterImage = variationImage || resolveCharacterDisplayImage(char);
-      if (selectedCharacterImage) {
-        const view = variationImage ? 'variation' : resolveCharacterImageView(char);
-        const normalizedImage = selectedCharacterImage.trim();
-        imageRoleByUrl.set(normalizedImage, `character:${char.name || char.id}:${view}`);
-        entryByUrl.set(normalizedImage, {
-          image: normalizedImage,
-          // 九宫格/三视图仍是该角色的唯一主参考，不单独占第二个类型槽位。
-          // 多视图语义通过 detail 与 hasTurnaround 传递。
-          type: 'character',
-          label: char.name || char.id,
-          assetId: String(char.id),
-          detail: variationImage
-            ? `服装变体：${char.variations?.find(v => v.id === varId)?.name || '未命名'}`
-            : view === 'turnaround'
-              ? '九宫格定妆照'
-              : view === 'threeView'
-                ? '三视图定妆照'
-                : '基础定妆照',
-        });
-        if (characterImages.length === 0) {
-          characterImages.push(selectedCharacterImage);
-        } else {
-          extraCharacterImages.push(selectedCharacterImage);
-        }
-        if (!variationImage && resolveCharacterImageView(char) !== 'casting') {
-          selectedMultiViewImages.add(normalizedImage);
-        }
+      const variation = varId ? char.variations?.find(v => v.id === varId) : undefined;
+      const variationImage = variation?.referenceImage;
+      const mainImage = characterMainFirst
+        ? (variationImage || char.referenceImage)
+        : (variationImage || resolveCharacterDisplayImage(char));
+      const sheets = characterMainFirst
+        ? [
+            char.threeView?.imageUrl ? { image: char.threeView.imageUrl, detail: '三视图定妆照', view: 'threeView' } : undefined,
+            char.turnaround?.imageUrl ? { image: char.turnaround.imageUrl, detail: '九宫格定妆照', view: 'turnaround' } : undefined,
+          ].filter((item): item is { image: string; detail: string; view: string } => Boolean(item?.image))
+        : [];
+      const primaryImage = mainImage || sheets[0]?.image;
+      if (primaryImage) {
+        const usesSheetAsPrimary = !mainImage;
+        const primarySheet = usesSheetAsPrimary ? sheets[0] : undefined;
+        rememberImage(
+          characterImages.length === 0 ? characterImages : extraCharacterImages,
+          primaryImage,
+          {
+            image: primaryImage,
+            type: 'character',
+            label: char.name || char.id,
+            assetId: String(char.id),
+            detail: variationImage
+              ? `服装变体：${variation?.name || '未命名'}`
+              : primarySheet?.detail || '基础定妆照',
+          },
+          `character:${char.name || char.id}:${variationImage ? 'variation' : primarySheet?.view || 'casting'}`,
+        );
+        if (usesSheetAsPrimary) selectedMultiViewImages.add(primaryImage.trim());
       }
+      if (!characterMainFirst) return;
+      sheets.forEach((sheet) => {
+        const before = entryByUrl.size;
+        rememberImage(
+          multiViewImages,
+          sheet.image,
+          {
+            image: sheet.image,
+            type: 'turnaround',
+            label: char.name || char.id,
+            assetId: String(char.id),
+            detail: sheet.detail,
+          },
+          `character:${char.name || char.id}:${sheet.view}`,
+        );
+        if (entryByUrl.size > before) selectedMultiViewImages.add(sheet.image.trim());
+      });
     });
   }
 
@@ -675,13 +743,13 @@ export const getRefImagesForShot = (
     });
   }
 
-  // Qwen Image 2.1 对 image_1/image_2 等槽位的语义并不总是稳定，关键是
-  // “提示词映射”和“实际提交图片”必须使用同一顺序。首尾帧优先把场景作为
-  // Image 1，把主角作为 Image 2，把动作关键道具放在次要角色之前；这样例如
-  // 蟠桃园 / 孙悟空 / 金箍棒 / 仙官 会始终保持这个四槽位映射。
-  const orderedPrimary = sceneFirst
-    ? [...sceneImages, ...characterImages, ...propImages, ...extraCharacterImages]
-    : [...characterImages, ...extraCharacterImages, ...sceneImages, ...propImages];
+  // 首尾帧：定妆主图在第一位，场景和道具随后，三视图/九宫格只占用剩余槽位。
+  // 其他场景画布任务仍把场景放在 Image 1。
+  const orderedPrimary = characterMainFirst
+    ? [...characterImages, ...extraCharacterImages, ...sceneImages, ...propImages, ...multiViewImages]
+    : sceneFirst
+      ? [...sceneImages, ...characterImages, ...propImages, ...extraCharacterImages]
+      : [...characterImages, ...extraCharacterImages, ...sceneImages, ...propImages];
   const dedupedPrimary = dedupeImageRefs(orderedPrimary);
   const candidateEntries = dedupedPrimary
     .map((img) => entryByUrl.get(img))
@@ -708,6 +776,7 @@ export const getRefImagesForShot = (
  * hasImage 标记该道具是否有参考图，用于提示词中区分"参考图一致性"和"文字描述约束"
  */
 export interface ShotPropPromptInfo {
+  id?: string;
   name: string;
   description: string;
   hasImage: boolean;
@@ -840,6 +909,7 @@ export const getPropsInfoForShot = (shot: Shot, scriptData: ProjectState['script
     .map(propId => scriptData.props.find(p => String(p.id) === String(propId)))
     .filter((p): p is NonNullable<typeof p> => !!p && !isWornGarmentForShot(p, shot, scriptData))
     .map(p => ({
+      id: String(p.id),
       name: p.name,
       description: p.description || p.visualPrompt || '',
       hasImage: !!p.referenceImage,
@@ -899,8 +969,9 @@ export const buildShotScriptContext = (
 ): string => {
   const lines: string[] = [];
   const frameKf = shot.keyframes?.find(k => k.type === frameType);
-  const frameVisual = String(frameKf?.visualPrompt || '').trim();
+  const frameVisual = cutKeyframeImagePromptTail(String(frameKf?.visualPrompt || '').trim());
   const hasRenderedMeta = frameVisual.includes(KEYFRAME_META_SPLITTER);
+  if (/<image\d+>/i.test(frameVisual)) return frameVisual;
 
   if (frameVisual && !hasRenderedMeta) {
     lines.push(frameVisual);
@@ -1084,6 +1155,212 @@ ${frameSpecificGuide}
 ${characterConsistencyGuide}${propConsistencyGuide}`;
 };
 
+const COMPILED_FRAME_MARKER = '【本帧画面描述】';
+const KEYFRAME_PROMPT_TAIL = /\n(?:景别：|运镜：|结构化连续性状态：|\[PRODUCTION BIBLE)/;
+
+/** 编辑框回退时会把景别、运镜、全剧圣经和参考图映射接在静帧提示词后面，这里切掉。 */
+export const cutKeyframeImagePromptTail = (value: string): string => {
+  let current = String(value || '').trim();
+  const mappingStart = current.search(/(?:^|\n)\s*(?:【本次参考图映射】|REFERENCE IMAGE MAPPING)/i);
+  if (mappingStart === 0) return '';
+  if (mappingStart > 0) current = current.slice(0, mappingStart).trim();
+  const tail = current.search(KEYFRAME_PROMPT_TAIL);
+  if (tail > 0) current = current.slice(0, tail).trim();
+  return current;
+};
+const LOCKED_CHARACTER_BLOCK = /\n*\[LOCKED CHARACTER COUNT — DO NOT CHANGE\][\s\S]*$/i;
+const COMPILED_SECTION_AFTER_DESCRIPTION = /(?:^|\s)【(?:必须出现|本帧结构化|本帧关键道具|关键道具|必须满足|禁止自动|镜头与构图|视觉风格|首帧要求|尾帧要求|连续性锁定|画面限制|构图站位锁定|人物表情|人物站位|本帧剧情|任务)】/u;
+const START_FRAME_RESULT_CONSTRAINT = /回到|收回|落入|锁定|穿过|穿入|劈开|裂开|悬停|已经完成|returns?\b|already\b|locks?\b/iu;
+
+const BLOCKING_WORDS: Record<string, string> = {
+  left: '画面左侧',
+  right: '画面右侧',
+  center: '画面中央',
+  middle: '画面中央',
+  foreground: '前景',
+  midground: '中景',
+  background: '后景',
+};
+
+/** 把分镜模型留下的 left/foreground/toward 收成中文方位，长句只替换明确方位词。 */
+const localizeBlockingPhrase = (value?: string): string => {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return '';
+  const exact = BLOCKING_WORDS[trimmed.toLowerCase()];
+  if (exact) return exact;
+  return trimmed
+    .replace(/\btoward screen upper right\b/gi, '画面右上方')
+    .replace(/\btoward screen upper left\b/gi, '画面左上方')
+    .replace(/\btoward screen right\b/gi, '画面右侧')
+    .replace(/\btoward screen left\b/gi, '画面左侧')
+    .replace(/\btoward\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+};
+
+/**
+ * 再次生图时，上一份 Qwen 编译结果不能再当作画面描述。
+ * 只留下最内层【本帧画面描述】；映射和角色数量锁由调用方重新附加。
+ */
+export const unwrapCompiledKeyframeDescription = (fullPrompt: string): string => {
+  let current = cutKeyframeImagePromptTail(fullPrompt);
+  if (!current) return '';
+  const mappingStart = current.search(/(?:^|\n)\s*(?:【本次参考图映射】|REFERENCE IMAGE MAPPING)/i);
+  if (mappingStart === 0) return '';
+  if (mappingStart > 0) current = current.slice(0, mappingStart).trim();
+  current = current.replace(LOCKED_CHARACTER_BLOCK, '').trim();
+  if (!current.includes('【任务】') && !current.includes(COMPILED_FRAME_MARKER)) return current;
+
+  for (let depth = 0; depth < 8; depth += 1) {
+    const markerAt = current.lastIndexOf(COMPILED_FRAME_MARKER);
+    if (markerAt < 0) break;
+    let body = current.slice(markerAt + COMPILED_FRAME_MARKER.length).trim();
+    if (!body.includes(COMPILED_FRAME_MARKER)) {
+      const nextSection = body.search(COMPILED_SECTION_AFTER_DESCRIPTION);
+      if (nextSection > 0) body = body.slice(0, nextSection).trim();
+    }
+    current = body.replace(LOCKED_CHARACTER_BLOCK, '').trim();
+    if (!current.includes(COMPILED_FRAME_MARKER) && !current.startsWith('【任务】')) break;
+  }
+  if (!current || current.startsWith('【任务】') || current.includes(COMPILED_FRAME_MARKER)) return '';
+  return current;
+};
+
+/** 整镜 required 里描述动作结果的条目只留给尾帧，避免首帧被要求提前完成。 */
+const constraintsForFrame = (required: string[], frameType: 'start' | 'end'): string[] => {
+  if (frameType === 'end') return required;
+  return required.filter((item) => !START_FRAME_RESULT_CONSTRAINT.test(item));
+};
+
+const propHandLabel = (hand?: string): string => {
+  if (hand === 'left') return '左手';
+  if (hand === 'right') return '右手';
+  if (hand === 'both') return '双手';
+  return '';
+};
+
+export interface QwenImage21KeyframeBrief {
+  frameLabel: '首帧' | '尾帧';
+  storyState: string;
+  frameSentence: string;
+  characters: Array<{
+    name: string;
+    count: number;
+    position: string;
+    depth: string;
+    facing: string;
+    gaze: string;
+    action: string;
+    expression: string;
+  }>;
+  props: Array<{
+    name: string;
+    hasReference: boolean;
+    holder: string;
+    hand: string;
+    position: string;
+    state: string;
+    appearance: string;
+  }>;
+  requiredFacts: string[];
+  forbiddenProps: string[];
+  framing: string;
+  style: string;
+  references: Array<{
+    tag: string;
+    role: 'scene' | 'character' | 'prop' | 'continuity' | 'turnaround';
+    name: string;
+    note: string;
+  }>;
+}
+
+const staticFraming = (shotSize?: string, cameraMovement?: string): string => {
+  const size = String(shotSize || '').trim();
+  const angle = String(cameraMovement || '')
+    .replace(/\b(slow\s+)?(push\s+in|pull\s+out|dolly|pan|tilt|zoom|track|crane|whip)\b/gi, '')
+    .replace(/缓慢|推近|推进|拉远|拉出|横摇|摇镜|跟拍|变焦/g, '')
+    .replace(/\s*\+\s*/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return [size, angle].filter(Boolean).join('，');
+};
+
+/**
+ * 只抽出这一帧必须遵守的事实，不写成会互相打架的提示词。
+ * 参考图顺序必须与实际提交顺序一致。
+ */
+export const buildQwenImage21KeyframeBrief = (
+  basePrompt: string,
+  shot: Shot,
+  frameType: 'start' | 'end',
+  visualStyle: string,
+  references: Array<{ type?: string; label?: string; detail?: string }>,
+  propsInfo?: ShotPropPromptInfo[],
+  characterLabels?: Record<string, string>,
+  propLabels?: Record<string, string>,
+): QwenImage21KeyframeBrief => {
+  const frameDirection = shot.frameDirections?.[frameType];
+  const unwrapped = unwrapCompiledKeyframeDescription(basePrompt);
+  const frameSentence = unwrapped && !unwrapped.includes('【任务】') && unwrapped.length <= 900
+    ? unwrapped
+    : '';
+  const labelForCharacter = (characterId?: string): string => {
+    if (!characterId) return '';
+    return characterLabels?.[String(characterId)] || (String(characterId).startsWith('char-') ? '' : String(characterId));
+  };
+  const labelForProp = (propId: string): string => propLabels?.[propId] || (propsInfo || []).find((prop) => prop.id === propId)?.name || '';
+  const structuredByName = new Map(Object.entries(frameDirection?.propStates || {}).map(([propId, state]) => {
+    const name = labelForProp(propId);
+    return [name, state] as const;
+  }).filter(([name]) => Boolean(name)));
+  const listedProps = (propsInfo || []).map((prop) => {
+    const state = structuredByName.get(prop.name);
+    return {
+      name: prop.name,
+      hasReference: prop.hasImage,
+      holder: labelForCharacter(state?.holderCharacterId),
+      hand: propHandLabel(state?.hand),
+      position: localizeBlockingPhrase(state?.position),
+      state: String(state?.state || '').trim(),
+      appearance: shortenPropAppearanceDetail(prop.description),
+    };
+  });
+  const referenceFacts = references.map((entry, index) => {
+    const type = String(entry.type || '');
+    const role: QwenImage21KeyframeBrief['references'][number]['role'] =
+      type === 'scene' || type === 'character' || type === 'prop' || type === 'continuity' || type === 'turnaround'
+        ? type
+        : 'character';
+    return {
+      tag: `<image${index + 1}>`,
+      role,
+      name: String(entry.label || '').trim(),
+      note: shortenPropAppearanceDetail(entry.detail || ''),
+    };
+  });
+  return {
+    frameLabel: frameType === 'start' ? '首帧' : '尾帧',
+    storyState: String(frameDirection?.storyState || '').trim(),
+    frameSentence,
+    characters: (frameDirection?.characterBlocking || []).map((item) => ({
+      name: labelForCharacter(item.characterId) || String(item.characterId),
+      count: item.count && item.count > 1 ? item.count : 1,
+      position: localizeBlockingPhrase(item.position),
+      depth: localizeBlockingPhrase(item.depth),
+      facing: localizeBlockingPhrase(item.facing),
+      gaze: localizeBlockingPhrase(item.gaze),
+      action: String(item.action || '').trim(),
+      expression: String(item.expression || '').trim(),
+    })).filter((item) => item.name),
+    props: listedProps,
+    requiredFacts: constraintsForFrame((shot.constraintPolicy?.required || []).filter(Boolean), frameType),
+    forbiddenProps: (shot.constraintPolicy?.forbiddenProps || []).map((propId) => labelForProp(String(propId)) || String(propId)).filter(Boolean),
+    framing: staticFraming(shot.shotSize, shot.cameraMovement),
+    style: String(visualStyle || '').trim(),
+    references: referenceFacts,
+  };
+};
+
 /**
  * Qwen Image Edit 的首尾帧编译器。
  *
@@ -1099,10 +1376,12 @@ export const buildQwenKeyframePrompt = (
   visualStyle: string,
   propsInfo?: ShotPropPromptInfo[],
   characterLabels?: Record<string, string>,
+  propLabels?: Record<string, string>,
 ): string => {
   const continuity = shot.agent?.continuity;
   const frameDirection = shot.frameDirections?.[frameType];
   const frameLabel = frameType === 'start' ? '首帧' : '尾帧';
+  const sourcePrompt = unwrapCompiledKeyframeDescription(basePrompt) || basePrompt;
   // visualPrompt 是当前帧最可靠的静态事实。executionPlan / subjectBlocking 可能
   // 描述完整运动过程，不能直接写进首帧或尾帧，否则会出现“尚未拿起但已手持”的矛盾。
   const frameState = frameDirection?.storyState?.trim();
@@ -1111,10 +1390,10 @@ export const buildQwenKeyframePrompt = (
       const count = item.count && item.count > 1 ? `，数量${item.count}` : '';
       const label = characterLabels?.[String(item.characterId)] || item.characterId;
       return `- ${label}${count}：${[
-        item.position,
-        item.depth,
-        item.facing ? `朝向${item.facing}` : '',
-        item.gaze ? `视线${item.gaze}` : '',
+        localizeBlockingPhrase(item.position),
+        localizeBlockingPhrase(item.depth),
+        item.facing ? `朝向${localizeBlockingPhrase(item.facing)}` : '',
+        item.gaze ? `视线${localizeBlockingPhrase(item.gaze)}` : '',
         item.action,
         item.expression ? `表情${item.expression}` : '',
       ].filter(Boolean).join('，')}`;
@@ -1122,44 +1401,56 @@ export const buildQwenKeyframePrompt = (
     .join('\n');
   const blockingConstraint = blockingLines
     ? '【构图站位锁定】严格遵循上方人物的屏幕左右位置、前景/中景/后景层次、彼此距离与朝向；不得因为参考图中的原始构图而交换人物左右位置，不得把配角放到主角的站位。'
-    : /(?:左侧|左前景|左中景|画面左|右侧|右前景|右中景|画面右)/u.test(basePrompt)
+    : /(?:左侧|左前景|左中景|画面左|右侧|右前景|右中景|画面右)/u.test(sourcePrompt)
       ? '【构图站位锁定】严格遵循本帧画面描述中已经指定的屏幕左右位置、前中后景层次和人物之间的距离；不得因为参考图中的原始构图而交换人物左右位置，不得把配角放到主角的站位。'
       : '';
   const continuityText = (continuity?.mustPreserve || []).join(' ');
-  const baseIndicatesPreUse = frameType === 'start' && /尚未|未(?:完全)?(?:拿起|握住|持有|抬起)|探向|靠在|树旁|正要|还没有|not yet|reaching for|beside the tree|starts beside|on the ground|not held/i.test(`${basePrompt} ${continuityText}`);
+  const baseIndicatesPreUse = frameType === 'start' && /尚未|未(?:完全)?(?:拿起|握住|持有|抬起)|探向|靠在|树旁|正要|还没有|not yet|reaching for|beside the tree|starts beside|on the ground|not held/i.test(`${sourcePrompt} ${continuityText}`);
   const frameDescription = baseIndicatesPreUse
-    ? basePrompt
+    ? sourcePrompt
         .replace(/手已(?:扣住|握住|握紧)棒柄[，,、；;]?\s*棒身斜靠肩侧/gu, '手正伸向树旁的金箍棒，尚未握住棒柄；棒身仍位于树旁地面')
         .replace(/(?:已|已经)握住(?:金箍棒|棒柄)[，,、；;]?\s*棒身(?:斜靠|靠在)肩侧/gu, '手尚未握住金箍棒，金箍棒仍位于树旁地面')
         .replace(/holds?\s+(?:the\s+)?(?:golden\s+)?cudgel[^.]*?(?:shoulder|held)/giu, 'reaches toward the cudgel beside the tree; the cudgel remains on the ground and is not held')
-    : basePrompt;
+    : sourcePrompt;
   const propLines = (propsInfo || [])
     .map((prop) => {
       const relationship = baseIndicatesPreUse ? undefined : prop.presentationConstraint?.trim();
       if (relationship) return `- ${prop.name}：${relationship}`;
-      return `- ${prop.name}：${prop.description || '按参考图保持外观一致，并只在本镜头需要时出现。'}`;
+      return `- ${prop.name}：${shortenPropAppearanceDetail(prop.description) || '按本帧状态出现，不要提前画成后续镜头的结果。'}`;
     })
     .join('\n');
+  const labelForProp = (propId: string): string => propLabels?.[propId] || (propsInfo || []).find((prop) => prop.id === propId)?.name || propId;
+  const labelForCharacter = (characterId?: string): string => {
+    if (!characterId) return '';
+    return characterLabels?.[String(characterId)] || (String(characterId).startsWith('char-') ? '' : String(characterId));
+  };
   const structuredPropLines = Object.entries(frameDirection?.propStates || {})
-    .map(([propId, state]: [string, ShotPropFrameState]) => `- ${propId}：${[
-      state.holderCharacterId ? `持有者${state.holderCharacterId}` : '',
-      state.hand ? `${state.hand}手` : '',
-      state.position,
+    .map(([propId, state]: [string, ShotPropFrameState]) => `- ${labelForProp(propId)}：${[
+      labelForCharacter(state.holderCharacterId) ? `持有者${labelForCharacter(state.holderCharacterId)}` : '',
+      propHandLabel(state.hand),
+      localizeBlockingPhrase(state.position),
       state.state,
       state.visible === false ? '本帧不可见' : state.visible === true ? '本帧必须可见' : '',
     ].filter(Boolean).join('，')}`)
     .join('\n');
-  const requiredConstraints = (shot.constraintPolicy?.required || []).filter(Boolean);
-  const forbiddenProps = (shot.constraintPolicy?.forbiddenProps || []).filter(Boolean);
+  const requiredConstraints = constraintsForFrame((shot.constraintPolicy?.required || []).filter(Boolean), frameType);
+  const forbiddenProps = (shot.constraintPolicy?.forbiddenProps || [])
+    .filter(Boolean)
+    .map((item) => propLabels?.[item] || item);
   const requiredCharacterNames = (shot.characters || [])
     .map((id) => characterLabels?.[String(id)] || String(id))
     .filter(Boolean);
   const countFacts = (frameDirection?.characterBlocking || [])
     .filter((item) => Number(item.count) > 1)
     .map((item) => `${characterLabels?.[String(item.characterId)] || item.characterId}必须出现${item.count}名`);
-  const inferredCount = basePrompt.match(/(?:两名|两位|两个)\s*([\u4e00-\u9fff]{1,8})/u);
+  const inferredCount = sourcePrompt.match(/(?:两名|两位|两个)\s*([\u4e00-\u9fff]{1,8})/u);
   if (!countFacts.length && inferredCount?.[1]) countFacts.push(`${inferredCount[1]}必须出现两名`);
-  const requiredPropNames = (propsInfo || []).map((prop) => prop.name).filter(Boolean);
+  const propsWithImage = (propsInfo || []).filter((prop) => prop.hasImage).map((prop) => prop.name).filter(Boolean);
+  const propsWithoutImage = (propsInfo || []).filter((prop) => !prop.hasImage).map((prop) => prop.name).filter(Boolean);
+  const requiredPropSentence = [
+    propsWithImage.length ? `有参考图、必须出现：${propsWithImage.join('、')}。这些道具严格遵循对应参考图。` : '',
+    propsWithoutImage.length ? `没有参考图、仍必须按本帧文字状态出现：${propsWithoutImage.join('、')}。不要另发明一件。` : '',
+  ].filter(Boolean).join('');
   const mustPreserveItems = (continuity?.mustPreserve || [])
     .filter(Boolean)
     .filter((item) => {
@@ -1182,11 +1473,9 @@ export const buildQwenKeyframePrompt = (
     frameDirection?.performance ? `【人物表情与表演】${frameDirection.performance}` : '',
     `【本帧画面描述】${frameDescription.trim()}`,
     requiredCharacterNames.length
-      ? `【必须出现的角色】画面中必须出现：${requiredCharacterNames.join('、')}。${countFacts.length ? `${countFacts.join('；')}。` : ''}保持每个角色身份独立，不得省略、合并或复制。`
+      ? `【必须出现的角色】画面中必须出现：${requiredCharacterNames.join('、')}。${countFacts.length ? `${countFacts.join('；')}。未标数量的角色各出现一名，不得把群演合并成一个人，也不得复制未标数量的角色。` : '每个角色只出现一名，不得省略、合并或复制。'}`
       : '',
-    requiredPropNames.length
-      ? `【必须出现的道具】画面中必须出现：${requiredPropNames.join('、')}。每件道具只按本帧状态出现，并严格遵循对应道具参考图；不得省略或替换为其他物体。`
-      : '',
+    requiredPropSentence ? `【必须出现的道具】${requiredPropSentence}每件道具只按本帧状态出现，不得替换为其他物体。` : '',
     structuredPropLines ? `【本帧结构化道具状态】\n${structuredPropLines}` : frameDirection?.propState
       ? `【本帧关键道具状态】${frameDirection.propState}`
       : baseIndicatesPreUse && propsInfo?.length
@@ -1643,26 +1932,31 @@ export const extractBasePrompt = (fullPrompt: string, fallback: string): string 
     return fallback;
   }
 
-  // 参考图映射是运行时附加块，不是可独立生成画面的核心提示词。
-  // 旧版本可能曾把只含映射的内容保存下来；此时必须回退到分镜结构。
-  const mappingStart = sourcePrompt.search(/(?:^|\n)\s*(?:【本次参考图映射】|REFERENCE IMAGE MAPPING)/i);
-  if (mappingStart === 0) return fallback;
-  if (mappingStart > 0) return sourcePrompt.slice(0, mappingStart).trim() || fallback;
-
   const splitters = [
     KEYFRAME_META_SPLITTER,
     '\n\n【视觉风格】Visual Style',
     '\n\nVisual Style:'
   ];
 
+  // 参考图映射和上一轮 Qwen 编译结果都不是可再次嵌入的画面描述。
+  const unwrapped = unwrapCompiledKeyframeDescription(sourcePrompt);
+  const promptForSplit = unwrapped || (
+    sourcePrompt.includes('【任务】')
+    || sourcePrompt.includes('【本次参考图映射】')
+    || /REFERENCE IMAGE MAPPING/i.test(sourcePrompt)
+      ? ''
+      : sourcePrompt
+  );
+  if (!promptForSplit) return fallback;
+
   for (const splitter of splitters) {
-    const splitIndex = sourcePrompt.indexOf(splitter);
+    const splitIndex = promptForSplit.indexOf(splitter);
     if (splitIndex > 0) {
-      return sourcePrompt.substring(0, splitIndex);
+      return promptForSplit.substring(0, splitIndex);
     }
   }
 
-  return sourcePrompt;
+  return promptForSplit;
 };
 
 /**

@@ -28,6 +28,14 @@ const normalize = (value: string): string => String(value || '')
   .replace(/[ \t]{2,}/g, ' ')
   .trim();
 
+/** 已经按 Qwen Image 2.1 Edit 规范写成的指令，提交时不再套一层通用锁。 */
+export const isQwenImage21SkillPrompt = (prompt?: string): boolean => {
+  const text = String(prompt || '');
+  return /<image1>/i.test(text)
+    && !text.includes('【任务】')
+    && !text.includes('[QWEN_IMAGE_2_1_');
+};
+
 /** True only for the dedicated Qwen Image 2.1 ComfyUI graph/model. */
 export const isQwenImage21Workflow = (workflowName?: string, modelIdentity?: string): boolean => {
   const identity = `${workflowName || ''} ${modelIdentity || ''}`.toLowerCase();

@@ -757,14 +757,22 @@ def _resolution_selector_aspect(aspect_ratio: str) -> str:
     return "16:9 (Widescreen)"
 
 
-def _aspect_ratio_size(aspect_ratio: str, *, video: bool = False, minimax: bool = False) -> tuple[int, int]:
-    if minimax:
+def _aspect_ratio_size(
+    aspect_ratio: str,
+    *,
+    video: bool = False,
+    minimax: bool = False,
+    resolution: str | None = None,
+) -> tuple[int, int]:
+    if str(resolution or "").upper() == "2K":
+        # 首尾帧默认 2K。边长对齐 32，供 Qwen ResolutionSelector 按面积回推。
+        mapping = {"16:9": (2048, 1152), "9:16": (1152, 2048), "1:1": (2048, 2048)}
+    elif minimax:
         mapping = {"16:9": (1344, 768), "9:16": (768, 1344), "1:1": (768, 768)}
     elif video:
         mapping = {"16:9": (1280, 720), "9:16": (720, 1280), "1:1": (720, 720)}
     else:
-        # 图片资产与 MiniMax H3 共用 768p 画布，避免首尾帧在送入视频工作流前
-        # 从 1024x576 再放大到 1344x768，减少一次无效插值造成的细节损失。
+        # 定妆/场景等资产与 MiniMax H3 共用 768p 画布。
         mapping = {"16:9": (1344, 768), "9:16": (768, 1344), "1:1": (768, 768)}
     return mapping.get(aspect_ratio, mapping["16:9"])
 
@@ -808,6 +816,7 @@ def patch_image_workflow(
     reference_image_names: list[str] | None = None,
     denoise: float | None = None,
     aspect_ratio: str = "16:9",
+    megapixels: float | None = None,
 ) -> dict[str, Any]:
     patched = copy.deepcopy(workflow)
     nodes = patched.get("prompt") or patched
@@ -904,6 +913,8 @@ def patch_image_workflow(
 
         if class_type == "resolutionselector" and isinstance(inputs.get("aspect_ratio"), str):
             inputs["aspect_ratio"] = _resolution_selector_aspect(aspect_ratio)
+            if megapixels is not None and isinstance(inputs.get("megapixels"), int | float):
+                inputs["megapixels"] = megapixels
 
         # Flux2 Klein 等：Width/Height 常是 PrimitiveInt，再接到 EmptyFlux2LatentImage
         if title == "width" and isinstance(inputs.get("value"), int | float):
@@ -1652,7 +1663,14 @@ async def run_comfy_image(
     requested_workflow = (payload.get("workflowName") or "").strip()
     default_workflow = model_params.get("workflowName") or DEFAULT_IMAGE_WORKFLOW_NAME
     aspect_ratio = payload.get("aspectRatio") or "16:9"
-    width, height = _aspect_ratio_size(aspect_ratio, video=False)
+    target = payload.get("_target") if isinstance(payload.get("_target"), dict) else {}
+    keyframe_2k = target.get("kind") == "keyframe" or str(payload.get("resolution") or "").upper() == "2K"
+    width, height = _aspect_ratio_size(
+        aspect_ratio,
+        video=False,
+        resolution="2K" if keyframe_2k else None,
+    )
+    output_megapixels = round(width * height / 1_000_000, 2) if keyframe_2k else None
 
     source, mode = _pick_img2img_source(
         payload.get("continuityReferenceImage"),
@@ -1765,6 +1783,7 @@ async def run_comfy_image(
                     reference_image_names=reference_names or None,
                     denoise=denoise,
                     aspect_ratio=str(aspect_ratio),
+                    megapixels=output_megapixels,
                 )
                 content = await _queue_and_poll(
                     client,

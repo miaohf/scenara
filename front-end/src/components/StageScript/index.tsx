@@ -23,6 +23,7 @@ import {
 import { getFinalValue, validateConfig } from './utils';
 import { resolveShotGenerationModel, setActiveModel } from '../../services/modelRegistry';
 import { DEFAULTS, SCRIPT_SOFT_LIMIT, SCRIPT_HARD_LIMIT, VISUAL_STYLE_OPTIONS } from './constants';
+import { storyFormLabel, type StoryFormId } from '../../services/ai/storyForm';
 import ConfigPanel from './ConfigPanel';
 import ScriptEditor from './ScriptEditor';
 import SceneBreakdown from './SceneBreakdown';
@@ -399,6 +400,8 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   const [customModelInput, setCustomModelInput] = useState('');
   const [customStyleInput, setCustomStyleInput] = useState('');
   const [rewriteInstruction, setRewriteInstruction] = useState('');
+  const [storyForm, setStoryForm] = useState<StoryFormId>('dramatic');
+  const [customStoryForm, setCustomStoryForm] = useState('');
   const [selectionRange, setSelectionRange] = useState<{ start: number; end: number } | null>(null);
   
   // Processing state
@@ -465,6 +468,12 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
   const analyzeAbortControllerRef = useRef<AbortController | null>(null);
   const rewriteAbortControllerRef = useRef<AbortController | null>(null);
   const agentTraceCounterRef = useRef(0);
+  const localScriptRef = useRef(localScript);
+  const rawScriptRef = useRef(project.rawScript);
+  const updateProjectRef = useRef(updateProject);
+  localScriptRef.current = localScript;
+  rawScriptRef.current = project.rawScript;
+  updateProjectRef.current = updateProject;
 
   const startAgentTrace = useCallback((title: string, subtitle?: string) => {
     const startedAt = Date.now();
@@ -552,14 +561,19 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
     onGeneratingChange?.(generating);
   }, [isProcessing, isContinuing, isRewriting, isInferringVisualStyle]);
 
-  // 组件卸载时重置生成状态
+  // 组件卸载时重置生成状态。编辑器文本只在 project.id 变化时从项目回读，
+  // 离开页面前必须把尚未写回的稿子刷进剧集，否则切走再回来会看到旧剧本。
   useEffect(() => {
     return () => {
+      const script = localScriptRef.current;
+      if (script !== rawScriptRef.current) {
+        updateProjectRef.current({ rawScript: script });
+      }
       analyzeAbortControllerRef.current?.abort();
       rewriteAbortControllerRef.current?.abort();
       onGeneratingChange?.(false);
     };
-  }, []);
+  }, [onGeneratingChange]);
 
   useEffect(() => {
     setScriptLogCallback((message) => {
@@ -1682,7 +1696,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       '输入分析',
       '已读取当前剧本并锁定续写边界',
       'success',
-      `输出语言：${localLanguage}\n剩余可写：${continueBudget} 字\n用户要求：${rewriteInstruction.trim() || '延续当前剧情、人物与场景连续性'}`,
+      `输出语言：${localLanguage}\n体裁：${storyFormLabel(storyForm, customStoryForm)}\n剩余可写：${continueBudget} 字\n用户要求：${rewriteInstruction.trim() || (storyForm === 'dramatic' ? '延续当前剧情、人物与场景连续性' : `按${storyFormLabel(storyForm, customStoryForm)}续写，保持体裁`)}`,
     );
     let streamed = '';
     let wasTruncated = false;
@@ -1715,7 +1729,9 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
         {
           maxAppendChars: continueBudget,
           maxTotalChars: SCRIPT_HARD_LIMIT,
-          instruction: rewriteInstruction.trim() || undefined
+          instruction: rewriteInstruction.trim() || undefined,
+          storyForm,
+          storyFormLabel: storyForm === 'other' ? customStoryForm.trim() || undefined : undefined,
         }
       );
       if (continuedContent) {
@@ -1744,7 +1760,9 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           {
             maxAppendChars: continueBudget,
             maxTotalChars: SCRIPT_HARD_LIMIT,
-            instruction: rewriteInstruction.trim() || undefined
+            instruction: rewriteInstruction.trim() || undefined,
+            storyForm,
+            storyFormLabel: storyForm === 'other' ? customStoryForm.trim() || undefined : undefined,
           }
         );
         const safeContent = continuedContent.slice(0, continueBudget);
@@ -1798,7 +1816,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       '输入分析',
       '已读取原稿并锁定改写约束',
       'success',
-      `输出语言：${localLanguage}\n目标时长：${rewriteTargetDuration}\n字符上限：${SCRIPT_HARD_LIMIT}\n用户要求：${rewriteInstruction.trim() || '使用默认的结构、冲突、对白和节奏优化策略'}`,
+      `输出语言：${localLanguage}\n体裁：${storyFormLabel(storyForm, customStoryForm)}\n目标时长：${rewriteTargetDuration}\n字符上限：${SCRIPT_HARD_LIMIT}\n用户要求：${rewriteInstruction.trim() || (storyForm === 'dramatic' ? '使用默认的结构、冲突、对白和节奏优化策略' : `按${storyFormLabel(storyForm, customStoryForm)}改写，不套用短片规则`)}`,
     );
 
     let activeDraftStage: 'rewriting' | 'repairing' = 'rewriting';
@@ -1814,6 +1832,8 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           maxOutputChars: SCRIPT_HARD_LIMIT,
           instruction: rewriteInstruction.trim() || undefined,
           targetDuration: rewriteTargetDuration,
+          storyForm,
+          storyFormLabel: storyForm === 'other' ? customStoryForm.trim() || undefined : undefined,
           abortSignal: controller.signal,
           onEvent: (event) => {
             const phaseByStage = {
@@ -1964,7 +1984,7 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
       '输入分析',
       '已锁定改写范围与前后文',
       'success',
-      `仅替换选中片段，不改动其余内容\n改写要求：${trimmedInstruction}`,
+      `仅替换选中片段，不改动其余内容\n体裁：${storyFormLabel(storyForm, customStoryForm)}\n改写要求：${trimmedInstruction}`,
     );
     appendAgentTrace(
       '改写模型',
@@ -2002,7 +2022,11 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
               'segment-rewrite-stream',
             );
           }
-        }
+        },
+        {
+          storyForm,
+          storyFormLabel: storyForm === 'other' ? customStoryForm.trim() || undefined : undefined,
+        },
       );
 
       const finalSegment = rewrittenSegment || streamed;
@@ -2044,7 +2068,11 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
           selectedSegment,
           trimmedInstruction,
           localLanguage,
-          finalModel
+          finalModel,
+          {
+            storyForm,
+            storyFormLabel: storyForm === 'other' ? customStoryForm.trim() || undefined : undefined,
+          },
         );
         const nextScript = prefix + rewrittenSegment + suffix;
         if (nextScript !== baseScript) {
@@ -2492,6 +2520,10 @@ const StageScript: React.FC<Props> = ({ project, updateProject, onShowModelConfi
             selectedText={selectedText}
             rewriteInstruction={rewriteInstruction}
             onRewriteInstructionChange={setRewriteInstruction}
+            storyForm={storyForm}
+            onStoryFormChange={setStoryForm}
+            customStoryForm={customStoryForm}
+            onCustomStoryFormChange={setCustomStoryForm}
             onRewriteSelection={handleRewriteSelection}
             onUndoRewrite={handleUndoRewrite}
             canUndoRewrite={!!lastRewriteSnapshot}

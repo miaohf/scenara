@@ -10,6 +10,7 @@ import {
   buildScreenwritingGuidance,
   type ScreenwritingModuleId,
 } from './screenwritingModuleRouter';
+import { getRewriteVoice, type StoryFormId } from './storyForm';
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -77,6 +78,9 @@ export interface ScriptRewriteAgentOptions {
   onDraftUpdate?: (draft: string, stage: 'rewriting' | 'repairing') => void;
   /** Optional explicit module selection; otherwise modules are routed from the task. */
   screenwritingModules?: ScreenwritingModuleId[];
+  /** dramatic keeps the current short-drama rewrite. documentary and other replace that contract. */
+  storyForm?: StoryFormId;
+  storyFormLabel?: string;
 }
 
 export interface ScriptRewriteAgentResult {
@@ -336,30 +340,66 @@ const emit = (
   logScriptProgress(`改写 Agent：${event.title}${event.detail ? `｜${clean(event.detail, 260)}` : ''}`);
 };
 
+const guidanceFor = (
+  script: string,
+  options: ScriptRewriteAgentOptions,
+  mode: 'diagnose' | 'rewrite',
+): string => buildScreenwritingGuidance({
+  script,
+  instruction: options.instruction,
+  targetDuration: options.targetDuration,
+  requestedModules: options.screenwritingModules,
+  storyForm: options.storyForm,
+  storyFormLabel: options.storyFormLabel,
+  mode,
+});
+
 const fallbackPlan = (
   originalScript: string,
   options: ScriptRewriteAgentOptions,
 ): ScriptRewritePlan => {
   const lengthTarget = getScriptLengthTarget(options);
+  const voice = getRewriteVoice(options.storyForm, options.storyFormLabel);
+  const targetLength = lengthTarget?.label || (options.maxOutputChars
+    ? `完整剧本不超过 ${options.maxOutputChars} 字符`
+    : '与原稿体量相近，必要时适度扩写');
+  if (!voice) {
+    return {
+      synopsis: clean(originalScript, 420),
+      rewriteGoals: [
+        options.instruction?.trim() || '强化开场钩子、因果关系、冲突升级、角色表演和结尾回报',
+        '保留原故事事实、角色身份、关键道具、对白语言和结局',
+        '将抽象描述改成可拍摄、可分镜的动作与反应',
+      ],
+      openingHook: '尽快呈现最具视觉吸引力且能触发核心冲突的事件。',
+      centralConflict: '保持原稿核心冲突，通过可见选择和后果使其更清晰。',
+      escalation: '逐场提高风险、缩短决策时间，并让每个行动产生下一步后果。',
+      climax: '把不可逆的关键选择安排在视觉和情绪最强的位置。',
+      payoff: '用明确的角色状态和视觉回响回应开场承诺。',
+      characterDirections: [],
+      continuityLocks: ['角色身份、关系、服装、关键道具、场景顺序、对白语言与故事结局不得无故改变。'],
+      visualStorytelling: ['优先使用动作、表情、构图、空间关系和环境变化表达剧情。'],
+      pacingPlan: ['快速建立事件', '逐步升级阻力', '集中呈现关键选择', '留出短暂结尾回响'],
+      targetLength,
+    };
+  }
   return {
     synopsis: clean(originalScript, 420),
     rewriteGoals: [
-      options.instruction?.trim() || '强化开场钩子、因果关系、冲突升级、角色表演和结尾回报',
-      '保留原故事事实、角色身份、关键道具、对白语言和结局',
-      '将抽象描述改成可拍摄、可分镜的动作与反应',
+      options.instruction?.trim() || voice.fallback.rewriteGoal,
+      voice.fallback.factLock,
+      '将抽象描述改成可拍摄、可分镜的画面与声音',
     ],
-    openingHook: '尽快呈现最具视觉吸引力且能触发核心冲突的事件。',
-    centralConflict: '保持原稿核心冲突，通过可见选择和后果使其更清晰。',
-    escalation: '逐场提高风险、缩短决策时间，并让每个行动产生下一步后果。',
-    climax: '把不可逆的关键选择安排在视觉和情绪最强的位置。',
-    payoff: '用明确的角色状态和视觉回响回应开场承诺。',
+    openingHook: voice.fallback.openingHook,
+    centralConflict: voice.fallback.centralConflict,
+    escalation: voice.fallback.escalation,
+    climax: voice.fallback.climax,
+    payoff: voice.fallback.payoff,
     characterDirections: [],
-    continuityLocks: ['角色身份、关系、服装、关键道具、场景顺序、对白语言与故事结局不得无故改变。'],
-    visualStorytelling: ['优先使用动作、表情、构图、空间关系和环境变化表达剧情。'],
-    pacingPlan: ['快速建立事件', '逐步升级阻力', '集中呈现关键选择', '留出短暂结尾回响'],
-    targetLength: lengthTarget?.label || (options.maxOutputChars
-      ? `完整剧本不超过 ${options.maxOutputChars} 字符`
-      : '与原稿体量相近，必要时适度扩写'),
+    continuityLocks: [voice.fallback.continuityLock],
+    visualStorytelling: [voice.fallback.visual],
+    pacingPlan: voice.fallback.pacing,
+    targetLength,
   };
 };
 
@@ -401,15 +441,24 @@ const normalizePlan = (
   };
 };
 
-const formatPlanForDisplay = (plan: ScriptRewritePlan): string => [
-  `开场钩子：${plan.openingHook}`,
-  `核心冲突：${plan.centralConflict}`,
-  `升级路径：${plan.escalation}`,
-  `高潮：${plan.climax}`,
-  `结尾回报：${plan.payoff}`,
-  `长度目标：${plan.targetLength}`,
-  plan.rewriteGoals.length ? `改写目标：${plan.rewriteGoals.join('；')}` : '',
-].filter(Boolean).join('\n').slice(0, 1800);
+const formatPlanForDisplay = (plan: ScriptRewritePlan, options: ScriptRewriteAgentOptions): string => {
+  const labels = getRewriteVoice(options.storyForm, options.storyFormLabel)?.planLabels || {
+    hook: '开场钩子',
+    conflict: '核心冲突',
+    escalation: '升级路径',
+    climax: '高潮',
+    payoff: '结尾回报',
+  };
+  return [
+    `${labels.hook}：${plan.openingHook}`,
+    `${labels.conflict}：${plan.centralConflict}`,
+    `${labels.escalation}：${plan.escalation}`,
+    `${labels.climax}：${plan.climax}`,
+    `${labels.payoff}：${plan.payoff}`,
+    `长度目标：${plan.targetLength}`,
+    plan.rewriteGoals.length ? `改写目标：${plan.rewriteGoals.join('；')}` : '',
+  ].filter(Boolean).join('\n').slice(0, 1800);
+};
 
 const fallbackReview = (script: string): ScriptRewriteReview => {
   const hasContent = script.trim().length >= 80;
@@ -524,18 +573,20 @@ const buildPlanningPrompt = (
   originalScript: string,
   language: string,
   options: ScriptRewriteAgentOptions,
-): string => `你是短视频项目的首席编剧与剧本统筹。先分析原稿并给出可公开展示、可执行的改写方案；不要输出隐藏推理过程。
-${buildScreenwritingGuidance({ script: originalScript, instruction: options.instruction, targetDuration: options.targetDuration, requestedModules: options.screenwritingModules, mode: 'diagnose' })}
-
-目标：提高开场钩子、叙事因果、冲突升级、角色弧光、对白辨识度、视觉叙事、节奏和结尾回报，同时让后续分镜 Agent 可以直接消费。
+): string => {
+  const voice = getRewriteVoice(options.storyForm, options.storyFormLabel);
+  const fieldGuide = voice ? `\n${voice.planFieldGuide}\n` : '';
+  return `${voice?.planner || '你是短视频项目的首席编剧与剧本统筹。先分析原稿并给出可公开展示、可执行的改写方案；不要输出隐藏推理过程。'}
+${guidanceFor(originalScript, options, 'diagnose')}
+${fieldGuide}目标：${voice?.goals || '提高开场钩子、叙事因果、冲突升级、角色弧光、对白辨识度、视觉叙事、节奏和结尾回报，同时让后续分镜 Agent 可以直接消费。'}
 
 硬性约束：
-- 保留原故事核心、人物身份与关系、关键道具、既定服装、世界规则、对白语言和结局；除非用户明确要求改变。
-- 不随意增加角色、道具、地点或支线。
+${voice?.hardConstraints || `- 保留原故事核心、人物身份与关系、关键道具、既定服装、世界规则、对白语言和结局；除非用户明确要求改变。
+- 不随意增加角色、道具、地点或支线。`}
 - 方案必须具体，使用制作决策，不写思维过程。
 - 目标输出语言：${language}。
 - 目标时长：${options.targetDuration || '沿用原稿'}。
-- 时长长度建议：${getScriptLengthTarget(options)?.label || '保持与原稿体量相近'}；这是节奏参考，不得牺牲剧情、角色和镜头质量来机械凑字数。
+- 时长长度建议：${getScriptLengthTarget(options)?.label || '保持与原稿体量相近'}；这是节奏参考，${voice?.lengthCaution || '不得牺牲剧情、角色和镜头质量来机械凑字数'}。
 - 字符上限：${options.maxOutputChars || '未指定'}。
 - 用户额外要求：${options.instruction?.trim() || '无'}。
 
@@ -557,22 +608,25 @@ ${buildScreenwritingGuidance({ script: originalScript, instruction: options.inst
 
 原稿：
 ${originalScript.slice(0, 30000)}`;
+};
 
 const buildRewritePrompt = (
   originalScript: string,
   plan: ScriptRewritePlan,
   language: string,
   options: ScriptRewriteAgentOptions,
-): string => `你是执行改写的资深编剧。严格依据“已批准改写方案”改写原稿。
-${buildScreenwritingGuidance({ script: originalScript, instruction: options.instruction, targetDuration: options.targetDuration, requestedModules: options.screenwritingModules, mode: 'rewrite' })}
+): string => {
+  const voice = getRewriteVoice(options.storyForm, options.storyFormLabel);
+  return `${voice?.writer || '你是执行改写的资深编剧。严格依据“已批准改写方案”改写原稿。'}
+${guidanceFor(originalScript, options, 'rewrite')}
 
 要求：
 - 只输出完整改写剧本，不要解释、总结、JSON、Markdown 代码围栏或隐藏推理。
-- 保留原故事事实、角色身份关系、关键道具、既定服装、世界规则、对白语言和结局。
-- 让动作、表情、空间关系、声音和环境变化可拍摄、可分镜；减少抽象心理说明。
+- ${voice ? voice.repairFactLock.replace(/^- /, '') : '保留原故事事实、角色身份关系、关键道具、既定服装、世界规则、对白语言和结局。'}
+- ${voice?.shootableRule.replace(/^- /, '') || '让动作、表情、空间关系、声音和环境变化可拍摄、可分镜；减少抽象心理说明。'}
 - ${markdownFormatInstruction}
 - 输出语言：${language}。
-- 时长长度建议：${getScriptLengthTarget(options)?.label || '保持与原稿体量相近'}；优先保证剧情、角色与镜头质量，不需要机械凑字数。
+- 时长长度建议：${getScriptLengthTarget(options)?.label || '保持与原稿体量相近'}；优先保证${voice ? '内容与画面质量' : '剧情、角色与镜头质量'}，不需要机械凑字数。
 - 完整输出不超过 ${options.maxOutputChars || 20000} 字符。
 - 逐字检查输出，不得出现 Unicode U+FFFD 替换字符或残缺词语。
 - 用户额外要求：${options.instruction?.trim() || '无'}。
@@ -582,6 +636,7 @@ ${JSON.stringify(plan, null, 2)}
 
 原稿：
 ${originalScript.slice(0, 30000)}`;
+};
 
 const buildReviewPrompt = (
   originalScript: string,
@@ -589,15 +644,17 @@ const buildReviewPrompt = (
   plan: ScriptRewritePlan,
   language: string,
   options: ScriptRewriteAgentOptions,
-): string => `你是独立剧本审稿 Agent。比较原稿、改写方案和改写稿，输出可公开展示的质量报告；不要输出隐藏推理。
-${buildScreenwritingGuidance({ script: rewrittenScript, instruction: options.instruction, targetDuration: options.targetDuration, requestedModules: options.screenwritingModules, mode: 'diagnose' })}
+): string => {
+  const voice = getRewriteVoice(options.storyForm, options.storyFormLabel);
+  return `你是独立剧本审稿 Agent。比较原稿、改写方案和改写稿，输出可公开展示的质量报告；不要输出隐藏推理。
+${guidanceFor(rewrittenScript, options, 'diagnose')}
 
-检查：故事事实忠实度、因果完整性、角色一致性、对白语言与辨识度、节奏与钩子、视觉可拍摄性、结尾回报、字符完整性和 Markdown 场次结构。只有会明显影响质量或后续分镜的具体问题才要求修复。
+${voice?.reviewFocus || '检查：故事事实忠实度、因果完整性、角色一致性、对白语言与辨识度、节奏与钩子、视觉可拍摄性、结尾回报、字符完整性和 Markdown 场次结构。只有会明显影响质量或后续分镜的具体问题才要求修复。'}
 
 判定原则：
 - 时长和字符区间只是剪辑节奏参考，不能单独作为 repair 或拒绝终稿的理由。
 - 不得凭空声称存在乱码、替换字符或缺失结构；此类客观问题必须以“改写稿”中的实际文本为依据。
-- 优先评价故事、角色、画面材质、镜头可执行性和情绪回报。
+${voice?.reviewPriority || '- 优先评价故事、角色、画面材质、镜头可执行性和情绪回报。'}
 - 只有能指出改写稿中具体互相矛盾的文本、丢失的既定事实，或会直接让分镜无法执行的问题，才标为 high。可选的铺垫、替代表达、节奏微调均为 medium 或 low。
 - 若改写稿结构完整、没有客观错误且总分达到 75，请给出 pass；仍可在 issues 中保留不阻断的编辑建议。
 
@@ -624,6 +681,7 @@ ${JSON.stringify(plan, null, 2)}
 
 改写稿：
 ${rewrittenScript.slice(0, 30000)}`;
+};
 
 const buildRepairPrompt = (
   originalScript: string,
@@ -632,16 +690,18 @@ const buildRepairPrompt = (
   review: ScriptRewriteReview,
   language: string,
   options: ScriptRewriteAgentOptions,
-): string => `你是终稿修订 Agent。根据审稿问题对改写稿做定点修复。
-${buildScreenwritingGuidance({ script: rewrittenScript, instruction: options.instruction, targetDuration: options.targetDuration, requestedModules: options.screenwritingModules, mode: 'rewrite' })}
+): string => {
+  const voice = getRewriteVoice(options.storyForm, options.storyFormLabel);
+  return `你是终稿修订 Agent。根据审稿问题对改写稿做定点修复。
+${guidanceFor(rewrittenScript, options, 'rewrite')}
 
 要求：
 - 只输出修复后的完整剧本，不要解释、报告、JSON、代码围栏或隐藏推理。
 - 只修改审稿报告指出的问题，保留已经通过的段落和表达。
-- 不改变原稿核心事实、角色身份关系、关键道具、既定服装、对白语言和结局。
+${voice?.repairFactLock || '- 不改变原稿核心事实、角色身份关系、关键道具、既定服装、对白语言和结局。'}
 - ${markdownFormatInstruction}
 - 输出语言：${language}；完整输出不超过 ${options.maxOutputChars || 20000} 字符。
-- 时长长度建议：${getScriptLengthTarget(options)?.label || '保持与原稿体量相近'}；优先修复故事与镜头质量，不得为凑字数破坏已通过内容。
+- 时长长度建议：${getScriptLengthTarget(options)?.label || '保持与原稿体量相近'}；优先修复${voice ? '内容与画面质量' : '故事与镜头质量'}，不得为凑字数破坏已通过内容。
 - 逐字检查输出，不得出现 Unicode U+FFFD 替换字符或残缺词语。
 
 改写方案：
@@ -655,6 +715,7 @@ ${originalScript.slice(0, 30000)}
 
 待修复改写稿：
 ${rewrittenScript.slice(0, 30000)}`;
+};
 
 const generateDraft = async (
   prompt: string,
@@ -750,7 +811,7 @@ export const runScriptRewriteAgent = async (
       stage: 'planning',
       status: 'success',
       title: '改写方案已完成',
-      detail: formatPlanForDisplay(plan),
+      detail: formatPlanForDisplay(plan, options),
       stableId: 'rewrite-planning',
     });
   } catch (error) {
@@ -762,7 +823,7 @@ export const runScriptRewriteAgent = async (
       stage: 'planning',
       status: 'warning',
       title: '策划调用失败，已使用保守改写方案继续',
-      detail: formatPlanForDisplay(plan),
+      detail: formatPlanForDisplay(plan, options),
       stableId: 'rewrite-planning',
     });
   }

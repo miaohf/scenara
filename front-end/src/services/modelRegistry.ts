@@ -302,6 +302,11 @@ export const loadRegistry = (): ModelRegistryState => {
           nextParams.turnaroundSteps = nextParams.turnaroundSteps || fallback.turnaroundSteps || 4;
           changed = true;
         }
+        if (!nextParams.threeViewWorkflowName && fallback.threeViewWorkflowName) {
+          nextParams.threeViewWorkflowName = fallback.threeViewWorkflowName;
+          nextParams.threeViewSteps = nextParams.threeViewSteps || fallback.threeViewSteps || 4;
+          changed = true;
+        }
         if (!nextParams.keyframeWorkflowName && fallback.keyframeWorkflowName) {
           nextParams.keyframeWorkflowName = fallback.keyframeWorkflowName;
           nextParams.keyframeSteps = nextParams.keyframeSteps || fallback.keyframeSteps;
@@ -421,12 +426,15 @@ export const loadRegistry = (): ModelRegistryState => {
             'keyframeSteps',
             'turnaroundWorkflowName',
             'turnaroundSteps',
+            'threeViewWorkflowName',
+            'threeViewSteps',
           ];
           const WORKFLOW_PREF_KEYS = new Set([
             'workflowName',
             'referenceWorkflowName',
             'keyframeWorkflowName',
             'turnaroundWorkflowName',
+            'threeViewWorkflowName',
           ]);
           const mergedParams = { ...(bm as any).params };
           const existingParams = (existing as any).params;

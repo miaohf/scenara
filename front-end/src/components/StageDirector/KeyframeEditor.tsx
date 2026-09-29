@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Loader2, Edit2, Upload, ArrowRight, ArrowLeft, Sparkles, Wand2 } from 'lucide-react';
 import { Keyframe } from '../../types';
 import { useGenerationQueue } from '../../contexts/GenerationQueueContext';
-import { findShotKeyframeJob, formatJobProgressLabel, jobDisplayState } from '../../services/generationQueue';
+import { findShotKeyframeJob, formatJobProgressLabel, jobDisplayState, keyframeImageAlreadyLanded } from '../../services/generationQueue';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 
 interface KeyframeEditorProps {
@@ -111,10 +111,13 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
   ) => {
     const isOptimizingThisKeyframe = optimizingKeyframeTypes.includes(type);
     const job = findShotKeyframeJob(jobs, shotId, type, shotIndex);
-    // Worker/SSE 状态可能比已经写回的图片慢一拍；有完成图片时忽略滞后的活动任务。
-    const effectiveJob = keyframe?.imageUrl && keyframe.status !== 'generating' ? undefined : job;
-    const display = effectiveJob ? jobDisplayState(effectiveJob, jobs) : (keyframe?.status === 'generating' ? 'queued' : undefined);
-    const isGenerating = keyframe?.status === 'generating' || display === 'running' || display === 'queued';
+    // 图和审核都已经写回时，滞后的排队任务不能继续盖住完成态。
+    const imageAlreadyLanded = keyframeImageAlreadyLanded(keyframe, job);
+    const effectiveJob = imageAlreadyLanded ? undefined : job;
+    const display = effectiveJob
+      ? jobDisplayState(effectiveJob, jobs)
+      : (!imageAlreadyLanded && keyframe?.status === 'generating' ? 'queued' : undefined);
+    const isGenerating = !imageAlreadyLanded && (keyframe?.status === 'generating' || display === 'running' || display === 'queued');
     const hasFailed = keyframe?.status === 'failed' && !isGenerating;
     const progressLabel = display
       ? formatJobProgressLabel(effectiveJob, display)
@@ -283,7 +286,7 @@ const KeyframeEditor: React.FC<KeyframeEditorProps> = ({
             className="px-3 py-1.5 bg-[var(--btn-primary-bg)] hover:bg-[var(--btn-primary-hover)] text-[var(--btn-primary-text)] rounded text-[10px] font-bold uppercase tracking-wider transition-colors flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
             title={text('AI一次性优化起始帧和结束帧（推荐）', 'Optimize start and end frames with AI (recommended)')}
           >
-            {optimizingKeyframeTypes.length > 0 ? (
+            {optimizingKeyframeTypes.includes('start') && optimizingKeyframeTypes.includes('end') ? (
               <>
                 <Loader2 className="w-3 h-3 animate-spin" />
                 <span>{text('优化中...', 'Optimizing...')}</span>

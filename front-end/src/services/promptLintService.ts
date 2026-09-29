@@ -113,13 +113,66 @@ const splitBySeparators = (value?: string): string[] => {
     .filter(Boolean);
 };
 
+const DUPLICATE_GUARD_PATTERN = /\b(?:duplicate|cloned|clone|extra|second|copy|copies|reflection|mirrored|mirror|double)\b/i;
+
 export const hasHumanExclusionTerms = (negativePrompt?: string): boolean => {
   if (!negativePrompt) return false;
   const tokens = splitBySeparators(negativePrompt.toLowerCase());
-  return tokens.some((token) =>
-    HUMAN_EXCLUSION_TERMS.some((keyword) => token.includes(keyword))
-  );
+  return tokens.some((token) => {
+    // “cloned person / extra person” 是防止单角色被画成两个，不是场景空镜的去人词。
+    if (DUPLICATE_GUARD_PATTERN.test(token)) return false;
+    return HUMAN_EXCLUSION_TERMS.some((keyword) => new RegExp(`\\b${keyword}\\b`).test(token));
+  });
 };
+
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Qwen Image 2.1 的结构化提示词用「名字（<imageN>，1）」锁人数，不再依赖英文 LOCKED 块。 */
+const hasDeterministicCharacterCount = (prompt: string, characterName: string): boolean => {
+  if (prompt.includes('[LOCKED CHARACTER COUNT — DO NOT CHANGE]')) return true;
+  const name = characterName.trim();
+  if (!name) return false;
+  const escaped = escapeRegExp(name);
+  return new RegExp(`${escaped}[\\s\\S]{0,80}?[,，]\\s*1\\s*[）)]`).test(prompt);
+};
+
+/** 改写模型经常漏掉「，1）」。补在角色名旁边，避免单人镜头被预检拦住，也避免背面/过肩被画成两个人。 */
+export const ensureSingleCharacterCountLock = (prompt: string, characterName: string): string => {
+  const name = characterName.trim();
+  if (!name || hasDeterministicCharacterCount(prompt, name)) return prompt;
+
+  const lines = prompt.split('\n');
+  let inPeople = false;
+  let patched = false;
+  const next = lines.flatMap((line) => {
+    const header = line.trim();
+    if (/^【[^】]+】/.test(header)) {
+      inPeople = header.startsWith('【人物】');
+      return [line];
+    }
+    if (!inPeople || patched || !line.includes(name)) return [line];
+    patched = true;
+    const pattern = new RegExp(`(${escapeRegExp(name)}\\s*[（(])([^）)]{0,60})([）)])`);
+    const match = line.match(pattern);
+    if (match && !/[,，]\s*1\s*$/.test(match[2])) {
+      const inner = match[2].replace(/[,，]\s*$/, '').trim();
+      return [line.replace(match[0], `${match[1]}${inner ? `${inner}，1` : '1'}${match[3]}`)];
+    }
+    if (!match) return [line.replace(name, `${name}（仅此一人，1）`)];
+    return [line, `- ${name}（仅此一人，1）`];
+  });
+
+  if (!patched) {
+    const index = next.findIndex((line) => line.trim().startsWith('【人物】'));
+    const lockLine = `- ${name}（仅此一人，1）`;
+    if (index >= 0) next.splice(index + 1, 0, lockLine);
+    else next.push('', '【人物】', lockLine);
+  }
+  return next.join('\n');
+};
+
+const isQwenStructuredKeyframePrompt = (prompt: string): boolean =>
+  prompt.includes('【人物】') && /<image\d+>/i.test(prompt);
 
 export const lintPromptText = (
   prompt: string,
@@ -232,7 +285,7 @@ export const runKeyframePreflight = (input: KeyframePreflightInput): PromptLintR
   }
 
   if (input.expectedCharacterNames?.length === 1) {
-    if (!normalizedPrompt.includes('[LOCKED CHARACTER COUNT — DO NOT CHANGE]')) {
+    if (!hasDeterministicCharacterCount(normalizedPrompt, input.expectedCharacterNames[0])) {
       issues.push({
         code: 'missing-single-character-lock',
         severity: 'error',
@@ -280,6 +333,8 @@ export const runKeyframePreflight = (input: KeyframePreflightInput): PromptLintR
   for (const constraint of input.requiredConstraints || []) {
     const normalizedConstraint = constraint.trim();
     if (!normalizedConstraint) continue;
+    // 结构化中文提示词不会原样保留英文约束句。这些句子里还有运镜和转场，不应拿子串去判静帧丢失。
+    if (isQwenStructuredKeyframePrompt(normalizedPrompt)) continue;
     const anchor = normalizedConstraint.split(/[，。；,:：]/u)[0].trim();
     if (anchor.length >= 4 && !normalizedPrompt.toLocaleLowerCase().includes(anchor.toLocaleLowerCase())) {
       issues.push({

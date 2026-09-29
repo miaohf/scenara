@@ -1,3 +1,5 @@
+import { resolveStoryForm, storyFormGuidanceHeader, type StoryFormId } from './storyForm';
+
 export type ScreenwritingModuleId =
   | 'premise-theme'
   | 'character-conflict'
@@ -7,7 +9,11 @@ export type ScreenwritingModuleId =
   | 'series-structure'
   | 'visual-storytelling'
   | 'genre-contract'
-  | 'screenplay-format';
+  | 'screenplay-format'
+  | 'documentary-structure'
+  | 'documentary-narration'
+  | 'documentary-visual'
+  | 'form-fidelity';
 
 export interface ScreenwritingModule {
   id: ScreenwritingModuleId;
@@ -71,18 +77,55 @@ const MODULES: Record<ScreenwritingModuleId, ScreenwritingModule> = {
     diagnosticChecks: ['动作、环境和声音是否都能被拍到或听到', '场景和动作描述是否简洁、连续并便于表演和分镜'],
     rewriteDirectives: ['用现在时、可拍摄的动作和简洁场景描述书写', '删除镜头外的解释、作者评论和无法执行的抽象指令'],
   },
+  'documentary-structure': {
+    id: 'documentary-structure',
+    title: 'Documentary Structure',
+    diagnosticChecks: ['开场是否标明地点、主题和观看理由', '信息是否按空间、时间或主题递进，而不是靠人物对抗升级', '结尾是否留下可记住的地点印象、事实或开放问题'],
+    rewriteDirectives: ['保持纪录片体裁：介绍、观察和解释，不改写成短片', '不要发明主角、对手、人物弧光或戏剧冲突', '每段只推进一个可核对的话题，例如地点、历史、地理、日常、地标或氛围'],
+  },
+  'documentary-narration': {
+    id: 'documentary-narration',
+    title: 'Documentary Narration',
+    diagnosticChecks: ['旁白是否具体、可核对，并与画面能看到或听到的内容对应', '旁白是否在说明，而不是用对白潜台词施压'],
+    rewriteDirectives: ['旁白是主要文本，用现在时说明观众能看到或听到的事实', '保留原稿中的专名、数字、年代和因果关系；不确定的内容不要补成定论', '采访对白仅在原稿已有时保留，不要为了戏剧性新增角色台词'],
+  },
+  'documentary-visual': {
+    id: 'documentary-visual',
+    title: 'Documentary Visuals',
+    diagnosticChecks: ['画面是否是可拍摄的环境、活动、物件和光线，而不是角色表演', '相邻段落的地点与光线是否能剪在一起'],
+    rewriteDirectives: ['用航拍、街景、地标、人流、天气和声音建立地点，不要求每镜一个角色动作高潮', '删去无法拍摄的空泛抒情，保留能对应画面的信息'],
+  },
+  'form-fidelity': {
+    id: 'form-fidelity',
+    title: 'Form Fidelity',
+    diagnosticChecks: ['成稿是否保持指定体裁，而不是被改成短片', '信息、旁白或对白的比例是否符合该体裁'],
+    rewriteDirectives: ['按指定体裁组织开场、推进和收束', '不要无故添加主角、对手、人物弧光或戏剧高潮', '保留该体裁需要的说明、旁白或对白'],
+  },
 };
 
 const unique = <T>(values: T[]): T[] => Array.from(new Set(values));
+
+const DOCUMENTARY_MODULES: ScreenwritingModuleId[] = [
+  'documentary-structure',
+  'documentary-narration',
+  'documentary-visual',
+];
 
 export const routeScreenwritingModules = (input: {
   script: string;
   instruction?: string;
   targetDuration?: string;
   requestedModules?: ScreenwritingModuleId[];
+  storyForm?: StoryFormId;
 }): ScreenwritingModule[] => {
   if (input.requestedModules?.length) {
     return unique(input.requestedModules).map((id) => MODULES[id]).filter(Boolean);
+  }
+  if (input.storyForm === 'documentary') {
+    return DOCUMENTARY_MODULES.map((id) => MODULES[id]);
+  }
+  if (input.storyForm === 'other') {
+    return [MODULES['form-fidelity']];
   }
   const text = `${input.script.slice(0, 12000)} ${input.instruction || ''}`.toLowerCase();
   const ids: ScreenwritingModuleId[] = ['premise-theme', 'character-conflict', 'scene-craft', 'visual-storytelling'];
@@ -109,8 +152,13 @@ export const buildScreenwritingGuidance = (input: {
   instruction?: string;
   targetDuration?: string;
   requestedModules?: ScreenwritingModuleId[];
+  storyForm?: StoryFormId;
+  storyFormLabel?: string;
   mode: 'diagnose' | 'rewrite';
 }): string => {
-  const modules = routeScreenwritingModules(input);
-  return `\n## 本任务加载的编剧模块（仅应用这些规则）\n${formatScreenwritingModules(modules, input.mode)}\n`;
+  const resolved = resolveStoryForm(input.storyForm, input.storyFormLabel);
+  const modules = routeScreenwritingModules({ ...input, storyForm: resolved.form });
+  const header = storyFormGuidanceHeader(resolved.form, resolved.label);
+  const body = `## 本任务加载的编剧模块（仅应用这些规则）\n${formatScreenwritingModules(modules, input.mode)}`;
+  return header ? `\n${header}\n${body}\n` : `\n${body}\n`;
 };

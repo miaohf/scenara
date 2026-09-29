@@ -85,6 +85,10 @@ export interface ImageModelParams {
   turnaroundWorkflowName?: string;
   /** 造型九宫格 steps；未填则回退 steps */
   turnaroundSteps?: number;
+  /** 角色三视图专用 ComfyUI 工作流；未填则使用内置 16:9 三视图工作流 */
+  threeViewWorkflowName?: string;
+  /** 角色三视图 steps；未填则回退造型九宫格 steps */
+  threeViewSteps?: number;
 }
 
 /**
@@ -278,6 +282,8 @@ export interface ImageGenerateOptions {
   workflowName?: string;
   /** 覆盖模型默认 steps */
   steps?: number;
+  /** 首尾帧等需要高于默认画布时指定，例如 2K */
+  resolution?: '1K' | '2K' | '4K';
   /** 异步任务归属剧集；带上后离开页面仍可按剧集找回结果 */
   episodeId?: string;
   /** 写回目标：Worker 完成后据此更新剧集对应资产 */
@@ -398,6 +404,8 @@ export const DEFAULT_IMAGE_PARAMS_COMFYUI: ImageModelParams = {
   keyframeSteps: 20,
   turnaroundWorkflowName: 'qwen_image_edit_2511_fp8_character_turnaround',
   turnaroundSteps: 4,
+  threeViewWorkflowName: 'qwen_image_edit_2511_fp8_character_three_view',
+  threeViewSteps: 4,
 };
 
 /**

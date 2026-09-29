@@ -330,7 +330,10 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
       const asset = type === 'character'
         ? newData.characters.find(c => compareIds(c.id, id))
         : newData.scenes.find(s => compareIds(s.id, id));
-      if (asset) beginGeneration(asset, pendingId);
+      if (asset) {
+        beginGeneration(asset, pendingId);
+        if (type === 'character') (asset as Character).activeImageView = 'casting';
+      }
       return { ...prev, scriptData: newData };
     });
 
@@ -2267,20 +2270,6 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
     }
   };
 
-  const handleRegenerateCharacterView = (char: Character) => {
-    const view = resolveCharacterImageView(char);
-    if (view === 'turnaround') {
-      if (char.turnaround?.panels?.length === 9) handleRegenerateTurnaroundImage(char.id);
-      else handleGenerateTurnaroundPanels(char.id);
-      return;
-    }
-    if (view === 'threeView') {
-      handleGenerateThreeView(char.id);
-      return;
-    }
-    handleGenerateAsset('character', char.id);
-  };
-
   // 空状态
   if (!project.scriptData) {
     return (
@@ -2645,7 +2634,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
                 shapeReferenceImage={char.shapeReferenceImage}
                 referenceWorkflowName={activeImageParams.referenceWorkflowName}
                 referenceSteps={activeImageParams.referenceSteps}
-                onGenerate={() => handleRegenerateCharacterView(char)}
+                onGenerate={() => handleGenerateAsset('character', char.id)}
                 onUpload={(file) => handleUploadCharacterImage(char.id, file)}
                 onUploadShapeReference={(file) => handleUploadShapeReferenceImage('character', char.id, file)}
                 onClearShapeReference={() => handleClearShapeReferenceImage('character', char.id)}

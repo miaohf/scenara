@@ -172,6 +172,8 @@ const ModelList: React.FC<ModelListProps> = ({ type, onRefresh }) => {
                   关键帧（首尾帧）：{imageParams.keyframeWorkflowName || '（回退到定妆工作流）'}
                   <br />
                   造型九宫格：{imageParams.turnaroundWorkflowName || '（回退到定妆工作流）'}
+                  <br />
+                  角色三视图：{imageParams.threeViewWorkflowName || 'qwen_image_edit_2511_fp8_character_three_view'}
                 </p>
               )}
             </div>

@@ -383,7 +383,7 @@ export default function EpisodeWorkspace() {
     <GenerationQueueProvider
       episode={currentEpisode}
       onEpisodeReconcile={(updater) => {
-        if (currentEpisode) setCurrentEpisode(updater(currentEpisode));
+        setCurrentEpisode((prev) => (prev ? updater(prev) : prev));
       }}
     >
     <div className="flex h-screen bg-[var(--bg-secondary)] font-sans text-[var(--text-secondary)] selection:bg-[var(--accent-bg)]">

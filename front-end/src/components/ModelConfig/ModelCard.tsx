@@ -369,6 +369,21 @@ const ModelCard: React.FC<ModelCardProps> = ({
       )}
       {params.apiFormat === 'comfyui' && (
         <div>
+          <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">角色三视图工作流</label>
+          <input
+            type="text"
+            value={editParams.threeViewWorkflowName || ''}
+            onChange={(e) => handleParamChange('threeViewWorkflowName', e.target.value.trim() || undefined)}
+            className="w-full bg-[var(--bg-hover)] border border-[var(--border-secondary)] rounded px-3 py-2 text-xs text-[var(--text-primary)] font-mono"
+            placeholder="qwen_image_edit_2511_fp8_character_three_view"
+          />
+          <p className="text-[9px] text-[var(--text-muted)] mt-1">
+            16:9 四视图：正面、侧面、背面全身加右侧头像。不要和九宫格共用 turnaround 工作流。
+          </p>
+        </div>
+      )}
+      {params.apiFormat === 'comfyui' && (
+        <div>
           <label className="text-[10px] text-[var(--text-tertiary)] block mb-1">Steps（造型九宫格）</label>
           <input
             type="number"
@@ -589,6 +604,8 @@ const ModelCard: React.FC<ModelCardProps> = ({
                 关键帧：{(model.params as ImageModelParams).keyframeWorkflowName || '（同定妆）'}
                 {' · '}
                 九宫格：{(model.params as ImageModelParams).turnaroundWorkflowName || '（同定妆）'}
+                {' · '}
+                三视图：{(model.params as ImageModelParams).threeViewWorkflowName || 'qwen_image_edit_2511_fp8_character_three_view'}
               </p>
             )}
           </div>

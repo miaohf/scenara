@@ -129,6 +129,8 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
                 "keyframeSteps": 20,
                 "turnaroundWorkflowName": "qwen_image_edit_2511_fp8_character_turnaround",
                 "turnaroundSteps": 4,
+                "threeViewWorkflowName": "qwen_image_edit_2511_fp8_character_three_view",
+                "threeViewSteps": 4,
             },
         },
         {
@@ -168,6 +170,8 @@ def build_default_registry(settings: Settings | None = None) -> dict[str, Any]:
                 "keyframeSteps": 40,
                 "turnaroundWorkflowName": "qwen_image_edit_2511_fp8_character_turnaround",
                 "turnaroundSteps": 4,
+                "threeViewWorkflowName": "qwen_image_edit_2511_fp8_character_three_view",
+                "threeViewSteps": 4,
             },
         },
         {
@@ -816,6 +820,10 @@ def sanitize_registry(
             if not params.get("turnaroundWorkflowName") and fallback.get("turnaroundWorkflowName"):
                 params["turnaroundWorkflowName"] = fallback["turnaroundWorkflowName"]
                 params["turnaroundSteps"] = params.get("turnaroundSteps") or fallback.get("turnaroundSteps") or 4
+                filled = True
+            if not params.get("threeViewWorkflowName") and fallback.get("threeViewWorkflowName"):
+                params["threeViewWorkflowName"] = fallback["threeViewWorkflowName"]
+                params["threeViewSteps"] = params.get("threeViewSteps") or fallback.get("threeViewSteps") or 4
                 filled = True
             if not params.get("keyframeWorkflowName") and fallback.get("keyframeWorkflowName"):
                 params["keyframeWorkflowName"] = fallback["keyframeWorkflowName"]

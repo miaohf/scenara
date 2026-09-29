@@ -29,6 +29,7 @@ import {
   logScriptProgress,
   parseJsonWithRecovery,
 } from './apiCore';
+import { getContinueVoice, segmentFormRule, type StoryFormId } from './storyForm';
 import { getStylePrompt } from './promptConstants';
 import { generateArtDirection, generateAllCharacterPrompts, generateVisualPrompts } from './visualService';
 import {
@@ -2265,6 +2266,13 @@ interface ContinueScriptOptions {
   maxAppendChars?: number;
   maxTotalChars?: number;
   instruction?: string;
+  storyForm?: StoryFormId;
+  storyFormLabel?: string;
+}
+
+interface SegmentRewriteOptions {
+  storyForm?: StoryFormId;
+  storyFormLabel?: string;
 }
 
 interface RewriteScriptOptions {
@@ -2276,6 +2284,71 @@ const formatUserInstruction = (instruction?: string): string => {
   const trimmed = instruction?.trim();
   if (!trimmed) return '';
   return `\n用户额外要求（必须遵守）：\n${trimmed.slice(0, 800)}\n`;
+};
+
+const buildContinuePrompt = (
+  existingScript: string,
+  language: string,
+  limits: { existingLength: number; maxAppendChars: number; maxTotalChars?: number },
+  options?: ContinueScriptOptions,
+): string => {
+  const voice = getContinueVoice(options?.storyForm, options?.storyFormLabel);
+  const persona = voice?.persona || '你是一位资深剧本创作者。请在充分理解下方已有剧本内容的基础上，续写后续情节。';
+  const rule1 = voice?.rule1 || '1. 严格保持原剧本的风格、语气、人物性格和叙事节奏，确保无明显风格断层。';
+  const rule2 = voice?.rule2 || '2. 情节发展需自然流畅，逻辑严密，因果关系合理，避免突兀转折。';
+  const rule3 = voice?.rule3 || '3. 有效增加戏剧冲突和情感张力，使故事更具吸引力和张力。';
+  const rule5 = voice?.rule5 || '5. 保持剧本的原有格式，包括场景描述、人物对白、舞台指示等，确保格式一致。';
+  const rule8 = voice?.rule8 || '8. 若剧情信息量过大，请优先保留关键冲突并简洁推进，不要冗长铺陈。';
+  return `
+${persona}
+
+续写要求：
+${rule1}
+${rule2}
+${rule3}
+4. 续写内容建议控制在原有剧本长度的30%-50%，但必须小于等于 ${limits.maxAppendChars} 字符。
+${rule5}
+6. 输出语言为：${language}，用词准确、表达流畅。
+7. 仅输出续写剧本内容，不添加任何说明、前缀或后缀。
+${rule8}
+9. 当前已有剧本长度为 ${limits.existingLength} 字符。${limits.maxTotalChars ? `续写后总长度不得超过 ${limits.maxTotalChars} 字符。` : ''}
+${formatUserInstruction(options?.instruction)}
+已有剧本内容：
+${existingScript}
+
+请直接续写剧本内容。（不要包含"续写："等前缀）：
+`;
+};
+
+const buildSegmentRewritePrompt = (
+  fullScript: string,
+  selectedText: string,
+  requirements: string,
+  language: string,
+  options?: SegmentRewriteOptions,
+): string => {
+  const formRule = segmentFormRule(options?.storyForm, options?.storyFormLabel);
+  return `
+你是一位顶级剧本编剧顾问。请基于上下文和改写要求，对“选中片段”进行精准改写。
+
+硬性要求：
+1. 只输出改写后的“选中片段”文本，不要输出完整剧本，不要解释说明。
+2. 输出语言必须是：${language}。
+3. 保持人物设定、世界观与上下文事实一致，除非改写要求明确要求改变。
+4. 保持与前后文衔接自然，不出现突兀跳跃。
+5. 尽量保持原片段格式（段落、台词、场景标记），除非改写要求另有指定。
+${formRule ? `${formRule}\n` : ''}
+【完整剧本（仅作上下文，不要整体改写）】
+${fullScript.slice(0, 30000)}
+
+【选中片段（只改写这里）】
+${selectedText}
+
+【改写要求】
+${requirements}
+
+请直接输出改写后的选中片段：
+`;
 };
 
 const toPositiveInteger = (value?: number): number | undefined => {
@@ -2336,25 +2409,7 @@ export const continueScript = async (
     );
   }
 
-  const prompt = `
-你是一位资深剧本创作者。请在充分理解下方已有剧本内容的基础上，续写后续情节。
-
-续写要求：
-1. 严格保持原剧本的风格、语气、人物性格和叙事节奏，确保无明显风格断层。
-2. 情节发展需自然流畅，逻辑严密，因果关系合理，避免突兀转折。
-3. 有效增加戏剧冲突和情感张力，使故事更具吸引力和张力。
-4. 续写内容建议控制在原有剧本长度的30%-50%，但必须小于等于 ${limits.maxAppendChars} 字符。
-5. 保持剧本的原有格式，包括场景描述、人物对白、舞台指示等，确保格式一致。
-6. 输出语言为：${language}，用词准确、表达流畅。
-7. 仅输出续写剧本内容，不添加任何说明、前缀或后缀。
-8. 若剧情信息量过大，请优先保留关键冲突并简洁推进，不要冗长铺陈。
-9. 当前已有剧本长度为 ${limits.existingLength} 字符。${limits.maxTotalChars ? `续写后总长度不得超过 ${limits.maxTotalChars} 字符。` : ''}
-${formatUserInstruction(options?.instruction)}
-已有剧本内容：
-${existingScript}
-
-请直接续写剧本内容。（不要包含"续写："等前缀）：
-`;
+  const prompt = buildContinuePrompt(existingScript, language, limits, options);
 
   try {
     const result = await retryOperation(() => chatCompletion(prompt, model, 0.8, 4096));
@@ -2401,25 +2456,7 @@ export const continueScriptStream = async (
     );
   }
 
-  const prompt = `
-你是一位资深剧本创作者。请在充分理解下方已有剧本内容的基础上，续写后续情节。
-
-续写要求：
-1. 严格保持原剧本的风格、语气、人物性格和叙事节奏，确保无明显风格断层。
-2. 情节发展需自然流畅，逻辑严密，因果关系合理，避免突兀转折。
-3. 有效增加戏剧冲突和情感张力，使故事更具吸引力和张力。
-4. 续写内容建议控制在原有剧本长度的30%-50%，但必须小于等于 ${limits.maxAppendChars} 字符。
-5. 保持剧本的原有格式，包括场景描述、人物对白、舞台指示等，确保格式一致。
-6. 输出语言为：${language}，用词准确、表达流畅。
-7. 仅输出续写剧本内容，不添加任何说明、前缀或后缀。
-8. 若剧情信息量过大，请优先保留关键冲突并简洁推进，不要冗长铺陈。
-9. 当前已有剧本长度为 ${limits.existingLength} 字符。${limits.maxTotalChars ? `续写后总长度不得超过 ${limits.maxTotalChars} 字符。` : ''}
-${formatUserInstruction(options?.instruction)}
-已有剧本内容：
-${existingScript}
-
-请直接续写剧本内容。（不要包含"续写："等前缀）：
-`;
+  const prompt = buildContinuePrompt(existingScript, language, limits, options);
 
   try {
     let streamedLength = 0;
@@ -2605,32 +2642,13 @@ export const rewriteScriptSegment = async (
   selectedText: string,
   requirements: string,
   language: string = '中文',
-  model: string = getActiveChatModelName()
+  model: string = getActiveChatModelName(),
+  options?: SegmentRewriteOptions,
 ): Promise<string> => {
   console.log('🧩 rewriteScriptSegment 调用 - 使用模型:', model);
   const startTime = Date.now();
 
-  const prompt = `
-你是一位顶级剧本编剧顾问。请基于上下文和改写要求，对“选中片段”进行精准改写。
-
-硬性要求：
-1. 只输出改写后的“选中片段”文本，不要输出完整剧本，不要解释说明。
-2. 输出语言必须是：${language}。
-3. 保持人物设定、世界观与上下文事实一致，除非改写要求明确要求改变。
-4. 保持与前后文衔接自然，不出现突兀跳跃。
-5. 尽量保持原片段格式（段落、台词、场景标记），除非改写要求另有指定。
-
-【完整剧本（仅作上下文，不要整体改写）】
-${fullScript.slice(0, 30000)}
-
-【选中片段（只改写这里）】
-${selectedText}
-
-【改写要求】
-${requirements}
-
-请直接输出改写后的选中片段：
-`;
+  const prompt = buildSegmentRewritePrompt(fullScript, selectedText, requirements, language, options);
 
   try {
     const result = await retryOperation(() => chatCompletion(prompt, model, 0.7, 4096));
@@ -2662,32 +2680,13 @@ export const rewriteScriptSegmentStream = async (
   requirements: string,
   language: string = '中文',
   model: string = getActiveChatModelName(),
-  onDelta?: (delta: string) => void
+  onDelta?: (delta: string) => void,
+  options?: SegmentRewriteOptions,
 ): Promise<string> => {
   console.log('🧩 rewriteScriptSegmentStream 调用 - 使用模型:', model);
   const startTime = Date.now();
 
-  const prompt = `
-你是一位顶级剧本编剧顾问。请基于上下文和改写要求，对“选中片段”进行精准改写。
-
-硬性要求：
-1. 只输出改写后的“选中片段”文本，不要输出完整剧本，不要解释说明。
-2. 输出语言必须是：${language}。
-3. 保持人物设定、世界观与上下文事实一致，除非改写要求明确要求改变。
-4. 保持与前后文衔接自然，不出现突兀跳跃。
-5. 尽量保持原片段格式（段落、台词、场景标记），除非改写要求另有指定。
-
-【完整剧本（仅作上下文，不要整体改写）】
-${fullScript.slice(0, 30000)}
-
-【选中片段（只改写这里）】
-${selectedText}
-
-【改写要求】
-${requirements}
-
-请直接输出改写后的选中片段：
-`;
+  const prompt = buildSegmentRewritePrompt(fullScript, selectedText, requirements, language, options);
 
   try {
     const result = await retryOperation(() => chatCompletionStream(prompt, model, 0.7, undefined, 600000, onDelta));

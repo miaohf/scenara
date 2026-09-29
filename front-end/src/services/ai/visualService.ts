@@ -34,7 +34,7 @@ import {
   CHARACTER_ATTIRE_INSTRUCTION,
 } from './promptConstants';
 import { compressPromptWithLLM } from './promptCompressionService';
-import { compileQwenImage21Prompt, isQwenImage21Workflow } from './qwenImagePromptCompiler';
+import { compileQwenImage21Prompt, isQwenImage21SkillPrompt, isQwenImage21Workflow } from './qwenImagePromptCompiler';
 import { getImageApiFormat } from '../imageModelUtils';
 import { callImageApi } from '../adapters/imageAdapter';
 
@@ -905,6 +905,8 @@ export const generateImage = async (
     workflowName?: string;
     /** 覆盖模型默认 steps */
     steps?: number;
+    /** 首尾帧默认 2K；其它资产生成不传，沿用工作流画布 */
+    resolution?: '1K' | '2K' | '4K';
     /** 与 referenceImages 下标对齐的业务说明，用于避免全景图中的角色/道具相互混淆。 */
     referenceAnnotations?: string[];
     target?: GenerationTarget;
@@ -995,8 +997,9 @@ export const generateImage = async (
             ? effectiveReferenceImages[0]
             : undefined);
 
+      const qwenSkillPrompt = qwenImage21Workflow && isQwenImage21SkillPrompt(roleConstrainedPrompt);
       let comfyPrompt = roleConstrainedPrompt;
-      const qwenEditShot =
+      const qwenEditShot = !qwenSkillPrompt &&
         referencePackType === 'shot'
         && hasAnyReference
         && !continuityReferenceImage
@@ -1004,7 +1007,9 @@ export const generateImage = async (
           const name = selectedWorkflowName.toLowerCase();
           return name.includes('qwen_image_edit') && !name.includes('turnaround');
         })();
-      if (continuityReferenceImage) {
+      if (qwenSkillPrompt) {
+        // 已是按小标题分行的 Qwen Image 2.1 编辑指令，不再压成一段，也不追加英文元规则。
+      } else if (continuityReferenceImage) {
         comfyPrompt += '\n\n[ComfyUI end frame] Keep the same subject identity, body plan, attire, and scene from the reference image, but show a clearly different pose, camera angle, and action moment for the END frame. Shot-listed props may be added from prop reference images; do not invent a different item.';
       } else if (qwenEditShot) {
         comfyPrompt += `\n\n[ComfyUI qwen-edit] Follow the submitted Reference mapping exactly; the image count and order are dynamic. Any scene reference establishes only the location, lighting, atmosphere, and spatial layout; do not copy weapons, hero props, or prominent objects from it unless the shot explicitly calls for them. Every character reference locks only its named subject's face, hair, body, and wardrobe${hasTurnaround ? '; a multi-view sheet may be used only for the matching subject and camera angle' : ''}. Place all named characters naturally in the scene; never copy a studio background, posing block, reference-sheet layout, or duplicate views. Prop references are the sole design authority for their named props and apply only when those props are requested by the shot.`;
@@ -1013,16 +1018,18 @@ export const generateImage = async (
           comfyPrompt += `\n\n[ComfyUI character anchor] Image 1 is the character identity lock${hasTurnaround ? ' and may be a turnaround or three-view sheet; use the panel matching the requested camera angle' : ''}. Copy that exact subject appearance, body plan, and outfit into this shot; never reproduce the sheet layout or duplicate views. Later images are scene or prop references only. Shot-listed props may be added from prop reference images; do not invent a different item. A missing carried item in the character reference does not forbid it in this shot. Apply the shot description for pose, camera and environment.`;
         } else if (selectedWorkflowName.toLowerCase().includes('turnaround')) {
           comfyPrompt += '\n\n[ComfyUI turnaround] Image 1 is the identity lock. Copy appearance, body plan, and any attire already on the subject. Only change camera angle and shot size per panel. Do not add attire that is not in image 1. Do not change the body plan. Do not invent a different subject.';
+        } else if (selectedWorkflowName.toLowerCase().includes('three_view') || selectedWorkflowName.toLowerCase().includes('three-view')) {
+          comfyPrompt += '\n\n[ComfyUI three-view] Image 1 is the identity lock. Output one 16:9 sheet with exactly four views: full-body front, full-body side, full-body back, and one portrait. Do not output a 3x3 grid, nine panels, or a turnaround contact sheet.';
         } else {
           comfyPrompt += '\n\n[ComfyUI character anchor] Match the reference subject exactly: appearance, body plan, and any attire shown. This is a lookbook: no carried items. Do not add attire that is not in the reference. Apply the prompt for pose and studio framing.';
         }
       }
 
-      if (referenceMapping) {
+      if (referenceMapping && !qwenSkillPrompt) {
         comfyPrompt += `\n\n[Reference mapping]\n${referenceMapping}`;
       }
 
-      if (qwenImage21Workflow) {
+      if (qwenImage21Workflow && !qwenSkillPrompt) {
         comfyPrompt = compileQwenImage21Prompt({
           prompt: comfyPrompt,
           mode: hasAnyReference ? 'edit' : 't2i',
@@ -1035,7 +1042,9 @@ export const generateImage = async (
         });
       }
 
-      comfyPrompt = await translatePromptForComfyUi(comfyPrompt);
+      if (!qwenImage21Workflow) {
+        comfyPrompt = await translatePromptForComfyUi(comfyPrompt);
+      }
 
       const promptLimitResult = compactPromptToMaxChars(comfyPrompt, MAX_IMAGE_PROMPT_CHARS);
       if (promptLimitResult.wasTruncated) {
@@ -1059,6 +1068,7 @@ export const generateImage = async (
             : undefined,
         workflowName: selectedWorkflowName || undefined,
         steps: selectedSteps,
+        resolution: options?.resolution,
         target: options?.target,
         onJobCreated: options?.onJobCreated,
         waitForResult: options?.waitForResult,
@@ -1614,16 +1624,19 @@ Layout:
 - Neutral seamless studio background and consistent soft production lighting.
 
 Constraints:
-- One single reference-sheet image, not separate files
+- One single 16:9 reference-sheet image, not separate files
+- Exactly four views: front full-body, side full-body, back full-body, portrait
+- Do not use a 3x3 grid, nine equal panels, or a turnaround contact sheet
 - Same subject and same wardrobe in every view
 - No action pose, no location scenery, no extra people or subjects
 - No text labels, captions, logos, watermark, duplicated limbs, or cropped feet
 - ${visualStyle} production-design quality, clean readable silhouette, high detail`;
 
   const imageParams = (activeImageModel as any)?.params || {};
-  const workflowName = imageParams.turnaroundWorkflowName || 'qwen_image_edit_2511_fp8_character_turnaround';
-  const steps = imageParams.turnaroundSteps ?? 4;
+  const workflowName = imageParams.threeViewWorkflowName || 'qwen_image_edit_2511_fp8_character_three_view';
+  const steps = imageParams.threeViewSteps ?? imageParams.turnaroundSteps ?? 4;
   const referenceImages = masterReference ? [masterReference] : [];
+  const negativePrompt = `${getNegativePrompt(visualStyle)}, 3x3 grid, nine panels, nine-panel turnaround, contact sheet, extra panels`.replace(/^,\s*/, '');
 
   return generateImage(
     prompt,
@@ -1631,7 +1644,7 @@ Constraints:
     resolveSupportedAspectRatio(['16:9', '1:1', '9:16'], '16:9'),
     false,
     false,
-    getNegativePrompt(visualStyle),
+    negativePrompt,
     {
       referencePackType: 'character',
       skipComfyImg2Img: false,

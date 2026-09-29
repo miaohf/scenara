@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Check, X } from 'lucide-react';
+import { Check, ImagePlus, RefreshCw, X } from 'lucide-react';
 import { STYLES } from './constants';
 
 interface Option {
@@ -47,10 +47,18 @@ const OptionSelector: React.FC<Props> = ({
   onPreviewChange,
   managementSlot,
   labelAction,
+  onRegeneratePreview,
+  generatingPreviewValues = [],
 }) => {
   const [previewValue, setPreviewValue] = useState<string | null>(value);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [previewFailed, setPreviewFailed] = useState(false);
+  const [previewRatio, setPreviewRatio] = useState<number | null>(null);
+  const previewTargetValue = previewValue || value;
+  const previewTarget = useMemo(
+    () => options.find((item) => item.value === previewTargetValue) || null,
+    [options, previewTargetValue]
+  );
   const selectedPreviewOption = useMemo(
     () => options.find((item) => item.value === previewValue && !!item.previewImage) || null,
     [previewValue, options]
@@ -63,6 +71,21 @@ const OptionSelector: React.FC<Props> = ({
   const activePreviewOption = selectedPreviewOption || (isPreviewingOther ? null : valuePreviewOption);
   const hasAnyPreview = options.some((item) => !!item.previewImage);
   const showPreviewImage = !!activePreviewOption?.previewImage && !previewFailed;
+  const emptyPreviewText = previewFailed
+    ? '参考图加载失败，可重新生成'
+    : previewTarget && !previewTarget.previewImage
+      ? '该风格还没有参考图'
+      : '点击风格按钮可查看参考图';
+  const canGenerateMissingPreview = !!onRegeneratePreview && !!previewTarget && (!previewTarget.previewImage || previewFailed);
+
+  const renderManagement = (className: string) => {
+    if (!managementSlot) return null;
+    return (
+      <div className={className} onClick={(event) => event.stopPropagation()}>
+        {typeof managementSlot === 'function' ? managementSlot(previewTargetValue) : managementSlot}
+      </div>
+    );
+  };
 
   useEffect(() => {
     setPreviewValue(value);
@@ -70,7 +93,10 @@ const OptionSelector: React.FC<Props> = ({
 
   useEffect(() => {
     setPreviewFailed(false);
+    setPreviewRatio(null);
   }, [activePreviewOption?.previewImage]);
+
+  const isCompactPreview = previewRatio !== null && previewRatio < 1.3;
 
   const handleOptionClick = (opt: Option) => {
     setPreviewValue(opt.value);
@@ -107,30 +133,57 @@ const OptionSelector: React.FC<Props> = ({
         ))}
       </div>
       {(hasAnyPreview || managementSlot) && (
-        <div className="min-h-[156px] overflow-hidden rounded-lg border border-[var(--border-primary)] bg-[var(--bg-surface)]">
+        <div className={`overflow-hidden rounded-lg border border-[var(--border-primary)] bg-[var(--bg-surface)] ${showPreviewImage && isCompactPreview ? 'mx-auto w-fit max-w-full' : ''}`}>
           {showPreviewImage && activePreviewOption?.previewImage ? (
             <div
               onClick={() => setIsPreviewOpen(true)}
-              className="group relative block w-full cursor-zoom-in"
+              className={`group relative block cursor-zoom-in bg-black ${isCompactPreview ? 'mx-auto w-fit max-w-full' : 'aspect-video w-full'}`}
               aria-label={`放大查看 ${activePreviewOption.label} 参考图`}
             >
+              {!isCompactPreview && (
+                <img
+                  src={activePreviewOption.previewImage}
+                  alt=""
+                  aria-hidden
+                  className="absolute inset-0 h-full w-full scale-110 object-cover blur-2xl brightness-50"
+                />
+              )}
               <img
                 src={activePreviewOption.previewImage}
                 alt={`${activePreviewOption.label} reference`}
-                className="h-[156px] w-full object-cover"
+                className={isCompactPreview
+                  ? 'relative z-[1] block max-h-72 w-auto max-w-full object-contain'
+                  : 'relative z-[1] h-full w-full object-contain'}
                 loading="lazy"
+                onLoad={(event) => {
+                  const { naturalWidth, naturalHeight } = event.currentTarget;
+                  if (naturalWidth > 0 && naturalHeight > 0) {
+                    setPreviewRatio(naturalWidth / naturalHeight);
+                  }
+                }}
                 onError={() => setPreviewFailed(true)}
               />
-              <div className="pointer-events-none absolute inset-0 bg-black/0 transition-colors group-hover:bg-black/35" />
-              {managementSlot && (
-                <div className="absolute bottom-2 right-2 z-10" onClick={(event) => event.stopPropagation()}>
-                  {typeof managementSlot === 'function' ? managementSlot(previewValue || value) : managementSlot}
-                </div>
-              )}
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[2] h-14 bg-gradient-to-t from-black/70 to-transparent" />
+              <div className="pointer-events-none absolute inset-0 z-[2] bg-black/0 transition-colors group-hover:bg-black/20" />
+              {renderManagement('absolute bottom-2 right-2 z-10 rounded-md bg-[var(--bg-primary)]/90')}
             </div>
           ) : (
-            <div className="flex h-[156px] items-center justify-center px-3 text-center text-[10px] text-[var(--text-muted)]">
-              点击风格按钮可查看参考图
+            <div className="relative flex aspect-video flex-col items-center justify-center gap-3 px-3 text-center text-[10px] text-[var(--text-muted)]">
+              <span>{emptyPreviewText}</span>
+              {canGenerateMissingPreview && (
+                <button
+                  type="button"
+                  disabled={generatingPreviewValues.includes(previewTargetValue)}
+                  onClick={() => onRegeneratePreview?.(previewTargetValue)}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border-secondary)] bg-[var(--bg-primary)] px-3 py-1.5 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] disabled:opacity-50"
+                >
+                  {generatingPreviewValues.includes(previewTargetValue)
+                    ? <RefreshCw className="h-3 w-3 animate-spin" />
+                    : <ImagePlus className="h-3 w-3" />}
+                  生成预览
+                </button>
+              )}
+              {renderManagement('absolute bottom-2 right-2 z-10 rounded-md bg-[var(--bg-primary)]/90')}
             </div>
           )}
         </div>

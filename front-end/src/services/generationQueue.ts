@@ -175,6 +175,16 @@ export const findShotVideoJob = (
     return isActiveJob(job.status) && isVideoJob(job) && !!targetId && sameShotRef(targetId, shotId, shotIndex);
   });
 
+/** 同一代图片已经写回时，滞后的 pending/running 任务不能再把界面打成 Queued。 */
+export const keyframeImageAlreadyLanded = (
+  frame: { imageUrl?: string; generationId?: string } | undefined,
+  job: JobStatus | undefined,
+): boolean => {
+  if (!frame?.imageUrl) return false;
+  const jobGenerationId = job?.target?.kind === "keyframe" ? job.target.generationId : undefined;
+  return !job || !jobGenerationId || !frame.generationId || jobGenerationId === frame.generationId;
+};
+
 export const findShotKeyframeJob = (
   jobs: JobStatus[],
   shotId: string,
@@ -204,15 +214,15 @@ export const resolveShotKeyframeBadge = (
   const job = findShotKeyframeJob(jobs, shot.id, type, shotIndex);
   const frame = shot.keyframes?.find((keyframe) => keyframe.type === type);
   // 任务状态可能因 SSE/轮询丢包而滞后于已写回的图片结果。
-  // 有已完成帧时，不能继续用旧的 pending/running 任务覆盖 READY 状态。
-  const effectiveJob = frame?.imageUrl && frame.status !== "generating" ? undefined : job;
+  // 同一代图片已经在时，不能继续用 pending/running 或卡住的 generating 覆盖 READY。
+  const effectiveJob = keyframeImageAlreadyLanded(frame, job) ? undefined : job;
   if (effectiveJob && jobDisplayState(effectiveJob, jobs) === "running") {
     return { status: "running", job: effectiveJob };
   }
   if (effectiveJob && isActiveJob(effectiveJob.status)) {
     return { status: "queued", job: effectiveJob, queuePosition: effectiveJob.queue_position ?? undefined };
   }
-  if (frame?.status === "generating") {
+  if (frame?.status === "generating" && !keyframeImageAlreadyLanded(frame, job)) {
     return { status: "queued", queuePosition: undefined };
   }
   if (frame?.status === "failed") {

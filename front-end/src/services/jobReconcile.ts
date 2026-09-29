@@ -300,13 +300,16 @@ export function reconcileEpisodeWithJobs(
         // 某些 ComfyUI 任务已经产出图片并被写回剧集，但 Job 状态仍停在
         // pending/running（例如 worker 在写回或 SSE 丢包时）。有同一代的
         // 图片结果时，以媒体结果为准，避免关键帧和页面永久显示 Queued。
+        // 不能在图已经落地后又把 completed 打回 generating，否则每次轮询都会盖住完成态。
         const sameGeneration =
           !target.generationId ||
           !frame.generationId ||
           target.generationId === frame.generationId;
-        if (frame.imageUrl && sameGeneration && frame.status === "generating") {
-          frame.status = "completed";
-          changed = true;
+        if (frame.imageUrl && sameGeneration) {
+          if (frame.status !== "completed") {
+            frame.status = "completed";
+            changed = true;
+          }
         } else if (frame.status !== "generating") {
           frame.status = "generating";
           changed = true;

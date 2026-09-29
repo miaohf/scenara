@@ -28,7 +28,7 @@ const baseScore = (entry: ReferenceImageEntry, index: number): number => {
   if (entry.type === 'character') return index === 0 ? 100 : 90;
   if (entry.type === 'scene') return 88;
   if (entry.type === 'storyboard') return 86;
-  if (entry.type === 'turnaround') return 82;
+  if (entry.type === 'turnaround') return 30;
   return 55;
 };
 
@@ -71,7 +71,7 @@ export const resolveShotReferencePolicy = (
       || (entry.type === 'character' && index === 0 ? 'required'
         : entry.type === 'scene' ? 'required'
           : activeProp ? 'required'
-            : entry.type === 'character' || entry.type === 'storyboard' ? 'supportive'
+            : entry.type === 'character' || entry.type === 'storyboard' || entry.type === 'turnaround' ? 'supportive'
               : 'textOnly');
     if (matching?.lockedByUser && policy === 'omitted') policy = 'required';
     const score = baseScore(entry, index)

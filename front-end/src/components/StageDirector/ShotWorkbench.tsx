@@ -36,7 +36,7 @@ import SceneContext from './SceneContext';
 import KeyframeEditor from './KeyframeEditor';
 import VideoGenerator from './VideoGenerator';
 import DubbingPanel from './DubbingPanel';
-import { getRefImagesForShot, isQwenEditKeyframeWorkflow, resolveEffectiveVideoModelId, resolveVideoModelRouting } from './utils';
+import { getRefImagesForShot, isQwenEditKeyframeWorkflow, qwenEditKeyframeMaxReferences, resolveEffectiveVideoModelId, resolveVideoModelRouting } from './utils';
 import { getActiveImageModel, getModelById } from '../../services/modelRegistry';
 import { findSceneByIdCompat, getShotDisplayKey } from '../../services/storyboardIdUtils';
 import {
@@ -173,7 +173,7 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   const activeProps = (scriptData?.props || []).filter((p) => (shot.props || []).includes(p.id));
   const availablePropsForShot = (scriptData?.props || []).filter((p) => !(shot.props || []).includes(p.id));
   const previewReferenceResult = useMemo(
-    () => getRefImagesForShot(shot, scriptData || null),
+    () => getRefImagesForShot(shot, scriptData || null, { characterMainFirst: true }),
     [shot, scriptData],
   );
   const previewEntries = previewReferenceResult.entries;
@@ -200,7 +200,9 @@ const ShotWorkbench: React.FC<ShotWorkbenchProps> = ({
   const previewIsR2V = String(previewVideoModel?.id || currentVideoModelId || '').toLowerCase().includes('r2v');
   const previewReferenceLimit = previewIsR2V
     ? previewVideoModel?.params?.maxReferenceImages || 9
-    : isQwenEditKeyframeWorkflow(previewWorkflowName) ? 3 : 5;
+    : isQwenEditKeyframeWorkflow(previewWorkflowName)
+      ? qwenEditKeyframeMaxReferences(previewWorkflowName)
+      : 5;
   const previewReservedReferenceSlots = previewIsR2V ? 0 : 1;
   const [referencePreviewPack, setReferencePreviewPack] = useState<ReferenceImagePack | null>(null);
   const [isPreparingReferencePreview, setIsPreparingReferencePreview] = useState(false);

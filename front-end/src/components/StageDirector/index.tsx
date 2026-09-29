@@ -48,6 +48,8 @@ import {
   isQwenEditKeyframeWorkflow,
   qwenEditReferenceBudget,
   buildQwenKeyframePrompt,
+  buildQwenImage21KeyframeBrief,
+  cutKeyframeImagePromptTail,
 } from './utils';
 import { DEFAULTS, resolveStoryboardGridLayout } from './constants';
 import EditModal from './EditModal';
@@ -55,6 +57,8 @@ import ShotCard from './ShotCard';
 import ShotWorkbench from './ShotWorkbench';
 import ImagePreviewModal from './ImagePreviewModal';
 import { findSceneByIdCompat } from '../../services/storyboardIdUtils';
+import { isQwenImage21SkillPrompt, isQwenImage21Workflow } from '../../services/ai/qwenImagePromptCompiler';
+import { rewriteQwenImage21KeyframePrompt } from '../../services/ai/qwenImage21KeyframeRewriter';
 import { repairShotExecutionPlan } from '../../services/ai/storyboardAgent';
 import { validateAndRepairH3Prompt } from '../../services/ai/h3PromptValidator';
 import NineGridPreview from './NineGridPreview';
@@ -65,7 +69,7 @@ import { getImageApiFormat } from '../../services/imageModelUtils';
 import BilingualLabel from '../BilingualLabel';
 import { useInterfaceLanguage } from '../../contexts/InterfaceLanguageContext';
 import { persistVideoReference } from '../../services/videoStorageService';
-import { runKeyframePreflight, runVideoPreflight, formatLintIssues } from '../../services/promptLintService';
+import { runKeyframePreflight, runVideoPreflight, formatLintIssues, ensureSingleCharacterCountLock } from '../../services/promptLintService';
 import { inspectShotProductionConflicts } from '../../services/productionConflictService';
 import { applyContinuityLedgerToShots } from '../../services/continuityLedgerService';
 import { assessShotQuality, getProjectAverageQualityScore } from '../../services/qualityAssessmentService';
@@ -86,6 +90,43 @@ import {
   isVisualReviewCurrent,
 } from '../../services/visualSemanticAssessmentService';
 import { getCharacterDefaultPropIds } from '../../services/characterLoadoutService';
+
+const rewriteQwen21KeyframePrompt = async (input: {
+  workflowName?: string;
+  basePrompt: string;
+  shot: Shot;
+  frameType: 'start' | 'end';
+  visualStyle: string;
+  propsInfo: ReturnType<typeof getPropsInfoForShot>;
+  scriptData?: ProjectState['scriptData'];
+  references: Array<{ type?: string; label?: string; detail?: string }>;
+}): Promise<string> => {
+  if (!isQwenImage21Workflow(input.workflowName)) return '';
+  const characterLabels = Object.fromEntries((input.scriptData?.characters || []).map((character) => [String(character.id), character.name]));
+  const propLabels = Object.fromEntries((input.scriptData?.props || []).map((prop) => [String(prop.id), prop.name]));
+  return rewriteQwenImage21KeyframePrompt(buildQwenImage21KeyframeBrief(
+    input.basePrompt,
+    input.shot,
+    input.frameType,
+    input.visualStyle,
+    input.references,
+    input.propsInfo,
+    characterLabels,
+    propLabels,
+  ));
+};
+
+const lockSingleCharacterPrompt = (
+  prompt: string,
+  shot: Shot,
+  scriptData?: ProjectState['scriptData'],
+): string => {
+  const names = (shot.characters || [])
+    .map((charId) => scriptData?.characters.find((character) => String(character.id) === String(charId))?.name)
+    .filter((name): name is string => !!name);
+  if (names.length !== 1) return prompt;
+  return ensureSingleCharacterCountLock(prompt, names[0]);
+};
 
 interface Props {
   project: ProjectState;
@@ -108,7 +149,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
   const [previewImage, setPreviewImage] = useState<{url: string, title: string, imageUrls?: string[]} | null>(null);
   const [isAIGenerating, setIsAIGenerating] = useState(false);
   const [enableVisualReview, setEnableVisualReview] = useState(true);
-  const [optimizingKeyframeTypes, setOptimizingKeyframeTypes] = useState<Array<'start' | 'end'>>([]);
+  const [optimizingKeyframeKeys, setOptimizingKeyframeKeys] = useState<Set<string>>(() => new Set());
   const [isAIReassessing, setIsAIReassessing] = useState(false);
   const [useAIEnhancement, setUseAIEnhancement] = useState(false); // 是否使用AI增强提示词
   const [isSplittingShot, setIsSplittingShot] = useState(false); // 是否正在拆分镜头
@@ -744,6 +785,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         visualStyle,
         propsInfo,
         Object.fromEntries((project.scriptData?.characters || []).map((character) => [String(character.id), character.name])),
+        Object.fromEntries((project.scriptData?.props || []).map((prop) => [String(prop.id), prop.name])),
       );
     } else if (useAIEnhancement) {
       try {
@@ -785,7 +827,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       prompt = buildVisualRepairPrompt(prompt, options.repairReview);
     }
 
-    const refResult = getRefImagesForShot(shot, project.scriptData, { sceneFirst });
+    const refResult = getRefImagesForShot(shot, project.scriptData, { sceneFirst, characterMainFirst: true });
     const requestedContinuityReference =
       type === 'end' && startKf?.imageUrl && !refResult.images.includes(startKf.imageUrl)
         ? startKf.imageUrl
@@ -806,10 +848,28 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     const packNotice = describeReferencePack(referencePack, language);
     if (packNotice) setToastMessage(packNotice);
     const referenceRoleGuide = buildReferenceImageRoleGuide(referencePack.entries);
-    prompt = stripFixedReferenceImageClaims(prompt).trim() || buildShotScriptContext(shot, project.scriptData, type);
-    // The mapping is a runtime reference contract; keep the actual shot description
-    // first so a stale mapping can never become the whole saved prompt.
-    if (referenceRoleGuide) prompt = `${prompt}\n\n${referenceRoleGuide}`;
+    const qwen21Prompt = await rewriteQwen21KeyframePrompt({
+      workflowName: keyframeWorkflowName,
+      basePrompt: rawBasePrompt,
+      shot,
+      frameType: type,
+      visualStyle,
+      propsInfo,
+      scriptData: project.scriptData,
+      references: [
+        ...referencePack.entries.map((entry) => ({ type: entry.type, label: entry.label, detail: entry.detail })),
+        ...(continuityReferenceImage ? [{ type: 'continuity', label: '上一帧画面', detail: '只继承身份、服装、场景和光位，姿态改成这一帧' }] : []),
+      ],
+    });
+    if (qwen21Prompt) {
+      prompt = qwen21Prompt;
+    } else {
+      prompt = stripFixedReferenceImageClaims(prompt).trim() || buildShotScriptContext(shot, project.scriptData, type);
+      // The mapping is a runtime reference contract; keep the actual shot description
+      // first so a stale mapping can never become the whole saved prompt.
+      if (referenceRoleGuide) prompt = `${prompt}\n\n${referenceRoleGuide}`;
+    }
+    prompt = lockSingleCharacterPrompt(prompt, shot, project.scriptData);
 
     const activeImageModel = getActiveImageModel() as any;
     // API 模式下图片都走后端任务队列，Celery worker 负责出图。
@@ -927,6 +987,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
             characterReferenceImage,
             workflowName: keyframeWorkflowName,
             steps: keyframeSteps,
+            resolution: '2K',
             referenceAnnotations: referencePack.referenceAnnotations,
             target: { kind: 'keyframe', shotId: shot.id, type, generationId },
             onJobCreated: upsertJob,
@@ -2156,18 +2217,16 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
 
   // AI optimizers may improve only the visual description. Reference slots are workflow
   // facts and are rebuilt from the actual pack submitted to the image model.
-  const stripFixedReferenceImageClaims = (prompt: string): string => String(prompt || '')
-    // The mapping is generated from the current reference policy. Remove the
-    // entire old block, including its stale "exactly N" count, before the
-    // current image pack is appended.
-    .replace(/(?:^|\n)[^\n]*(?:本次参考图映射|REFERENCE IMAGE MAPPING)[\s\S]*$/i, '')
+  const stripFixedReferenceImageClaims = (prompt: string): string => cutKeyframeImagePromptTail(prompt)
     .split('\n')
-    .filter((line) => !/(?:^|\b)(?:image|图片)\s*\d+\b/i.test(line))
+    .filter((line) => !/^\s*[-*]?\s*(?:image|图片)\s*\d+\b/i.test(line))
     .join('\n')
     .trim();
 
   function syncKeyframeReferenceMapping(shot: Shot, prompt: string, frameType: 'start' | 'end' = 'start'): string {
-    const refResult = getRefImagesForShot(shot, project.scriptData, { sceneFirst: true });
+    const skillPrompt = cutKeyframeImagePromptTail(prompt);
+    if (isQwenImage21SkillPrompt(skillPrompt)) return skillPrompt;
+    const refResult = getRefImagesForShot(shot, project.scriptData, { characterMainFirst: true });
     const roleGuide = buildReferenceImageRoleGuide(refResult.entries);
     const fallback = buildShotScriptContext(shot, project.scriptData, frameType);
     const cleanedPrompt = stripFixedReferenceImageClaims(prompt).trim() || fallback;
@@ -2206,6 +2265,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
           visualStyle,
           propsInfo,
           Object.fromEntries((project.scriptData?.characters || []).map((character) => [String(character.id), character.name])),
+          Object.fromEntries((project.scriptData?.props || []).map((prop) => [String(prop.id), prop.name])),
         )
       : appendLockedPropConstraints(
           buildKeyframePrompt(basePrompt, visualStyle, shot.cameraMovement, frameType, propsInfo, promptTemplates, sceneFirst),
@@ -2214,7 +2274,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
     // 单帧 AI 优化会直接走这里；Qwen 编译器只负责编排静态画面，
     // 人物数量与禁止复制仍须依据当前镜头角色清单统一追加。
     prompt = appendCharacterCompositionConstraints(prompt, shot, project.scriptData);
-    const refResult = getRefImagesForShot(shot, project.scriptData, { sceneFirst });
+    const refResult = getRefImagesForShot(shot, project.scriptData, { sceneFirst, characterMainFirst: true });
     const maxReferenceCount = isQwenEditKeyframeWorkflow(keyframeWorkflowName)
       ? qwenEditReferenceBudget(shot, keyframeWorkflowName)
       : 8;
@@ -2222,6 +2282,17 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       maxReferenceImages: maxReferenceCount,
       disableCompositing: true,
     });
+    const qwen21Prompt = await rewriteQwen21KeyframePrompt({
+      workflowName: keyframeWorkflowName,
+      basePrompt: optimizedCore,
+      shot,
+      frameType,
+      visualStyle,
+      propsInfo,
+      scriptData: project.scriptData,
+      references: referencePack.entries.map((entry) => ({ type: entry.type, label: entry.label, detail: entry.detail })),
+    });
+    if (qwen21Prompt) return lockSingleCharacterPrompt(qwen21Prompt, shot, project.scriptData);
     const roleGuide = buildReferenceImageRoleGuide(referencePack.entries);
     if (roleGuide) prompt = `${prompt}\n\n${roleGuide}`;
     return prompt;
@@ -2239,7 +2310,12 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       return;
     }
     
-    setOptimizingKeyframeTypes([type]);
+    const shotId = activeShot.id;
+    setOptimizingKeyframeKeys((current) => {
+      const next = new Set(current);
+      next.add(`${shotId}:${type}`);
+      return next;
+    });
     
     try {
       // 获取角色信息
@@ -2266,8 +2342,16 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
         oppositeFrame?.visualPrompt ? `另一帧仅用于连续性参考，不得把另一帧的动作结果复制到当前帧：${oppositeFrame.visualPrompt}` : '',
         activeShot.constraintPolicy?.required?.length ? `必须保留的镜头事实：${activeShot.constraintPolicy.required.join('；')}` : '',
       ].filter(Boolean).join('\n');
-      
-      const optimizedPrompt = await optimizeKeyframePrompt(
+      const imageParams = (getActiveImageModel() as any)?.params || {};
+      const keyframeWorkflowName = String(
+        imageParams.keyframeWorkflowName
+        || imageParams.referenceWorkflowName
+        || imageParams.workflowName
+        || '',
+      ).trim();
+      const optimizedPrompt = isQwenImage21Workflow(keyframeWorkflowName)
+        ? (currentFrame?.visualPrompt || actionSummary)
+        : await optimizeKeyframePrompt(
         type,
         actionSummary,
         cameraMovement,
@@ -2313,7 +2397,11 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       if (onApiKeyError && onApiKeyError(e)) return;
       showAlert(`AI优化失败: ${e.message}`, { type: 'error' });
     } finally {
-      setOptimizingKeyframeTypes([]);
+      setOptimizingKeyframeKeys((current) => {
+        const next = new Set(current);
+        next.delete(`${shotId}:${type}`);
+        return next;
+      });
     }
   };
 
@@ -2329,7 +2417,13 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       return;
     }
     
-    setOptimizingKeyframeTypes(['start', 'end']);
+    const shotId = activeShot.id;
+    setOptimizingKeyframeKeys((current) => {
+      const next = new Set(current);
+      next.add(`${shotId}:start`);
+      next.add(`${shotId}:end`);
+      return next;
+    });
     
     try {
       // 获取角色信息
@@ -2421,7 +2515,12 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
       if (onApiKeyError && onApiKeyError(e)) return;
       showAlert(`AI优化失败: ${e.message}`, { type: 'error' });
     } finally {
-      setOptimizingKeyframeTypes([]);
+      setOptimizingKeyframeKeys((current) => {
+        const next = new Set(current);
+        next.delete(`${shotId}:start`);
+        next.delete(`${shotId}:end`);
+        return next;
+      });
     }
   };
 
@@ -3114,7 +3213,9 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
             currentVideoModelId={resolveEffectiveVideoModelId(activeShot.videoModel)}
             nextShotHasStartFrame={!!project.shots[activeShotIndex + 1]?.keyframes?.find(k => k.type === 'start')?.imageUrl}
             isAIOptimizing={isAIGenerating}
-            optimizingKeyframeTypes={optimizingKeyframeTypes}
+            optimizingKeyframeTypes={(
+              ['start', 'end'] as const
+            ).filter((type) => optimizingKeyframeKeys.has(`${activeShot.id}:${type}`))}
             isAIReassessing={isAIReassessing}
             isSplittingShot={isSplittingShot}
             onClose={() => setActiveShotId(null)}

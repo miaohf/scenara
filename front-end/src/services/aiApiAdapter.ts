@@ -109,6 +109,7 @@ export async function apiCallComfyImage(
     seed: options.seed,
     steps: options.steps,
     workflowName: options.workflowName,
+    resolution: options.resolution,
   };
   console.info("[ComfyUI Image] 提交异步任务 comfyui_image", {
     modelId: options.modelId,
